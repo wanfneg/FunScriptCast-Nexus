@@ -399,32 +399,22 @@
       $("#mtBase").value = ollama.base_url || "";
     });
   }
+  /* 术语表：界面不渲染条目（4000+ 条会撑爆 DOM），只显示每张表的统计 */
   function loadGlossary() {
     api("/api/glossary").then(function (r) {
       if (!r.ok) return;
       S.glossary = r.langs || { ja: {}, en: {} };
-      renderGlossary("ja");
-      renderGlossary("en");
+      renderGlossStats();
     });
   }
-  var GLOSSARY_RENDER_CAP = 60;   // 渲染上限：避免上千条目把 DOM 撑爆（搜索可过滤）
-  function renderGlossary(lang) {
-    var terms = S.glossary[lang] || {};
-    var q = ($("#" + lang + "Search").value || "").toLowerCase();
-    var keys = Object.keys(terms).filter(function (k) {
-      return !q || k.toLowerCase().indexOf(q) >= 0 || String(terms[k]).toLowerCase().indexOf(q) >= 0;
-    });
-    $("#" + lang + "Count").textContent = Object.keys(terms).length + " 条";
-    var shown = keys.slice(0, GLOSSARY_RENDER_CAP);
-    var html = shown.map(function (k) {
-      return '<div class="term-row"><input class="input mono" style="height:28px" data-gk="' + esc(k) + '" value="' + esc(k) + '">' +
-        '<input class="input" style="height:28px" data-gv="' + esc(k) + '" value="' + esc(terms[k]) + '">' +
-        '<button class="icon-btn" data-gdel="' + esc(k) + '" data-glang="' + lang + '"><svg class="ic"><use href="#i-trash"/></svg></button></div>';
-    }).join("");
-    if (keys.length > shown.length) {
-      html += '<div class="hint" style="padding:8px 0">仅显示前 ' + shown.length + ' 条（共 ' + keys.length + ' 条），用上方搜索框过滤</div>';
-    }
-    $("#" + lang + "List").innerHTML = html || '<div class="empty">没有匹配的条目</div>';
+  function renderGlossStats() {
+    var ja = Object.keys(S.glossary.ja || {}).length;
+    var en = Object.keys(S.glossary.en || {}).length;
+    var t = $("#glossTotal"); if (t) t.textContent = (ja + en) + " 条";
+    var c1 = $("#glossJaCount"); if (c1) c1.textContent = ja + " 条";
+    var c2 = $("#glossEnCount"); if (c2) c2.textContent = en + " 条";
+    var m1 = $("#glossJaMeta"); if (m1) m1.textContent = "glossary_ja_zh.json";
+    var m2 = $("#glossEnMeta"); if (m2) m2.textContent = "glossary_en_zh.json";
   }
 
   /* ---------------------------------------------------------- 事件绑定 */
@@ -511,34 +501,7 @@
       });
     });
 
-    /* 术语表 */
-    $("#saveGloss").addEventListener("click", function () {
-      var jobs = ["ja", "en"].map(function (lang) {
-        var terms = {};
-        $$('[data-gk]').forEach(function (inp) {
-          var row = inp.parentElement;
-          var langOfRow = row.querySelector("[data-gdel]").getAttribute("data-glang");
-          if (langOfRow !== lang) return;
-          var k = inp.value.trim(), v = row.querySelector("[data-gv]").value.trim();
-          if (k) terms[k] = v;
-        });
-        return api("/api/glossary/save", "POST", { lang: lang, terms: terms });
-      });
-      Promise.all(jobs).then(function () { toast("术语表已保存并热重载"); });
-    });
-    ["ja", "en"].forEach(function (lang) {
-      $("#" + lang + "Search").addEventListener("input", function () { renderGlossary(lang); });
-      $("#" + lang + "List").addEventListener("click", function (e) {
-        var b = e.target.closest("[data-gdel]");
-        if (!b) return;
-        var k = b.getAttribute("data-gdel");
-        delete S.glossary[lang][k];
-        renderGlossary(lang);
-        toast("已删除（记得点保存）", k, "warn");
-      });
-    });
-
-    /* 术语表 CSV 导入 / 导出 */
+    /* 术语表：界面只做 CSV 导入/导出，不渲染条目 */
     initSeg("glossSeg", "glossThumb", function (b) {
       S.glossLang = b.getAttribute("data-glang-opt");
     });
@@ -557,18 +520,37 @@
     $("#glossImport").addEventListener("click", function () {
       if (!bridgeReady()) return;
       var lang = S.glossLang || "ja";
+      var replace = !!$("#glossReplace").checked;
       window.pywebview.api.pick_file("open", "", ["CSV 文件 (*.csv)", "所有文件 (*.*)"]).then(function (r) {
         if (!r || !r.ok) return;
-        api("/api/glossary/import", "POST", { path: r.path }).then(function (res) {
+        var body = { path: r.path, lang: lang };
+        if (replace) body.mode = "replace";
+        api("/api/glossary/import", "POST", body).then(function (res) {
           if (!res.ok) { toast("导入失败", res.error || "", "err"); return; }
-          var cur = S.glossary[lang] || {};
-          var before = Object.keys(cur).length;
-          Object.keys(res.terms).forEach(function (k) { cur[k] = res.terms[k]; });
-          S.glossary[lang] = cur;
-          renderGlossary(lang);
-          var added = Object.keys(cur).length - before;
-          toast("已解析 " + res.count + " 条（新增 " + added + "）", "点「保存术语表」写入并热重载", "warn");
+          if (replace) {
+            S.glossary[lang] = res.terms;
+            renderGlossStats();
+            toast("已整体替换 " + res.count + " 条", "已写盘并热重载");
+          } else {
+            var cur = S.glossary[lang] || {};
+            var before = Object.keys(cur).length;
+            Object.keys(res.terms).forEach(function (k) { cur[k] = res.terms[k]; });
+            S.glossary[lang] = cur;
+            renderGlossStats();
+            toast("已解析 " + res.count + " 条（新增 " + (Object.keys(cur).length - before) + "）",
+              "点「保存术语表」写入并热重载", "warn");
+          }
         });
+      });
+    });
+    $("#saveGloss").addEventListener("click", function () {
+      var jobs = ["ja", "en"].map(function (lang) {
+        var terms = S.glossary[lang] || {};
+        return api("/api/glossary/save", "POST", { lang: lang, terms: terms });
+      });
+      Promise.all(jobs).then(function () {
+        renderGlossStats();
+        toast("术语表已保存并热重载");
       });
     });
 

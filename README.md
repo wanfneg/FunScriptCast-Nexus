@@ -133,7 +133,10 @@ dist-app\
 | GET | `/api/glossary` | 读取术语表 |
 | POST | `/api/glossary/save` | 保存术语表并触发热重载 |
 | POST | `/api/glossary/export` | 导出为 CSV（UTF-8 BOM，Excel 直开不乱码） |
-| POST | `/api/glossary/import` | 解析 CSV 并返回词条（写盘仍走 save） |
+| POST | `/api/glossary/import` | 解析 CSV（`mode=replace` 整表替换，否则合并） |
+
+> 术语表页**不渲染条目**——4000+ 条会把 DOM 撑到几千节点。界面只显示两张表的条数，
+> 维护走 CSV 导入/导出（或直接改 `vendor/subtitle/glossary_*.json`）。
 | GET | `/api/sync` | 同步状态（设备连接 / 两个槽位 / 日志） |
 | POST | `/api/sync/devices` | 扫描 adb 设备（含型号） |
 | POST | `/api/sync/connect` `/api/sync/disconnect` | 连接 / 断开设备 |
@@ -158,10 +161,10 @@ dist-app\
 | DLNA（vendor） | `running=true`，`http://192.168.2.2:8899`，`description.xml` 200，SOAP Browse 200 |
 | 字幕子进程（vendor） | 启动 → `ready`，模型从 `./models` 加载，`cuda:0` |
 | 翻译后端 | Ollama 可达（5 个模型） |
-| 前端 | 控制台错误 0；溢出 0×0；DOM 1198 节点（预算 <1500） |
+| 前端 | 控制台错误 0；溢出 0×0；DOM 545 节点（预算 <1500） |
 | 窗口 | pywebview + WebView2；无原生标题栏 + 可缩放 + 圆角；关闭→隐藏、托盘→恢复 |
 | 设备同步 | 真机 Quest 3（`192.168.2.129:5555`）脚本同步：本地 1 / 设备 2707 / 推送 1 |
-| 术语表 CSV | 导入解析（跳过表头/空行）、导出 UTF-8 BOM；110 / 81 条 |
+| 术语表 CSV | 导入解析（跳过表头/空行）、导出 UTF-8 BOM；现为 2091 / 2170 条 |
 | 打包 EXE | 17.7 MB 单文件；DLNA `description.xml` 200；字幕服务 `ready` + `cuda:0` |
 | 显存回收 | 停止字幕服务后 5720 MB → 1736 MB |
 

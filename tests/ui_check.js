@@ -91,9 +91,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       importBtn: !!document.querySelector('#glossImport'),
       exportBtn: !!document.querySelector('#glossExport'),
       langSeg: document.querySelectorAll('#glossSeg button').length,
-      jaCount: t('#jaCount'),
-      enCount: t('#enCount'),
-      rows: document.querySelectorAll('#jaList .term-row').length,
+      total: t('#glossTotal'),
+      jaCount: t('#glossJaCount'),
+      enCount: t('#glossEnCount'),
+      replaceSwitch: !!document.querySelector('#glossReplace'),
+      // 界面不再渲染条目：这两者必须为 0
+      renderedRows: document.querySelectorAll('#page-glossary .term-row').length,
+      listBoxes: document.querySelectorAll('#page-glossary #jaList, #page-glossary #enList').length,
       saveBtn: !!document.querySelector('#saveGloss'),
     };
     if (gBtn) document.querySelector('button[data-page="dashboard"]').click();

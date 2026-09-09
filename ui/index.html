@@ -417,19 +417,42 @@
         <div class="grid g2">
           <div class="card">
             <div class="row" style="padding-left:0;padding-right:0">
-              <span class="badge acc">日语 → 中文</span>
-              <span class="badge" id="jaCount" style="margin-left:8px">0 条</span>
-              <input class="input" id="jaSearch" placeholder="搜索…" style="margin-left:auto;max-width:180px;height:28px">
+              <h2 style="margin:0">词库</h2>
+              <span class="badge" id="glossTotal" style="margin-left:8px">0 条</span>
             </div>
-            <div id="jaList" style="margin-top:10px;max-height:420px;overflow:auto"></div>
+            <div class="row" style="padding-left:0;padding-right:0;margin-top:12px">
+              <svg class="ic" style="color:var(--ink-3)"><use href="#i-folder"/></svg>
+              <div class="grow">
+                <div class="name">日语 → 中文</div>
+                <div class="sub" id="glossJaMeta">—</div>
+              </div>
+              <span class="badge acc" id="glossJaCount">0 条</span>
+            </div>
+            <div class="row" style="padding-left:0;padding-right:0">
+              <svg class="ic" style="color:var(--ink-3)"><use href="#i-folder"/></svg>
+              <div class="grow">
+                <div class="name">英语 → 中文</div>
+                <div class="sub" id="glossEnMeta">—</div>
+              </div>
+              <span class="badge acc" id="glossEnCount">0 条</span>
+            </div>
+            <div class="hint" style="margin-top:10px">
+              词库已改为 CSV 管理，界面不再渲染条目（4000+ 条会把 DOM 撑爆）。用上方「导入 / 导出」维护，
+              或直接编辑 <span class="mono">vendor\subtitle\glossary_*.json</span>。
+            </div>
           </div>
           <div class="card">
-            <div class="row" style="padding-left:0;padding-right:0">
-              <span class="badge acc">英语 → 中文</span>
-              <span class="badge" id="enCount" style="margin-left:8px">0 条</span>
-              <input class="input" id="enSearch" placeholder="搜索…" style="margin-left:auto;max-width:180px;height:28px">
+            <h2>导入方式</h2>
+            <div class="row" style="padding-left:0;padding-right:0;margin-top:4px">
+              <div class="grow">
+                <div class="name">整体替换</div>
+                <div class="sub">导入后原有条目全部丢弃，只保留 CSV 里的内容</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="glossReplace" checked><span class="track"></span><span class="knob"></span></label>
             </div>
-            <div id="enList" style="margin-top:10px;max-height:420px;overflow:auto"></div>
+            <div class="hint" style="margin-top:10px">
+              关掉这个开关则改为合并：同名词条覆盖、新词条追加。
+            </div>
           </div>
         </div>
       </section>
