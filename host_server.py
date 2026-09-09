@@ -2,8 +2,8 @@
 """FunScriptCast-Nexus —— 宿主进程（后端）
 
 职责：
-  1. 拉起 / 停止 **DLNA 服务**（复用 E:\\Development\\VR-DLNA 的 DlnaApp + SSDPServer）
-  2. 拉起 / 停止 **AI 字幕服务子进程**（E:\\Development\\Subtitle Server，独立进程，
+  1. 拉起 / 停止 **DLNA 服务**（复用 vendor/dlna 的 DlnaApp + SSDPServer）
+  2. 拉起 / 停止 **AI 字幕服务子进程**（vendor/subtitle，独立进程，
      停止即释放显存）
   3. 托管前端静态资源 + 提供 JSON API（同一端口，纯 stdlib http.server，无额外依赖）
   4. 持有设置与运行日志，供前端轮询
@@ -33,12 +33,16 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 UI_DIR = APP_DIR / "ui"
-REPO_ROOT = APP_DIR.parent
+VENDOR_DIR = APP_DIR / "vendor"
+MODELS_DIR = APP_DIR / "models"
 
-# ---------------------------------------------------------------- 外部项目路径
-VRDLNA_DIR = Path(os.environ.get("VRDLNA_DIR", r"E:\Development\VR-DLNA"))
-SUBTITLE_DIR = Path(os.environ.get("SUBTITLE_DIR", r"E:\Development\Subtitle Server"))
-SUBTITLE_VENV_PY = SUBTITLE_DIR / ".venv" / "Scripts" / "python.exe"
+# ---------------------------------------------------------------- 内置依赖路径
+# 两个原本独立运行的项目已 vendor 进本仓库：vendor/dlna（DLNA 服务）、
+# vendor/subtitle（ASR + 翻译服务）。模型与 venv 也随仓库自带，
+# 因此本应用不再依赖 E:\Development 下的任何其他目录。
+VRDLNA_DIR = Path(os.environ.get("VRDLNA_DIR", str(VENDOR_DIR / "dlna")))
+SUBTITLE_DIR = Path(os.environ.get("SUBTITLE_DIR", str(VENDOR_DIR / "subtitle")))
+SUBTITLE_VENV_PY = Path(os.environ.get("NEXUS_PY", str(APP_DIR / ".venv" / "Scripts" / "python.exe")))
 
 # ---------------------------------------------------------------- 端口
 UI_API_PORT = int(os.environ.get("FS_HOST_PORT", "8790"))   # 前端 + API
@@ -269,9 +273,14 @@ def sub_start() -> dict:
             flags = 0
             if os.name == "nt":
                 flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            env = dict(os.environ)
+            # 模型随仓库自带，用绝对路径注入，避免 cwd 变化导致相对路径失效
+            if MODELS_DIR.exists():
+                env.setdefault("ASR_MODEL", str(MODELS_DIR / "Qwen3-ASR-0.6B"))
             proc = subprocess.Popen(
                 [str(py), "run_server.py", "--port", str(SUBTITLE_PORT)],
                 cwd=str(SUBTITLE_DIR),
+                env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=flags,

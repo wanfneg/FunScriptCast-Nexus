@@ -1,0 +1,42 @@
+{
+  "asr": {
+    "model": "../../models/Qwen3-ASR-0.6B",
+    "aligner": "../../models/Qwen3-ForcedAligner-0.6B",
+    "device": "cuda:0",
+    "dtype": "bf16",
+    "use_glossary_context": true
+  },
+  "vad": {
+    "enabled": true,
+    "threshold": 0.5,
+    "min_speech_ms": 250
+  },
+  "segment": {
+    "max_sec": 8.0,
+    "max_chars": 50,
+    "pause_sec": 0.8,
+    "min_sec": 1.2,
+    "min_chars": 4
+  },
+  "translate": {
+    "backend": "ollama",
+    "ollama": {
+      "base_url": "http://127.0.0.1:11434",
+      "model": "qwen2.5:3b"
+    },
+    "openai": {
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "model": "qwen-mt-turbo",
+      "target_lang": "Chinese"
+    }
+  },
+  "glossary": {
+    "ja": "glossary_ja_zh.json",
+    "en": "glossary_en_zh.json"
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8756
+  }
+}

@@ -1,0 +1,6 @@
+# 说明：torch 必须从 CUDA 源装（PyPI 的 Windows wheel 是 CPU 版）：
+#   uv pip install --python .venv/Scripts/python.exe torch --index-url https://download.pytorch.org/whl/cu128
+# 下面这些走普通 PyPI / 清华源即可。
+qwen-asr
+modelscope
+numpy

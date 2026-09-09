@@ -1,14 +1,14 @@
 @echo off
 rem ============================================================
 rem  FunScriptCast-Nexus -- launcher
-rem  Runs the host process with the Python from the subtitle
-rem  service venv (pywebview + torch live there).
+rem  Runs the host process with the bundled venv Python
+rem  (vendor/dlna + vendor/subtitle + models are self-contained).
 rem  Override with: set NEXUS_PY=<path to python.exe>
 rem ============================================================
 setlocal
 
 set "APP_DIR=%~dp0"
-if not defined NEXUS_PY set "NEXUS_PY=E:\Development\Subtitle Server\.venv\Scripts\python.exe"
+if not defined NEXUS_PY set "NEXUS_PY=%APP_DIR%.venv\Scripts\python.exe"
 
 if not exist "%NEXUS_PY%" (
   echo [ERROR] Python venv not found:
