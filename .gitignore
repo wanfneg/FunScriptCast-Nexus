@@ -11,6 +11,9 @@ models/
 *.tmp
 _runtime/
 
+# 术语表旧版备份（换表时留档，不入库）
+/backup/
+
 # 构建产物
 /dist/
 /dist-app/
