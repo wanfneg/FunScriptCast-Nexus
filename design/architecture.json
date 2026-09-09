@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "uunScriptCast-Nexus进程架构",
+    "output": "integrated-app-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1400, 780],
+    "views": [
+      { "id": "control-path", "label": "控制面", "focus": ["user", "webview", "host", "dlna"], "note": "用户操作从内嵌界面进入主进程，落到 DLNA 服务。" },
+      { "id": "subtitle-path", "label": "字幕链路", "focus": ["host", "subproc", "asr", "gpu"], "note": "字幕服务独立子进程，停止即释放显存。" },
+      { "id": "device-path", "label": "设备与同步", "focus": ["headset", "adb", "host"], "note": "头显经局域网发现 DLNA 服务；脚本与视频由 ADB 推送。" }
+    ]
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "用户", "sublabel": "桌面操作", "pos": [60, 380], "size": [120, 60] },
+    { "id": "webview", "type": "frontend", "label": "内嵌界面", "sublabel": "WebView2 · HTML/CSS", "pos": [260, 380], "size": [150, 60], "tag": "零框架" },
+    { "id": "host", "type": "backend", "label": "主进程", "sublabel": "Python · 托盘常驻", "pos": [490, 380], "size": [150, 60] },
+    { "id": "dlna", "type": "backend", "label": "DLNA 服务", "sublabel": "HTTP :8899", "pos": [760, 380], "size": [150, 60] },
+    { "id": "subproc", "type": "backend", "label": "字幕子进程", "sublabel": "uastAPI :8756", "pos": [490, 560], "size": [150, 64], "tag": "按需启停" },
+    { "id": "asr", "type": "cloud", "label": "ASR 模型", "sublabel": "Qwen3-ASR-0.6B", "pos": [760, 560], "size": [150, 60], "tag": "3.7 GB" },
+    { "id": "gpu", "type": "cloud", "label": "GPU 显存", "sublabel": "8 GB · 与 Ollama 争抢", "pos": [1010, 560], "size": [160, 60], "tag": "争抢点" },
+    { "id": "adb", "type": "external", "label": "ADB", "sublabel": "脚本/视频同步", "pos": [260, 180], "size": [150, 64] },
+    { "id": "headset", "type": "external", "label": "VR 头显", "sublabel": "Quest 3 / Pico", "pos": [60, 180], "size": [130, 64], "tag": "局域网" }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "本机 PC", "wraps": ["webview", "host", "dlna", "subproc", "asr", "gpu", "adb"] }
+  ],
+  "connections": [
+    { "id": "user-ui", "from": "user", "to": "webview", "label": "点击 / 输入", "variant": "emphasis" },
+    { "id": "ui-host", "from": "webview", "to": "host", "label": "pywebview API" },
+    { "id": "host-dlna", "from": "host", "to": "dlna", "label": "启停 / 媒体根" },
+    { "id": "host-sub", "from": "host", "to": "subproc", "variant": "dashed" },
+    { "id": "sub-asr", "from": "subproc", "to": "asr", "label": "加载模型" },
+    { "id": "asr-gpu", "from": "asr", "to": "gpu", "variant": "security" },
+    { "id": "host-adb", "from": "host", "to": "adb", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
+    { "id": "adb-headset", "from": "adb", "to": "headset", "label": "推送" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "单入口", "items": ["一个 EXE、一个托盘图标", "界面与 DLNA 同进程，秒开", "头显经局域网自动发现 DLNA 服务"] },
+    { "dot": "emerald", "title": "字幕可回收", "items": ["字幕服务独立子进程", "停止即释放 3.7 GB 显存"] },
+    { "dot": "rose", "title": "显存争抢", "items": ["ASR 与 Ollama 不能同时驻留 8 GB 卡", "建议翻译走云端或调小模型"] }
+  ]
+}

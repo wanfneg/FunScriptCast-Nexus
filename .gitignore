@@ -1,0 +1,12 @@
+﻿# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 运行数据
+*.log
+*.tmp
+
+# 编辑器
+.vscode/
+.idea/

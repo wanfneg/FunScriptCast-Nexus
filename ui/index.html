@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FunScriptCast-Nexus</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!-- ============ 图标库 ============ -->
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-dash" viewBox="0 0 24 24"><path d="M3 13h8V3H3v10Zm10 8h8V11h-8v10ZM3 21h8v-6H3v6Zm10-12h8V3h-8v6Z" fill="currentColor"/></symbol>
+  <symbol id="i-cast" viewBox="0 0 24 24"><path d="M2 17v3h3a3 3 0 0 0-3-3Zm0-4v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Zm0-4v2a9 9 0 0 1 9 9h2A11 11 0 0 0 2 9Zm19-6H3a1 1 0 0 0-1 1v3h2V5h16v12h-6v2h7a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1Z" fill="currentColor"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6a6 6 0 0 1 5.2 9l1.5 1.5A8 8 0 0 0 12 4Zm0 14a6 6 0 0 1-5.2-9L5.3 7.5A8 8 0 0 0 12 20v3l4-4-4-4v3Z" fill="currentColor"/></symbol>
+  <symbol id="i-cc" viewBox="0 0 24 24"><path d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Zm-9 10H8a2 2 0 0 1-2-2v-1a2 2 0 0 1 2-2h3v1.5H8.5v3H11V14Zm7 0h-3a2 2 0 0 1-2-2v-1a2 2 0 0 1 2-2h3v1.5h-2.5v3H18V14Z" fill="currentColor"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9.4 4a7.5 7.5 0 0 0-.1-1.1l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.9-1.1L16.7 2h-4l-.4 2.4a7.6 7.6 0 0 0-1.9 1.1l-2.3-1-2 3.4 2 1.5a7.5 7.5 0 0 0 0 2.2l-2 1.5 2 3.4 2.3-1a7.6 7.6 0 0 0 1.9 1.1l.4 2.4h4l.4-2.4a7.6 7.6 0 0 0 1.9-1.1l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.1Z" fill="currentColor"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z" fill="currentColor"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><path d="M6 6h12v12H6z" fill="currentColor"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2Z" fill="currentColor"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Z" fill="currentColor"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2Z" fill="currentColor"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12ZM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4Z" fill="currentColor"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z" fill="currentColor"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.3L13 11h7V4l-2.3 2.3Z" fill="currentColor"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.7 7.6 1 12c1.7 4.4 6 7.5 11 7.5S20.3 16.4 22 12c-1.7-4.4-6-7.5-11-7.5Zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10Zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" fill="currentColor"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4 6.4 5Z" fill="currentColor"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21Zm12-3h-2v-2h2v2Zm0-4h-2v-4h2v4Z" fill="currentColor"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-4.4 2.26 5.4 5.4 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1Z" fill="currentColor"/></symbol>
+</svg>
+
+<div class="app">
+  <!-- ============ 标题栏 ============ -->
+  <header class="titlebar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <span>FunScriptCast-Nexus</span>
+      <span class="brand-sub">集成版</span>
+    </div>
+    <div class="pills">
+      <span class="pill" id="pillDlna"><i class="dot"></i>DLNA</span>
+      <span class="pill" id="pillSub"><i class="dot"></i>字幕服务</span>
+      <span class="pill" id="pillGpu"><i class="dot"></i>GPU</span>
+    </div>
+    <button class="theme-toggle" id="themeToggle" title="切换到亮色">
+      <svg class="ic"><use href="#i-theme"/></svg><span id="themeLabel">亮色</span>
+    </button>
+    <div class="win-ctrl">
+      <button id="winMin" title="最小化"><svg class="ic" width="14" height="14"><use href="#i-stop"/></svg></button>
+      <button class="close" id="winClose" title="关闭"><svg class="ic" width="14" height="14"><use href="#i-x"/></svg></button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- ============ 侧边栏 ============ -->
+    <nav class="sidebar">
+      <div class="nav" id="nav">
+        <span class="nav-indicator" id="navInd"></span>
+        <button data-page="dashboard" aria-current="true"><svg class="ic"><use href="#i-dash"/></svg>仪表盘</button>
+        <button data-page="dlna"><svg class="ic"><use href="#i-cast"/></svg>DLNA 服务器</button>
+        <button data-page="subtitle"><svg class="ic"><use href="#i-cc"/></svg>AI 字幕</button>
+        <button data-page="glossary"><svg class="ic"><use href="#i-folder"/></svg>术语表</button>
+        <button data-page="settings"><svg class="ic"><use href="#i-gear"/></svg>设置</button>
+      </div>
+      <div class="side-foot">
+        <div>FunScriptCast-Nexus</div>
+        <div class="ver" id="verLine">v—</div>
+      </div>
+    </nav>
+
+    <!-- ============ 内容区 ============ -->
+    <main class="content" id="content">
+
+      <!-- ---------- 仪表盘 ---------- -->
+      <section class="page active" id="page-dashboard">
+        <div class="page-head">
+          <div>
+            <h1>仪表盘</h1>
+            <p>服务实时状态与快捷操作</p>
+          </div>
+          <div class="actions">
+            <button class="btn ghost" id="btnRefresh"><svg class="ic"><use href="#i-refresh"/></svg>刷新</button>
+            <button class="btn primary" id="btnStartAll"><svg class="ic"><use href="#i-play"/></svg>一键启动</button>
+          </div>
+        </div>
+
+        <div class="card hero">
+          <div class="rail">
+            <div class="rail-node" id="railDlna">
+              <span class="rail-dot"></span>
+              <div>
+                <div class="t">DLNA 服务</div>
+                <div class="d" id="railDlnaD">未启动</div>
+                <div class="d" id="railDlnaU"></div>
+              </div>
+            </div>
+            <div class="rail-node" id="railSub">
+              <span class="rail-dot"></span>
+              <div>
+                <div class="t">AI 字幕服务</div>
+                <div class="d" id="railSubD">未启动</div>
+                <div class="d" id="railSubM"></div>
+              </div>
+            </div>
+            <div class="rail-node" id="railGpu">
+              <span class="rail-dot"></span>
+              <div>
+                <div class="t">GPU 显存</div>
+                <div class="d" id="railGpuD">—</div>
+                <div class="d" id="railGpuU"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid g4" style="margin-top:16px">
+          <div class="card">
+            <div class="metric">
+              <div>
+                <div><span class="num" id="mRoots">0</span><span class="unit">个</span></div>
+                <div class="lab">媒体根目录</div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="metric">
+              <div>
+                <div><span class="num" id="mUptime">0</span><span class="unit">分</span></div>
+                <div class="lab">运行时长</div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="metric">
+              <div>
+                <div><span class="num" id="mTerms">0</span><span class="unit">条</span></div>
+                <div class="lab">术语表条目</div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="metric">
+              <div class="ring" id="gpuRing">
+                <svg width="56" height="56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="5"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="5" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg>
+                <span class="pct">—</span>
+              </div>
+              <div>
+                <div class="lab">显存占用</div>
+                <div class="mono muted" id="gpuText" style="font-size:11px">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid g2" style="margin-top:16px">
+          <div class="card">
+            <h2>快捷操作</h2>
+            <div class="grid g2" style="gap:10px">
+              <button class="btn ghost" id="qaDlnaStart">启动 DLNA</button>
+              <button class="btn ghost" id="qaDlnaStop">停止 DLNA</button>
+              <button class="btn ghost" id="qaSubStart">启动字幕服务</button>
+              <button class="btn ghost" id="qaSubStop">停止字幕服务</button>
+            </div>
+            <div class="hint" style="margin-top:10px">停止字幕服务会结束子进程并释放显存（约 3.7 GB）</div>
+          </div>
+          <div class="card">
+            <h2>最近事件</h2>
+            <div class="timeline" id="timeline"><div class="empty">暂无事件</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- DLNA ---------- -->
+      <section class="page" id="page-dlna">
+        <div class="page-head">
+          <div>
+            <h1>DLNA 服务器</h1>
+            <p>面向 DeoVR 的轻量媒体服务 · 目录浏览零探测</p>
+          </div>
+          <div class="actions">
+            <button class="btn primary" id="dlnaStart"><svg class="ic"><use href="#i-play"/></svg>启动服务</button>
+            <button class="btn ghost" id="dlnaStop"><svg class="ic"><use href="#i-stop"/></svg>停止</button>
+          </div>
+        </div>
+
+        <div class="card accent">
+          <div class="row" style="padding-left:0;padding-right:0">
+            <div class="grow">
+              <div class="name">服务状态</div>
+              <div class="sub" id="dlnaStatusSub">未启动</div>
+            </div>
+            <span class="badge" id="dlnaBadge">已停止</span>
+          </div>
+          <div class="grid g2" style="margin-top:12px">
+            <label class="field">
+              <span>监听端口</span>
+              <input class="input mono" id="dlnaPort" value="8899">
+            </label>
+            <label class="field">
+              <span>本机地址</span>
+              <div style="display:flex;gap:8px">
+                <input class="input mono" id="dlnaUrl" readonly value="—">
+                <button class="icon-btn" id="dlnaCopy" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="row" style="padding-left:0;padding-right:0">
+            <h2 style="margin:0">媒体根目录</h2>
+            <span class="badge" id="rootsBadge" style="margin-left:8px">0 个</span>
+            <div style="margin-left:auto;display:flex;gap:8px">
+              <input class="input mono" id="newRoot" placeholder="E:\Media\VR" style="width:280px">
+              <button class="btn ghost" id="addRoot"><svg class="ic"><use href="#i-plus"/></svg>添加</button>
+            </div>
+          </div>
+          <div id="rootList" style="margin-top:8px"><div class="empty">还没有媒体根目录</div></div>
+          <div class="hint" style="margin-top:10px">支持云盘/网盘挂载目录；目录浏览零探测，视频再多也秒开</div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="row" style="padding-left:0;padding-right:0">
+            <h2 style="margin:0">服务日志</h2>
+            <button class="btn ghost" style="margin-left:auto" id="dlnaLogToggle">展开日志</button>
+          </div>
+          <div class="logbox" id="dlnaLogBox"><div class="inner" id="dlnaLogInner"></div></div>
+        </div>
+      </section>
+
+      <!-- ---------- AI 字幕 ---------- -->
+      <section class="page" id="page-subtitle">
+        <div class="page-head">
+          <div>
+            <h1>AI 实时字幕</h1>
+            <p>PC 端识别 + 翻译，头显只负责推流与显示</p>
+          </div>
+          <div class="actions">
+            <button class="btn primary" id="subStart"><svg class="ic"><use href="#i-play"/></svg>启动服务</button>
+            <button class="btn ghost" id="subStop"><svg class="ic"><use href="#i-stop"/></svg>停止</button>
+          </div>
+        </div>
+
+        <div class="card accent" id="subCard">
+          <div class="row" style="padding-left:0;padding-right:0">
+            <div class="grow">
+              <div class="name">字幕服务进程</div>
+              <div class="sub" id="subSub">独立子进程 · 未启动</div>
+            </div>
+            <span class="badge" id="subBadge">已停止</span>
+          </div>
+          <div class="progress indet" id="subLoadBar" style="margin-top:12px;display:none"><i></i></div>
+          <div class="grid g4" style="margin-top:14px">
+            <div><div class="muted" style="font-size:11px">识别模型</div><div class="mono" id="subModel" style="font-size:12px;margin-top:2px">—</div></div>
+            <div><div class="muted" style="font-size:11px">设备</div><div class="mono" id="subDevice" style="font-size:12px;margin-top:2px">—</div></div>
+            <div><div class="muted" style="font-size:11px">翻译后端</div><div class="mono" id="subMt" style="font-size:12px;margin-top:2px">—</div></div>
+            <div><div class="muted" style="font-size:11px">术语表</div><div class="mono" id="subGloss" style="font-size:12px;margin-top:2px">—</div></div>
+          </div>
+        </div>
+
+        <div class="grid g2" style="margin-top:16px">
+          <div class="card">
+            <h2>翻译后端</h2>
+            <label class="field">
+              <span>后端</span>
+              <select class="input" id="mtBackend">
+                <option value="ollama">ollama（本地）</option>
+                <option value="dashscope">dashscope（云端）</option>
+                <option value="none">关闭翻译</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Ollama 模型</span>
+              <input class="input mono" id="mtModel" placeholder="qwen2.5:3b">
+            </label>
+            <label class="field">
+              <span>Ollama 地址</span>
+              <input class="input mono" id="mtBase" placeholder="http://127.0.0.1:11434">
+            </label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn primary" id="saveMt">保存翻译设置</button>
+              <span class="hint">重启字幕服务后生效</span>
+            </div>
+            <div class="hint" style="margin-top:10px;color:var(--warn)">
+              ⚠ ASR 与 Ollama 同时驻留会占满 8GB 显存（实测出现 67s 卡顿），建议云端翻译或调小模型
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>识别与分段</h2>
+            <div class="grid g2" style="gap:10px">
+              <label class="field"><span>模型路径</span><input class="input mono" id="asrModel"></label>
+              <label class="field"><span>设备</span><input class="input mono" id="asrDevice"></label>
+              <label class="field"><span>单段最长（秒）</span><input class="input mono" id="segMaxSec"></label>
+              <label class="field"><span>单段最长字数</span><input class="input mono" id="segMaxChars"></label>
+              <label class="field"><span>停顿阈值（秒）</span><input class="input mono" id="segPause"></label>
+              <label class="field"><span>VAD 阈值</span><input class="input mono" id="vadThreshold"></label>
+            </div>
+            <button class="btn primary" id="saveAsr">保存识别设置</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 术语表 ---------- -->
+      <section class="page" id="page-glossary">
+        <div class="page-head">
+          <div>
+            <h1>术语表</h1>
+            <p>提升专有名词识别与翻译质量 · 保存后自动热重载</p>
+          </div>
+          <div class="actions">
+            <button class="btn primary" id="saveGloss">保存术语表</button>
+          </div>
+        </div>
+        <div class="grid g2">
+          <div class="card">
+            <div class="row" style="padding-left:0;padding-right:0">
+              <span class="badge acc">日语 → 中文</span>
+              <span class="badge" id="jaCount" style="margin-left:8px">0 条</span>
+              <input class="input" id="jaSearch" placeholder="搜索…" style="margin-left:auto;max-width:180px;height:28px">
+            </div>
+            <div id="jaList" style="margin-top:10px;max-height:420px;overflow:auto"></div>
+          </div>
+          <div class="card">
+            <div class="row" style="padding-left:0;padding-right:0">
+              <span class="badge acc">英语 → 中文</span>
+              <span class="badge" id="enCount" style="margin-left:8px">0 条</span>
+              <input class="input" id="enSearch" placeholder="搜索…" style="margin-left:auto;max-width:180px;height:28px">
+            </div>
+            <div id="enList" style="margin-top:10px;max-height:420px;overflow:auto"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 设置 ---------- -->
+      <section class="page" id="page-settings">
+        <div class="page-head">
+          <div>
+            <h1>设置</h1>
+            <p>启动行为与外观</p>
+          </div>
+        </div>
+        <div class="grid g2">
+          <div class="card">
+            <h2>启动</h2>
+            <div class="row" style="padding-left:0;padding-right:0">
+              <div class="grow"><div class="name">启动应用时自动开启 DLNA</div></div>
+              <label class="switch"><input type="checkbox" id="setDlnaAuto"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <div class="row" style="padding-left:0;padding-right:0">
+              <div class="grow"><div class="name">启动时自动开启字幕服务</div></div>
+              <label class="switch"><input type="checkbox" id="setSubAuto"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <div class="row" style="padding-left:0;padding-right:0">
+              <div class="grow"><div class="name">点击关闭时最小化到托盘</div></div>
+              <label class="switch"><input type="checkbox" id="setCloseTray"><span class="track"></span><span class="knob"></span></label>
+            </div>
+          </div>
+          <div class="card">
+            <h2>外观</h2>
+            <div class="row" style="padding-left:0;padding-right:0">
+              <div class="grow"><div class="name">主题</div><div class="sub">在标题栏右侧切换亮色 / 暗色</div></div>
+              <button class="theme-toggle" id="themeToggle2" title="切换到亮色">
+                <svg class="ic"><use href="#i-theme"/></svg><span id="themeLabel2">亮色</span>
+              </button>
+            </div>
+            <label class="field">
+              <span>动画强度</span>
+              <div class="seg" id="motionSeg" style="width:100%">
+                <span class="seg-thumb" id="motionThumb"></span>
+                <button style="flex:1" data-motion-opt="full" aria-selected="true">完整</button>
+                <button style="flex:1" data-motion-opt="reduced" aria-selected="false">精简</button>
+                <button style="flex:1" data-motion-opt="off" aria-selected="false">关闭</button>
+              </div>
+            </label>
+            <div class="hint">精简/关闭可降低低配机器的 GPU 占用</div>
+          </div>
+          <div class="card">
+            <h2>关于</h2>
+            <div class="row" style="padding-left:0;padding-right:0">
+              <div class="grow"><div class="name">本机地址</div><div class="sub" id="aboutIp">—</div></div>
+              <button class="icon-btn" id="copyIp"><svg class="ic"><use href="#i-copy"/></svg></button>
+            </div>
+            <div class="row" style="padding-left:0;padding-right:0">
+              <div class="grow"><div class="name">宿主端口</div><div class="sub mono" id="aboutPort">—</div></div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <button class="btn danger" id="quitApp">退出应用</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>
