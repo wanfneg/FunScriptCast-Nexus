@@ -715,8 +715,13 @@ def glossary_export_csv(body: dict) -> dict:
 
 
 def glossary_import_csv(body: dict) -> dict:
-    """解析 CSV 并返回词条；写盘与热重载交给 /api/glossary/save，避免两套逻辑。"""
+    """解析 CSV 并返回词条；写盘与热重载交给 /api/glossary/save，避免两套逻辑。
+
+    mode="replace" 时直接覆盖写盘（原有条目全部丢弃），用于整表替换。
+    """
     path = (body.get("path") or "").strip()
+    lang = (body.get("lang") or "").strip()
+    replace = (body.get("mode") or "").strip().lower() == "replace"
     if not path:
         return {"ok": False, "error": "未指定导入路径"}
     try:
@@ -755,6 +760,18 @@ def glossary_import_csv(body: dict) -> dict:
         terms[k] = v
     if not terms:
         return {"ok": False, "error": "没有解析到有效词条（需要两列：原文, 译文）"}
+
+    # 整表替换：直接写盘 + 热重载
+    if replace:
+        if lang not in GLOSSARY_FILES:
+            return {"ok": False, "error": "参数错误：替换模式需要 lang"}
+        saved = save_glossary({"lang": lang, "terms": terms})
+        if not saved.get("ok"):
+            return {"ok": False, "error": saved.get("error") or "写入失败"}
+        RT.add_log(f"术语表已整体替换（{lang} · {len(terms)} 条）", "ok")
+        return {"ok": True, "terms": terms, "count": len(terms),
+                "skipped": skipped, "replaced": True}
+
     return {"ok": True, "terms": terms, "count": len(terms), "skipped": skipped}
 
 
