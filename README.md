@@ -2,7 +2,18 @@
 
 面向 VR 观影的 PC 端控制中枢：**DLNA 媒体服务 + AI 实时字幕 + 设备联动**，一个窗口、一个托盘。
 
+仓库：<https://github.com/wanfneg/FunScriptCast-Nexus>（`main` 分支，tag `v1.0.0`）
+
 原 `VR-DLNA`（抚物器）与 `Subtitle Server` 两个独立项目已 **vendor 进本仓库**，不再依赖 `E:\Development` 下的其他目录。
+
+> **推送注意**：本机 git 全局配了 `http.proxy=http://127.0.0.1:7897`（代理当前未开启），
+> 直连 GitHub 可用但走代理会失败。推送时显式清空代理：
+>
+> ```powershell
+> git -c http.proxy= -c https.proxy= push origin main
+> ```
+>
+> （`git config --local http.proxy ""` 无效——git 把空值当未设置，会回退到全局配置。）
 
 ## 运行
 
