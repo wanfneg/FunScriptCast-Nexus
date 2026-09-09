@@ -110,6 +110,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       ringOffset: (document.querySelector('#gpuRing .fg') || {}).style ? document.querySelector('#gpuRing .fg').style.strokeDashoffset : null,
       dlnaPage: { badge: t('#dlnaBadge'), url: (document.querySelector('#dlnaUrl')||{}).value, roots: document.querySelectorAll('#rootList .row').length },
       subPage: { badge: t('#subBadge'), model: t('#subModel'), device: t('#subDevice') },
+      subtitleCache: {
+        badge: t('#cacheBadge'),
+        sub: t('#cacheSub'),
+        clearBtn: !!document.querySelector('#cacheClear'),
+      },
       syncPage: syncPage,
       glossaryPage: glossaryPage,
       timeline: document.querySelectorAll('#timeline .tl-item').length,
