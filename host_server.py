@@ -90,6 +90,20 @@ class Runtime:
 RT = Runtime()
 
 
+# ---------------------------------------------------------------- 版本
+def app_version() -> dict:
+    """读取 version.json（每次调用都读，便于开发时直接改文件生效）。"""
+    try:
+        data = json.loads((APP_DIR / "version.json").read_text(encoding="utf-8"))
+        return {
+            "name": str(data.get("versionName") or "0.0.0"),
+            "code": int(data.get("versionCode") or 0),
+            "channel": str(data.get("channel") or "dev"),
+        }
+    except Exception:
+        return {"name": "0.0.0", "code": 0, "channel": "dev"}
+
+
 # ================================================================ 设置
 SETTINGS_FILE = Path(os.environ.get("APPDATA") or str(Path.home())) / "FunScriptCast-Nexus" / "integrated_settings.json"
 
@@ -106,6 +120,11 @@ DEFAULT_SETTINGS = {
     "script_folder": "",
     "video_folder": "",
     "device_folder": "/sdcard/Movies",
+    "device_folder_script": "/sdcard/Funscript",
+    "device_folder_video": "/sdcard/Movies",
+    "adb_path": "",
+    "sync_force_full": False,
+    "sync_delete_extra": False,
 }
 
 
@@ -385,7 +404,8 @@ def state_payload() -> dict:
     dlna_on = dlna_running()
     return {
         "ok": True,
-        "version": "1.0.0",
+        "version": app_version()["name"],
+        "versionInfo": app_version(),
         "uptime": round(uptime, 1),
         "host": {"port": UI_API_PORT, "lan_ip": lan_ip(), "started_at": RT.started_at},
         "dlna": {
@@ -398,6 +418,7 @@ def state_payload() -> dict:
             "logs": dlna_logs,
         },
         "subtitle": sub_state(),
+        "sync": SYNC.public(),
         "gpu": gpu_info(),
         "settings": s,
         "events": logs,
@@ -461,6 +482,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "logs": RT.logs[-300:]})
             elif path == "/api/glossary":
                 self._json(glossary_payload())
+            elif path == "/api/sync":
+                self._json({"ok": True, "sync": SYNC.public()})
             elif path == "/api/subtitle/config":
                 self._json(subtitle_config())
             elif path in ("/", "/index.html"):
@@ -494,6 +517,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(save_subtitle_config(body))
             elif path == "/api/glossary/save":
                 self._json(save_glossary(body))
+            elif path == "/api/sync/devices":
+                self._json(SYNC.list_devices())
+            elif path == "/api/sync/connect":
+                self._json(SYNC.connect((body.get("serial") or "").strip()))
+            elif path == "/api/sync/disconnect":
+                self._json(SYNC.disconnect())
+            elif path == "/api/sync/run":
+                self._json(SYNC.sync((body.get("kind") or "").strip()))
+            elif path == "/api/sync/settings":
+                self._json({"ok": True, "settings": save_settings(body)})
             elif path == "/api/quit":
                 self._json({"ok": True})
                 request_quit()
@@ -567,6 +600,226 @@ def save_glossary(body: dict) -> dict:
         return {"ok": True, "count": len(terms)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ================================================================ 设备同步
+# 复用 vendor/dlna 的 funscript_sync / video_sync（两者接口一致：
+# Config(local_folder/device_folder/adb_path/force_full/delete_extra) +
+# Controller(get_adb/connect_usb/run_sync)）。本应用只做统一编排与状态上报。
+SYNC_KINDS = {
+    "script": {
+        "label": "脚本（.funscript）",
+        "module": "funscript_sync",
+        "config": "FunscriptSyncConfig",
+        "controller": "FunscriptSyncController",
+        "local_key": "script_folder",
+        "device_key": "device_folder_script",
+    },
+    "video": {
+        "label": "视频",
+        "module": "video_sync",
+        "config": "VideoSyncConfig",
+        "controller": "VideoSyncController",
+        "local_key": "video_folder",
+        "device_key": "device_folder_video",
+    },
+}
+
+
+class SyncSlot:
+    """一种同步类型（脚本 / 视频）的运行时状态。"""
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        self.controller = None
+        self.serial = ""
+        self.device = ""
+        self.busy = False
+        self.logs: list[str] = []
+        self.result: dict | None = None
+        self.error = ""
+
+    def add_log(self, msg: str) -> None:
+        self.logs.append(msg)
+        if len(self.logs) > 400:
+            del self.logs[: len(self.logs) - 400]
+
+    def public(self) -> dict:
+        meta = SYNC_KINDS[self.kind]
+        s = load_settings()
+        return {
+            "kind": self.kind,
+            "label": meta["label"],
+            "busy": self.busy,
+            "connected": bool(self.serial),
+            "serial": self.serial,
+            "device": self.device,
+            "local_folder": s.get(meta["local_key"]) or "",
+            "device_folder": s.get(meta["device_key"]) or "",
+            "error": self.error,
+            "result": self.result,
+            "logs": self.logs[-120:],
+        }
+
+
+class SyncService:
+    """脚本 / 视频 → Quest 的 adb 增量同步编排。"""
+
+    def __init__(self) -> None:
+        self.slots = {k: SyncSlot(k) for k in SYNC_KINDS}
+        self.lock = threading.RLock()
+        self.adb_path = ""
+
+    # ---- 懒加载 vendor 模块 ----
+    def _controller(self, kind: str):
+        slot = self.slots[kind]
+        if slot.controller is not None:
+            return slot.controller
+        meta = SYNC_KINDS[kind]
+        sys.path.insert(0, str(VRDLNA_DIR))
+        mod = __import__(meta["module"])
+        s = load_settings()
+        cfg = getattr(mod, meta["config"])()
+        cfg.local_folder = s.get(meta["local_key"]) or ""
+        cfg.device_folder = s.get(meta["device_key"]) or cfg.device_folder
+        cfg.adb_path = s.get("adb_path") or ""
+        cfg.force_full = bool(s.get("sync_force_full"))
+        cfg.delete_extra = bool(s.get("sync_delete_extra"))
+        ctrl = getattr(mod, meta["controller"])(cfg)
+        ctrl.on_log = slot.add_log
+        slot.controller = ctrl
+        return ctrl
+
+    def _apply_settings(self, kind: str) -> None:
+        """把最新设置同步进 vendor 配置对象。"""
+        ctrl = self._controller(kind)
+        meta = SYNC_KINDS[kind]
+        s = load_settings()
+        ctrl.config.local_folder = s.get(meta["local_key"]) or ""
+        ctrl.config.device_folder = s.get(meta["device_key"]) or ctrl.config.device_folder
+        ctrl.config.adb_path = s.get("adb_path") or ""
+        ctrl.config.force_full = bool(s.get("sync_force_full"))
+        ctrl.config.delete_extra = bool(s.get("sync_delete_extra"))
+
+    # ---- adb ----
+    def adb(self):
+        return self._controller("script").get_adb()
+
+    def adb_path_resolved(self) -> str:
+        try:
+            return self.adb().adb_path
+        except Exception as e:
+            self.slots["script"].error = str(e)
+            return ""
+
+    def list_devices(self) -> dict:
+        """列出 adb 设备；同时带上每个设备的型号（best-effort）。"""
+        try:
+            adb = self.adb()
+        except Exception as e:
+            return {"ok": False, "error": str(e), "adb": "", "devices": []}
+        try:
+            serials = adb.devices()
+        except Exception as e:
+            return {"ok": False, "error": str(e), "adb": adb.adb_path, "devices": []}
+        out = []
+        for s in serials:
+            model = ""
+            try:
+                model = adb.shell(s, "getprop ro.product.model").strip()
+            except Exception:
+                pass
+            out.append({"serial": s, "model": model, "usb": ":" not in s})
+        return {"ok": True, "adb": adb.adb_path, "devices": out}
+
+    def connect(self, serial: str) -> dict:
+        with self.lock:
+            if not serial:
+                return {"ok": False, "error": "未选择设备"}
+            res = {"ok": False, "serial": serial}
+            for kind in SYNC_KINDS:
+                self._apply_settings(kind)
+                ctrl = self._controller(kind)
+                try:
+                    ctrl.get_adb().verify_device(serial)
+                    ctrl.serial = serial
+                    self.slots[kind].serial = serial
+                    self.slots[kind].device = serial
+                    self.slots[kind].error = ""
+                except Exception as e:
+                    self.slots[kind].error = str(e)
+                    res["error"] = str(e)
+            res["ok"] = all(s.serial for s in self.slots.values())
+            RT.add_log(
+                f"设备已连接：{serial}" if res["ok"] else f"设备连接失败：{res.get('error')}",
+                "ok" if res["ok"] else "err",
+            )
+            return res
+
+    def disconnect(self) -> dict:
+        with self.lock:
+            for slot in self.slots.values():
+                slot.serial = ""
+                slot.device = ""
+                if slot.controller is not None:
+                    slot.controller.serial = ""
+            RT.add_log("已断开设备", "info")
+            return {"ok": True}
+
+    # ---- 同步 ----
+    def sync(self, kind: str) -> dict:
+        if kind not in SYNC_KINDS:
+            return {"ok": False, "error": "未知的同步类型"}
+        slot = self.slots[kind]
+        if slot.busy:
+            return {"ok": False, "error": "该类型正在同步中"}
+        s = load_settings()
+        meta = SYNC_KINDS[kind]
+        folder = s.get(meta["local_key"]) or ""
+        if not folder or not os.path.isdir(folder):
+            return {"ok": False, "error": "请先选择有效的本地目录"}
+        if not slot.serial:
+            return {"ok": False, "error": "请先连接设备"}
+        self._apply_settings(kind)
+        slot.busy = True
+        slot.error = ""
+        slot.result = None
+        slot.logs = []
+        RT.add_log(f"开始同步{meta['label']} → {slot.serial}", "info")
+
+        def _run() -> None:
+            try:
+                res = self._controller(kind).run_sync()
+                if res is None:
+                    slot.error = "同步未执行"
+                else:
+                    local_n, device_n, pushed = res
+                    slot.result = {"local": local_n, "device": device_n, "pushed": pushed}
+                    RT.add_log(
+                        f"{meta['label']}同步完成：本地 {local_n} / 设备 {device_n} / 推送 {pushed}",
+                        "ok",
+                    )
+            except Exception as e:
+                slot.error = f"{type(e).__name__}: {e}"
+                RT.add_log(f"{meta['label']}同步失败：{slot.error}", "err")
+            finally:
+                slot.busy = False
+
+        threading.Thread(target=_run, daemon=True, name=f"sync-{kind}").start()
+        return {"ok": True, "busy": True}
+
+    def public(self) -> dict:
+        return {
+            "adb_path": self.adb_path_resolved(),
+            "connected": any(s.serial for s in self.slots.values()),
+            "serial": next((s.serial for s in self.slots.values() if s.serial), ""),
+            "force_full": bool(load_settings().get("sync_force_full")),
+            "delete_extra": bool(load_settings().get("sync_delete_extra")),
+            "slots": {k: s.public() for k, s in self.slots.items()},
+        }
+
+
+SYNC = SyncService()
 
 
 # ================================================================ 托盘
@@ -706,6 +959,115 @@ def request_quit() -> None:
     threading.Thread(target=_do, daemon=True, name="quit").start()
 
 
+# ================================================================ 无边框窗口微调
+def tune_frameless_window(window, rounded: bool = True) -> dict:
+    """无边框窗口的边角处理：找回原生缩放边框 + 圆角 + 阴影。
+
+    pywebview 的 frameless 会把 FormBorderStyle 设成 None，缩放边框一并丢失。
+    这里在窗体句柄就绪后重新加上 WS_THICKFRAME（只给缩放热区，不画标题栏），
+    并用 DWM 打开圆角与投影，保持原生观感。
+    """
+    import ctypes
+
+    out: dict = {}
+    try:
+        hwnd = int(window.native.Handle.ToInt64())
+    except Exception as e:
+        return {"ok": False, "error": repr(e)}
+    GWL_STYLE = -16
+    WS_THICKFRAME = 0x00040000
+    WS_MAXIMIZEBOX = 0x00010000
+    try:
+        st = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+        new = (st | WS_THICKFRAME | WS_MAXIMIZEBOX) & ~0x00C00000  # 清 WS_CAPTION
+        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, new)
+        # 改样式位后需要重设一次尺寸，让非客户区重新计算
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_FRAMECHANGED = 0x0002, 0x0001, 0x0004, 0x0020
+        ctypes.windll.user32.SetWindowPos(
+            hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+        )
+        out["style"] = hex(new)
+        out["thickframe"] = bool(new & WS_THICKFRAME)
+    except Exception as e:
+        out["style_error"] = repr(e)
+    if rounded:
+        try:
+            from webview.platforms.winforms import DwmSetWindowAttribute
+
+            # 33 = DWMWA_WINDOW_CORNER_PREFERENCE, 2 = DWMWCP_ROUND
+            DwmSetWindowAttribute(hwnd, 33, 2)
+            out["rounded"] = True
+        except Exception as e:
+            out["rounded_error"] = repr(e)
+    out["ok"] = bool(out.get("thickframe"))
+    return out
+
+
+# ================================================================ 前端 JS 桥
+class NexusApi:
+    """暴露给前端 JS 的窗口控制（无边框窗口需要自绘标题栏按钮）。
+
+    注意：窗口引用必须放在**下划线开头**的属性里。pywebview 的 get_functions()
+    会递归展开 js_api 对象的所有公开属性，直接挂 `self.window = window` 会导致
+    `window.native.AccessibilityObject.…` 无限递归（RecursionError）。
+    """
+
+    def __init__(self) -> None:
+        self._win = None
+
+    def bind(self, window) -> None:
+        self._win = window
+
+    def win_minimize(self) -> dict:
+        try:
+            self._win.minimize()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def win_hide(self) -> dict:
+        """隐藏到托盘。"""
+        try:
+            self._win.hide()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def win_close(self) -> dict:
+        """自绘标题栏的关闭按钮。
+
+        无边框窗口下不能让 FormClosing 拦截来「关闭到托盘」——pywebview 在
+        窗体关闭流程里会走 Application.Exit()，即使 args.Cancel 也会结束事件
+        循环。所以这里按设置显式二选一：隐藏到托盘，或直接销毁退出。
+        """
+        try:
+            if bool(load_settings().get("close_to_tray", True)):
+                self._win.hide()
+            else:
+                self._win.destroy()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def pick_folder(self, current: str = "") -> dict:
+        """系统「选择文件夹」对话框；取消返回 ok=False。"""
+        try:
+            import webview
+
+            res = self._win.create_file_dialog(
+                webview.FOLDER_DIALOG,
+                directory=current or "",
+            )
+            if not res:
+                return {"ok": False, "cancelled": True}
+            return {"ok": True, "path": res[0]}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+JSAPI = NexusApi()
+
+
 # ================================================================ 启动
 def run(open_window: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
@@ -743,9 +1105,12 @@ def run(open_window: bool = True) -> None:
         min_size=(960, 640),
         background_color="#07090f",
         text_select=False,
+        frameless=True,          # 自绘标题栏（HTML），配合 .pywebview-drag-region 拖动
         easy_drag=False,
+        js_api=JSAPI,
         hidden=bool(s.get("start_minimized", False)),
     )
+    JSAPI.bind(window)
 
     # 关闭按钮 → 最小化到托盘（可在设置里关掉）
     def on_closing():
@@ -764,6 +1129,13 @@ def run(open_window: bool = True) -> None:
     def on_loaded():
         # 托盘常驻：即便关闭按钮不拦截，也需要托盘作为「启动即最小化」的恢复入口
         TRAY.start(window)
+        # 无边框窗口补回原生缩放边框 + 圆角
+        try:
+            r = tune_frameless_window(window)
+            if not r.get("ok"):
+                log.warning("无边框窗口微调失败：%s", r)
+        except Exception as e:
+            log.warning("无边框窗口微调异常：%s", e)
         if s.get("start_minimized"):
             try:
                 window.hide()

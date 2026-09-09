@@ -62,6 +62,27 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const expr = `(() => {
     const t = s => (document.querySelector(s) || {}).textContent || null;
     const cls = s => { const e = document.querySelector(s); return e ? e.className : null; };
+    // 切到「设备同步」页，验证渲染与控件就位
+    const navBtn = document.querySelector('button[data-page="sync"]');
+    if (navBtn) navBtn.click();
+    const syncPage = {
+      navExists: !!navBtn,
+      pageActive: (document.querySelector('#page-sync') || {}).className,
+      badge: t('#syncDevBadge'),
+      sub: t('#syncDevSub'),
+      adb: (document.querySelector('#syncAdbPath') || {}).value,
+      deviceOptions: Array.from(document.querySelectorAll('#syncDeviceSel option')).map(o => o.value),
+      scriptLocal: (document.querySelector('#syncScriptLocal') || {}).value,
+      scriptDevice: (document.querySelector('#syncScriptDevice') || {}).value,
+      scriptBadge: t('#syncScriptBadge'),
+      scriptResult: t('#syncScriptResult'),
+      videoBadge: t('#syncVideoBadge'),
+      logLines: document.querySelectorAll('#syncLogInner > div').length,
+      pickButtons: document.querySelectorAll('[data-pick]').length,
+      winCtrl: !!document.querySelector('#winClose') && !!document.querySelector('#winMin'),
+      dragRegion: (document.querySelector('.titlebar') || {}).className,
+    };
+    if (navBtn) document.querySelector('button[data-page="dashboard"]').click();
     return {
       title: document.title,
       pills: { dlna: t('#pillDlna'), sub: t('#pillSub'), gpu: t('#pillGpu') },
@@ -71,6 +92,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       ringOffset: (document.querySelector('#gpuRing .fg') || {}).style ? document.querySelector('#gpuRing .fg').style.strokeDashoffset : null,
       dlnaPage: { badge: t('#dlnaBadge'), url: (document.querySelector('#dlnaUrl')||{}).value, roots: document.querySelectorAll('#rootList .row').length },
       subPage: { badge: t('#subBadge'), model: t('#subModel'), device: t('#subDevice') },
+      syncPage: syncPage,
       timeline: document.querySelectorAll('#timeline .tl-item').length,
       ver: t('#verLine'), aboutIp: t('#aboutIp'),
       settings: {

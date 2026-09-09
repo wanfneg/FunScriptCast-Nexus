@@ -67,7 +67,10 @@ html[data-theme="light"] body::before{
   display:flex;align-items:center;gap:var(--sp-3);padding:0 var(--sp-3) 0 var(--sp-4);
   background:linear-gradient(180deg,rgba(255,255,255,.035),transparent);
   border-bottom:1px solid var(--line);
+  height:48px;box-sizing:border-box;
 }
+/* 无边框窗口：标题栏可拖动（pywebview 按 .pywebview-drag-region 选择器命中） */
+.titlebar{-webkit-user-select:none}
 .brand{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:.2px}
 .brand-mark{width:22px;height:22px;border-radius:7px;flex:none;position:relative;
   background:conic-gradient(from 140deg,var(--accent),var(--accent-2),var(--accent));

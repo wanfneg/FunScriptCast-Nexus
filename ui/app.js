@@ -236,11 +236,13 @@
     $("#subMt").textContent = h.translate_backend || "—";
     $("#subGloss").textContent = h.glossary ? Object.keys(h.glossary).map(function (k) { return k + " " + h.glossary[k]; }).join(" · ") : "—";
 
+    /* ---- 设备同步页 ---- */
+    renderSync(st.sync || {});
+
     /* ---- 设置页 ---- */
     $("#aboutIp").textContent = (st.host && st.host.lan_ip) || "—";
     $("#aboutPort").textContent = (st.host && st.host.port) || "—";
-    $("#verLine").textContent = "v" + (st.version || "—") + " · WebView2";
-    syncSettingsUI();
+    $("#verLine").textContent = "v" + (st.version || "—") + " · WebView2";    syncSettingsUI();
   }
 
   function renderRoots(roots) {
@@ -264,6 +266,97 @@
       return '<div class="' + cls + '">' + esc(l) + "</div>";
     }).join("");
     inner.scrollTop = 1e6;
+  }
+
+  /* ---------------------------------------------------------- 设备同步 */
+  var SY = { kind: "script", devices: [] };
+
+  function renderSync(sy) {
+    var connected = !!sy.connected;
+    setBadge($("#syncDevBadge"), connected ? "ok" : "", connected ? "已连接" : "未连接");
+    $("#syncDevSub").textContent = connected
+      ? ("已连接 · " + (sy.serial || ""))
+      : "未连接 · 请先扫描并连接 Quest";
+
+    if (document.activeElement !== $("#syncAdbPath")) $("#syncAdbPath").value = sy.adb_path || "";
+    if (document.activeElement !== $("#syncForce")) $("#syncForce").checked = !!sy.force_full;
+    if (document.activeElement !== $("#syncDelete")) $("#syncDelete").checked = !!sy.delete_extra;
+
+    var slots = sy.slots || {};
+    ["script", "video"].forEach(function (kind) {
+      var s = slots[kind] || {};
+      var cap = kind === "script" ? "Script" : "Video";
+      var badge = $("#sync" + cap + "Badge");
+      setBadge(badge, s.busy ? "warn" : s.result ? "ok" : s.error ? "err" : "",
+        s.busy ? "同步中" : s.result ? "已完成" : s.error ? "失败" : "待命");
+      var local = $("#sync" + cap + "Local"), dev = $("#sync" + cap + "Device");
+      if (local && document.activeElement !== local) local.value = s.local_folder || "";
+      if (dev && document.activeElement !== dev) dev.value = s.device_folder || "";
+      var res = $("#sync" + cap + "Result");
+      if (res) {
+        if (s.busy) res.textContent = "正在同步…";
+        else if (s.error) res.textContent = "错误：" + s.error;
+        else if (s.result) res.textContent = "本地 " + s.result.local + " · 设备 " + s.result.device + " · 本次推送 " + s.result.pushed;
+        else res.textContent = "尚未同步";
+      }
+      var runBtn = $("#syncRun" + cap);
+      if (runBtn) runBtn.disabled = !!s.busy;
+    });
+    // 日志框只显示当前选中类型
+    var cur = slots[SY.kind] || {};
+    renderSyncLogs(cur.logs || []);
+  }
+  var lastSyncLogLen = -1;
+  function renderSyncLogs(logs) {
+    if (logs.length === lastSyncLogLen) return;
+    lastSyncLogLen = logs.length;
+    var inner = $("#syncLogInner");
+    if (!logs.length) { inner.innerHTML = '<div class="empty">暂无同步日志</div>'; return; }
+    inner.innerHTML = logs.map(function (l) {
+      var cls = /失败|错误|error/i.test(l) ? "err" : /====|警告/i.test(l) ? "warn" : "ok";
+      return '<div class="' + cls + '">' + esc(l) + "</div>";
+    }).join("");
+    inner.scrollTop = 1e6;
+  }
+
+  function renderDeviceList(devices, keepSerial) {
+    var sel = $("#syncDeviceSel");
+    if (!sel) return;
+    if (!devices.length) { sel.innerHTML = '<option value="">未发现设备</option>'; return; }
+    sel.innerHTML = devices.map(function (d) {
+      var label = d.serial + (d.model ? " · " + d.model : "") + (d.usb ? " · USB" : "");
+      return '<option value="' + esc(d.serial) + '">' + esc(label) + "</option>";
+    }).join("");
+    if (keepSerial) sel.value = keepSerial;
+  }
+
+  function scanDevices(notify) {
+    return api("/api/sync/devices", "POST", {}).then(function (r) {
+      SY.devices = r.devices || [];
+      renderDeviceList(SY.devices, "");
+      if (notify) {
+        if (!r.ok) toast("扫描失败", r.error || "adb 不可用", "err");
+        else toast(SY.devices.length ? "发现 " + SY.devices.length + " 台设备" : "未发现设备",
+          r.adb ? r.adb : "");
+      }
+      return r;
+    });
+  }
+
+  function runSync(kind) {
+    SY.kind = kind;
+    lastSyncLogLen = -1;
+    var btn = $("#syncRun" + (kind === "script" ? "Script" : "Video"));
+    if (btn) btn.disabled = true;
+    api("/api/sync/run", "POST", { kind: kind }).then(function (r) {
+      if (!r.ok) {
+        if (btn) btn.disabled = false;
+        toast("无法开始同步", r.error || "", "err");
+        return;
+      }
+      toast("开始同步", kind === "script" ? "脚本" : "视频");
+      poll(true);
+    });
   }
 
   function syncSettingsUI() {
@@ -436,6 +529,79 @@
         renderGlossary(lang);
         toast("已删除（记得点保存）", k, "warn");
       });
+    });
+
+    /* 设备同步 */
+    $("#syncDevices").addEventListener("click", function () { scanDevices(true); });
+    $("#syncConnect").addEventListener("click", function () {
+      var serial = $("#syncDeviceSel").value;
+      if (!serial) { toast("请先扫描并选择设备", "", "warn"); return; }
+      api("/api/sync/connect", "POST", { serial: serial }).then(function (r) {
+        if (r.ok) { toast("设备已连接", serial); poll(true); }
+        else toast("连接失败", r.error || "", "err");
+      });
+    });
+    $("#syncDisconnect").addEventListener("click", function () {
+      api("/api/sync/disconnect", "POST", {}).then(function () { toast("已断开设备"); poll(true); });
+    });
+    $("#syncRunScript").addEventListener("click", function () { runSync("script"); });
+    $("#syncRunVideo").addEventListener("click", function () { runSync("video"); });
+    $("#syncAdbPath").addEventListener("change", function () {
+      api("/api/settings", "POST", { adb_path: this.value.trim() });
+    });
+    $("#syncForce").addEventListener("change", function () {
+      api("/api/settings", "POST", { sync_force_full: this.checked });
+    });
+    $("#syncDelete").addEventListener("change", function () {
+      api("/api/settings", "POST", { sync_delete_extra: this.checked });
+      if (this.checked) toast("将删除设备上多余文件", "请确认设备目录正确", "warn");
+    });
+    $("#syncScriptLocal").addEventListener("change", function () {
+      api("/api/settings", "POST", { script_folder: this.value.trim() });
+    });
+    $("#syncVideoLocal").addEventListener("change", function () {
+      api("/api/settings", "POST", { video_folder: this.value.trim() });
+    });
+    $("#syncScriptDevice").addEventListener("change", function () {
+      api("/api/settings", "POST", { device_folder_script: this.value.trim() });
+    });
+    $("#syncVideoDevice").addEventListener("change", function () {
+      api("/api/settings", "POST", { device_folder_video: this.value.trim() });
+    });
+    initSeg("syncLogSeg", "syncLogThumb", function (btn) {
+      SY.kind = btn.getAttribute("data-kind");
+      lastSyncLogLen = -1;
+      poll(true);
+    });
+    // 目录选择（走 pywebview 原生对话框）
+    $$("[data-pick]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var inp = document.getElementById(b.getAttribute("data-pick"));
+        if (!inp) return;
+        if (!window.pywebview || !window.pywebview.api) { toast("请在桌面应用内使用目录选择", "", "warn"); return; }
+        window.pywebview.api.pick_folder(inp.value || "").then(function (r) {
+          if (r && r.ok) {
+            inp.value = r.path;
+            inp.dispatchEvent(new Event("change"));
+          }
+        });
+      });
+    });
+
+    /* 自绘标题栏按钮 */
+    function winCall(name) {
+      if (window.pywebview && window.pywebview.api && window.pywebview.api[name]) {
+        window.pywebview.api[name]();
+      } else {
+        toast("窗口控制仅在桌面应用中可用", "", "warn");
+      }
+    }
+    $("#winMin").addEventListener("click", function () { winCall("win_minimize"); });
+    $("#winClose").addEventListener("click", function () { winCall("win_close"); });
+    // 标题栏整体是拖动区（pywebview 会向上查找 .pywebview-drag-region），
+    // 所以按钮/主题切换/状态胶囊必须吃掉 mousedown，否则点它们会变成拖窗口。
+    $$(".titlebar button, .titlebar .pills").forEach(function (el) {
+      el.addEventListener("mousedown", function (e) { e.stopPropagation(); });
     });
 
     /* 设置 */

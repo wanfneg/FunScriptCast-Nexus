@@ -30,7 +30,7 @@
 
 <div class="app">
   <!-- ============ 标题栏 ============ -->
-  <header class="titlebar">
+  <header class="titlebar pywebview-drag-region">
     <div class="brand">
       <span class="brand-mark"></span>
       <span>FunScriptCast-Nexus</span>
@@ -44,7 +44,7 @@
     <button class="theme-toggle" id="themeToggle" title="切换到亮色">
       <svg class="ic"><use href="#i-theme"/></svg><span id="themeLabel">亮色</span>
     </button>
-    <div class="win-ctrl">
+    <div class="win-ctrl" id="winCtrl">
       <button id="winMin" title="最小化"><svg class="ic" width="14" height="14"><use href="#i-stop"/></svg></button>
       <button class="close" id="winClose" title="关闭"><svg class="ic" width="14" height="14"><use href="#i-x"/></svg></button>
     </div>
@@ -58,6 +58,7 @@
         <button data-page="dashboard" aria-current="true"><svg class="ic"><use href="#i-dash"/></svg>仪表盘</button>
         <button data-page="dlna"><svg class="ic"><use href="#i-cast"/></svg>DLNA 服务器</button>
         <button data-page="subtitle"><svg class="ic"><use href="#i-cc"/></svg>AI 字幕</button>
+        <button data-page="sync"><svg class="ic"><use href="#i-sync"/></svg>设备同步</button>
         <button data-page="glossary"><svg class="ic"><use href="#i-folder"/></svg>术语表</button>
         <button data-page="settings"><svg class="ic"><use href="#i-gear"/></svg>设置</button>
       </div>
@@ -301,6 +302,100 @@
       </section>
 
       <!-- ---------- 术语表 ---------- -->
+      <!-- ---------- 设备同步 ---------- -->
+      <section class="page" id="page-sync">
+        <div class="page-head">
+          <div>
+            <h1>设备同步</h1>
+            <p>脚本与视频 → Quest · adb 增量推送（本地打包 zip，设备端解压）</p>
+          </div>
+          <div class="actions">
+            <button class="btn ghost" id="syncDevices"><svg class="ic"><use href="#i-refresh"/></svg>扫描设备</button>
+            <button class="btn primary" id="syncConnect"><svg class="ic"><use href="#i-play"/></svg>连接设备</button>
+            <button class="btn ghost" id="syncDisconnect"><svg class="ic"><use href="#i-stop"/></svg>断开</button>
+          </div>
+        </div>
+
+        <div class="card accent">
+          <div class="row" style="padding-left:0;padding-right:0">
+            <div class="grow">
+              <div class="name">设备连接</div>
+              <div class="sub" id="syncDevSub">未连接 · 请先扫描并连接 Quest</div>
+            </div>
+            <span class="badge" id="syncDevBadge">未连接</span>
+          </div>
+          <div class="grid g2" style="margin-top:12px">
+            <label class="field">
+              <span>选择设备</span>
+              <select class="input mono" id="syncDeviceSel"></select>
+            </label>
+            <label class="field">
+              <span>adb 路径</span>
+              <input class="input mono" id="syncAdbPath" placeholder="自动探测（ANDROID_HOME / PATH）">
+            </label>
+          </div>
+          <div class="row" style="padding-left:0;padding-right:0;margin-top:4px">
+            <div class="grow"><div class="name">全量同步（忽略增量判断）</div></div>
+            <label class="switch"><input type="checkbox" id="syncForce"><span class="track"></span><span class="knob"></span></label>
+            <div class="grow" style="margin-left:24px"><div class="name">删除设备上多余文件</div></div>
+            <label class="switch"><input type="checkbox" id="syncDelete"><span class="track"></span><span class="knob"></span></label>
+          </div>
+        </div>
+
+        <div class="grid g2" style="margin-top:16px">
+          <div class="card" id="syncCardScript">
+            <div class="row" style="padding-left:0;padding-right:0">
+              <h2 style="margin:0">脚本同步</h2>
+              <span class="badge" id="syncScriptBadge" style="margin-left:8px">待命</span>
+              <button class="btn primary" style="margin-left:auto" id="syncRunScript"><svg class="ic"><use href="#i-sync"/></svg>开始同步</button>
+            </div>
+            <label class="field" style="margin-top:12px">
+              <span>本地脚本目录</span>
+              <div style="display:flex;gap:8px">
+                <input class="input mono" id="syncScriptLocal" placeholder="E:\Funscript">
+                <button class="icon-btn" data-pick="syncScriptLocal" title="浏览"><svg class="ic"><use href="#i-folder"/></svg></button>
+              </div>
+            </label>
+            <label class="field">
+              <span>设备目标目录</span>
+              <input class="input mono" id="syncScriptDevice" placeholder="/sdcard/Funscript">
+            </label>
+            <div class="sub" id="syncScriptResult" style="margin-top:8px">尚未同步</div>
+          </div>
+          <div class="card" id="syncCardVideo">
+            <div class="row" style="padding-left:0;padding-right:0">
+              <h2 style="margin:0">视频同步</h2>
+              <span class="badge" id="syncVideoBadge" style="margin-left:8px">待命</span>
+              <button class="btn primary" style="margin-left:auto" id="syncRunVideo"><svg class="ic"><use href="#i-sync"/></svg>开始同步</button>
+            </div>
+            <label class="field" style="margin-top:12px">
+              <span>本地视频目录</span>
+              <div style="display:flex;gap:8px">
+                <input class="input mono" id="syncVideoLocal" placeholder="E:\Media\VR">
+                <button class="icon-btn" data-pick="syncVideoLocal" title="浏览"><svg class="ic"><use href="#i-folder"/></svg></button>
+              </div>
+            </label>
+            <label class="field">
+              <span>设备目标目录</span>
+              <input class="input mono" id="syncVideoDevice" placeholder="/sdcard/Movies">
+            </label>
+            <div class="sub" id="syncVideoResult" style="margin-top:8px">尚未同步</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="row" style="padding-left:0;padding-right:0">
+            <h2 style="margin:0">同步日志</h2>
+            <div class="seg" id="syncLogSeg" style="margin-left:auto;width:200px">
+              <span class="seg-thumb" id="syncLogThumb"></span>
+              <button data-kind="script" aria-selected="true">脚本</button>
+              <button data-kind="video">视频</button>
+            </div>
+          </div>
+          <div class="logbox" id="syncLogBox"><div class="inner" id="syncLogInner"></div></div>
+        </div>
+      </section>
+
       <section class="page" id="page-glossary">
         <div class="page-head">
           <div>
