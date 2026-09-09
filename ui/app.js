@@ -243,6 +243,14 @@
     $("#subMt").textContent = h.translate_backend || "—";
     $("#subGloss").textContent = h.glossary ? Object.keys(h.glossary).map(function (k) { return k + " " + h.glossary[k]; }).join(" · ") : "—";
 
+    /* ---- 字幕缓存 ---- */
+    var sc = st.subtitleCache || {};
+    setBadge($("#cacheBadge"), sc.count ? "ok" : "", (sc.count || 0) + " 个");
+    $("#cacheSub").textContent = sc.count
+      ? (sc.count + " 个视频已缓存 · 共 " + (sc.size_kb || 0) + " KB · 最近 "
+         + (sc.newest ? new Date(sc.newest * 1000).toLocaleString() : "—"))
+      : "还没有缓存字幕（首次播放会生成并保存）";
+
     /* ---- 设备同步页 ---- */
     renderSync(st.sync || {});
 
@@ -498,6 +506,13 @@
       };
       api("/api/subtitle/config", "POST", body).then(function (r) {
         toast(r.ok ? "识别设置已保存" : "保存失败", r.ok ? "重启字幕服务后生效" : (r.error || ""), r.ok ? "ok" : "err");
+      });
+    });
+
+    $("#cacheClear").addEventListener("click", function () {
+      api("/api/subtitle/cache/clear", "POST", {}).then(function (r) {
+        if (r.ok) { toast("字幕缓存已清空"); poll(true); }
+        else toast("清空失败", r.error || "", "err");
       });
     });
 

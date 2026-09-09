@@ -298,6 +298,19 @@
             </div>
             <button class="btn primary" id="saveAsr">保存识别设置</button>
           </div>
+
+          <div class="card">
+            <div class="row" style="padding-left:0;padding-right:0">
+              <h2 style="margin:0">字幕缓存</h2>
+              <span class="badge acc" id="cacheBadge" style="margin-left:8px">0 个</span>
+              <button class="btn ghost" style="margin-left:auto" id="cacheClear">清空缓存</button>
+            </div>
+            <div class="sub" id="cacheSub" style="margin-top:8px">—</div>
+            <div class="hint" style="margin-top:8px">
+              同一视频看过一遍后，字幕会按「视频 + 语言 + 术语表/模型指纹」缓存；
+              下次播放直接读取，不再重跑识别。改术语表或模型会自动失效重算。
+            </div>
+          </div>
         </div>
       </section>
 

@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -118,6 +120,162 @@ class Runtime:
 
 
 RT = Runtime()
+
+
+# ================================================================ 字幕缓存
+# 目标：同一视频看第二遍时不再重跑 ASR，直接读已生成的字幕。
+# 键 = 视频身份（路径/大小/mtime）+ 语言 + 配置指纹（ASR 模型 + 术语表内容），
+# 任何一项变了就自动失效，避免「换了术语表还在用旧字幕」。
+SUBTITLE_CACHE_DIR = Path(os.environ.get("NEXUS_CACHE_DIR", str(APP_DIR / "cache" / "subtitles")))
+
+
+def _video_identity(path: str) -> dict:
+    """视频身份：优先用绝对路径 + 大小 + mtime；文件不存在时退化为路径哈希。"""
+    p = Path(path)
+    try:
+        st = p.stat()
+        return {"path": str(p.resolve()), "size": st.st_size, "mtime": int(st.st_mtime)}
+    except Exception:
+        return {"path": str(p), "size": 0, "mtime": 0}
+
+
+def _config_fingerprint() -> str:
+    """ASR 模型 + 分段/VAD 配置 + 两张术语表的指纹。"""
+    parts: list = []
+    try:
+        cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+        parts.append(json.dumps({"asr": cfg.get("asr"), "vad": cfg.get("vad"),
+                                 "segment": cfg.get("segment")},
+                                ensure_ascii=False, sort_keys=True))
+    except Exception:
+        parts.append("no-config")
+    for lang, fname in GLOSSARY_FILES.items():
+        f = SUBTITLE_DIR / fname
+        try:
+            parts.append(f"{lang}:{hashlib.sha256(f.read_bytes()).hexdigest()[:16]}")
+        except Exception:
+            parts.append(f"{lang}:missing")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def subtitle_cache_key(video_path: str, lang: str) -> str:
+    ident = _video_identity(video_path)
+    raw = json.dumps({"v": ident, "lang": lang, "cfg": _config_fingerprint()},
+                     ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def subtitle_cache_path(video_path: str, lang: str) -> Path:
+    return SUBTITLE_CACHE_DIR / f"{subtitle_cache_key(video_path, lang)}.json"
+
+
+def _resolve_video_path(video_path: str) -> str:
+    """VR 端传来的是设备侧路径（如 /sdcard/Movies/a.mp4）或 DLNA 流 URL，
+    PC 上并不存在。此时按**文件名**在已知媒体根里找同名文件，命中就用它的
+    身份算缓存键——这样头显和 PC 能共享同一份缓存。"""
+    p = Path(video_path)
+    if p.exists():
+        return str(p)
+    name = p.name or video_path.rstrip("/").split("/")[-1]
+    if not name:
+        return video_path
+    roots = list(load_settings().get("dlna_roots") or [])
+    for key in ("video_folder", "script_folder"):
+        v = load_settings().get(key)
+        if v:
+            roots.append(v)
+    for root in roots:
+        try:
+            cand = Path(root) / name
+            if cand.exists():
+                return str(cand)
+        except Exception:
+            continue
+    return video_path
+
+
+def subtitle_cache_get(video_path: str, lang: str) -> dict:
+    resolved = _resolve_video_path(video_path)
+    f = subtitle_cache_path(resolved, lang)
+    if not f.exists():
+        return {"ok": True, "hit": False, "resolved": resolved}
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"ok": False, "hit": False, "error": f"缓存损坏：{e}"}
+    return {"ok": True, "hit": True, "path": str(f), "resolved": resolved,
+            "count": len(data.get("segments") or []),
+            "created_at": data.get("created_at"),
+            "video": data.get("video"),
+            "lang": data.get("lang"),
+            "segments": data.get("segments") or []}
+
+
+def subtitle_cache_save(video_path: str, lang: str, segments: list,
+                        meta: dict | None = None) -> dict:
+    if not isinstance(segments, list):
+        return {"ok": False, "error": "segments 必须是数组"}
+    resolved = _resolve_video_path(video_path)
+    SUBTITLE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    f = subtitle_cache_path(resolved, lang)
+    payload = {
+        "video": _video_identity(resolved),
+        "requested": video_path,
+        "lang": lang,
+        "config_fingerprint": _config_fingerprint(),
+        "created_at": time.time(),
+        "count": len(segments),
+        "segments": segments,
+        "meta": meta or {},
+    }
+    try:
+        tmp = f.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, f)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    RT.add_log(f"字幕已缓存（{lang} · {len(segments)} 段 → {f.name}）", "ok")
+    return {"ok": True, "path": str(f), "count": len(segments)}
+
+
+def subtitle_cache_summary() -> dict:
+    """缓存概览（给 /api/state 用，避免每次轮询都读全部字幕）。"""
+    n = 0
+    total = 0
+    newest = 0.0
+    if SUBTITLE_CACHE_DIR.exists():
+        for f in SUBTITLE_CACHE_DIR.glob("*.json"):
+            try:
+                st = f.stat()
+            except Exception:
+                continue
+            n += 1
+            total += st.st_size
+            newest = max(newest, st.st_mtime)
+    return {"count": n, "size_kb": round(total / 1024, 1),
+            "newest": newest, "dir": str(SUBTITLE_CACHE_DIR)}
+
+
+def subtitle_cache_list() -> dict:
+    items = []
+    if SUBTITLE_CACHE_DIR.exists():
+        for f in sorted(SUBTITLE_CACHE_DIR.glob("*.json"),
+                        key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            v = d.get("video") or {}
+            items.append({
+                "key": f.stem,
+                "lang": d.get("lang"),
+                "count": d.get("count", 0),
+                "created_at": d.get("created_at"),
+                "size_kb": round(f.stat().st_size / 1024, 1),
+                "video_name": Path(str(v.get("path", ""))).name,
+                "video_path": v.get("path", ""),
+            })
+    return {"ok": True, "dir": str(SUBTITLE_CACHE_DIR), "items": items}
 
 
 # ---------------------------------------------------------------- 版本
@@ -493,6 +651,7 @@ def state_payload() -> dict:
             "logs": dlna_logs,
         },
         "subtitle": sub_state(),
+        "subtitleCache": subtitle_cache_summary(),
         "sync": SYNC.public(),
         "gpu": gpu_info(),
         "settings": s,
@@ -559,6 +718,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(glossary_payload())
             elif path == "/api/sync":
                 self._json({"ok": True, "sync": SYNC.public()})
+            elif path == "/api/subtitle/cache":
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                vp = (q.get("video") or [""])[0]
+                lg = (q.get("lang") or ["ja"])[0]
+                if not vp:
+                    self._json({"ok": False, "error": "缺少 video 参数"}, 400)
+                else:
+                    self._json(subtitle_cache_get(vp, lg))
+            elif path == "/api/subtitle/cache/list":
+                self._json(subtitle_cache_list())
             elif path == "/api/subtitle/config":
                 self._json(subtitle_config())
             elif path in ("/", "/index.html"):
@@ -606,6 +775,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(SYNC.sync((body.get("kind") or "").strip()))
             elif path == "/api/sync/settings":
                 self._json({"ok": True, "settings": save_settings(body)})
+            elif path == "/api/subtitle/cache/save":
+                self._json(subtitle_cache_save((body.get("video") or "").strip(),
+                                               (body.get("lang") or "ja").strip(),
+                                               body.get("segments") or [],
+                                               body.get("meta")))
+            elif path == "/api/subtitle/cache/clear":
+                key = (body.get("key") or "").strip()
+                try:
+                    if key:
+                        f = SUBTITLE_CACHE_DIR / f"{key}.json"
+                        if f.exists():
+                            f.unlink()
+                    else:
+                        for f in SUBTITLE_CACHE_DIR.glob("*.json"):
+                            f.unlink()
+                except Exception as e:
+                    self._json({"ok": False, "error": str(e)})
+                    return
+                self._json({"ok": True})
             elif path == "/api/quit":
                 self._json({"ok": True})
                 request_quit()
