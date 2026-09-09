@@ -33,15 +33,22 @@ if (-not (Test-Path $exe)) { throw "没有产出 EXE：$exe" }
 
 Write-Host "[2/4] 组装 dist-app…" -ForegroundColor Cyan
 $out = Join-Path $root 'dist-app'
-if (Test-Path $out) { Remove-Item $out -Recurse -Force }
-New-Item -ItemType Directory -Path $out | Out-Null
-Copy-Item $exe $out
-Copy-Item (Join-Path $root 'ui') (Join-Path $out 'ui') -Recurse
-Copy-Item (Join-Path $root 'vendor') (Join-Path $out 'vendor') -Recurse
-Copy-Item (Join-Path $root 'tools') (Join-Path $out 'tools') -Recurse
-Copy-Item (Join-Path $root 'version.json') $out
-Copy-Item (Join-Path $root 'start.bat') $out
-Copy-Item (Join-Path $root 'README.md') $out
+if (Test-Path $out) {
+    try {
+        Remove-Item $out -Recurse -Force -ErrorAction Stop
+    } catch {
+        # 目录可能被资源管理器/杀软/上次运行的进程占用，删不掉就原地覆盖
+        Write-Host "  dist-app 无法删除（被占用），改为覆盖写入" -ForegroundColor Yellow
+    }
+}
+New-Item -ItemType Directory -Path $out -Force | Out-Null
+Copy-Item $exe $out -Force
+foreach ($d in 'ui', 'vendor', 'tools') {
+    Copy-Item (Join-Path $root $d) (Join-Path $out $d) -Recurse -Force
+}
+foreach ($f in 'version.json', 'start.bat', 'README.md') {
+    Copy-Item (Join-Path $root $f) $out -Force
+}
 
 Write-Host "[3/4] 清理临时目录…" -ForegroundColor Cyan
 Remove-Item (Join-Path $root 'build\work') -Recurse -Force -ErrorAction SilentlyContinue
