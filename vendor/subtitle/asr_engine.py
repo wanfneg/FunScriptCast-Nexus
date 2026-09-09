@@ -62,6 +62,23 @@ class AsrEngine:
         self.tok_max = int(cfg.get("max_new_tokens_max", 256))
         kwargs = dict(dtype=self.dtype, device_map=device,
                       max_new_tokens=int(cfg.get("max_new_tokens", self.tok_max)))
+        # 4-bit 量化（bitsandbytes）：1.7B 从 5.53GB 降到 3.15GB，速度还更快。
+        # 注意 compute_dtype 必须 fp16——音频塔 conv 权重会被转成 fp16，
+        # 用 bf16 会在 F.conv2d 处报 dtype 不匹配。
+        q = str(cfg.get("quantization", "") or "").lower()
+        if q in ("4bit", "int4", "nf4"):
+            try:
+                from transformers import BitsAndBytesConfig
+                kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type=str(cfg.get("bnb_quant_type", "nf4")),
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=bool(cfg.get("bnb_double_quant", True)),
+                )
+                kwargs["device_map"] = {"": 0}   # 量化加载需要显式设备映射
+                kwargs.pop("dtype", None)        # 量化时不能再传 dtype
+            except Exception as e:
+                print(f"[asr] 4-bit 量化不可用，回退 bf16: {e}")
         aligner = cfg.get("aligner")
         self.use_aligner = bool(aligner)
         if self.use_aligner:
