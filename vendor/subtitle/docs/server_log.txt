@@ -1,0 +1,687 @@
+INFO:     Started server process [30484]
+INFO:     Waiting for application startup.
+The following generation flags are not valid and may be ignored: ['temperature']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8756 (Press CTRL+C to quit)
+[run] http://0.0.0.0:8756  （局域网内 Quest 用 PC 的 IP 访问）
+[glossary] ja: 加载 110 条 ← E:\Development\Subtitle Server\glossary_ja_zh.json
+[glossary] en: 加载 81 条 ← E:\Development\Subtitle Server\glossary_en_zh.json
+[server] ASR 就绪（加载 7.0s），翻译后端=ollama，术语表 ja=110 en=81
+INFO:     127.0.0.1:49871 - "GET /health HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=29487ms bytes=800000 skip=False segs=5 asr=4897.0ms mt=1006.4ms total=5904.0ms
+             在平成时代，色情夜店诞生了，摸乳店流 | 在全国逐渐流行起来 | 在色情夜店工作的女性中，大多数都是之
+INFO:     127.0.0.1:49872 - "POST /transcribe?lang=ja&video_start_ms=29487&keep_from_ms=0&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=52486ms bytes=800000 skip=False segs=2 asr=4133.9ms mt=526.8ms total=4661.2ms
+             最近才女高中生时期的辣妹们合法的色情 | 那其中，超级宽松的那家店总是排很长的
+INFO:     127.0.0.1:49911 - "POST /transcribe?lang=ja&video_start_ms=52486&keep_from_ms=0&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 7 段
+[transcribe] lang=ja start=75487ms bytes=314406 skip=False segs=0 asr=22327.5ms mt=0.0ms total=22328.0ms
+INFO:     127.0.0.1:49927 - "POST /transcribe?lang=ja&video_start_ms=75487&keep_from_ms=0&translate=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53102 - "GET / HTTP/1.1" 404 Not Found
+INFO:     192.168.2.2:53147 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.2.2:53147 - "GET /docs HTTP/1.1" 200 OK
+INFO:     192.168.2.2:53147 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     192.168.2.2:50472 - "GET /health HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+INFO:     192.168.2.2:61171 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.2.2:61191 - "GET /health HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=27092ms bytes=800000 skip=False segs=6 asr=4634.5ms mt=4713.5ms total=9348.5ms
+             然后在平成时代 | 色情夜店诞生了摸乳店诞生了 | 90年代后期作为无心的抚摸酒吧
+INFO:     192.168.2.129:58690 - "POST /transcribe?lang=ja&video_start_ms=27092&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=50092ms bytes=800000 skip=False segs=3 asr=3913.5ms mt=563.7ms total=4477.6ms
+             用可爱的妆容加上泡泡袜 | 最近还只是JK的辣妹们合法性的色情夜 | 那其中，超级宽松的那家店总是排很长的
+INFO:     192.168.2.129:37778 - "POST /transcribe?lang=ja&video_start_ms=50092&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=27014ms bytes=800000 skip=False segs=7 asr=4399.3ms mt=3206.1ms total=7605.7ms
+             然后在平成时代 | 色情夜店诞生了 | 摸乳店诞生了
+INFO:     192.168.2.129:41594 - "POST /transcribe?lang=ja&video_start_ms=27014&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=50014ms bytes=800000 skip=False segs=3 asr=3963.4ms mt=555.4ms total=4519.2ms
+             用可爱的妆容加上泡泡袜 | 最近还只是女高中生的辣妹们合法的色情 | 那其中，超级宽松的那家店总是排很长的
+INFO:     192.168.2.129:52334 - "POST /transcribe?lang=ja&video_start_ms=50014&translate=true HTTP/1.1" 200 OK
+INFO:     192.168.2.2:50628 - "GET /health HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=26871ms bytes=800000 skip=False segs=6 asr=3980.5ms mt=4651.1ms total=8632.2ms
+             そして平成時代啊 | 色情夜店诞生了摸乳店爆发了 | 90年代后期作为无心的抚摸酒吧
+INFO:     192.168.2.129:39590 - "POST /transcribe?lang=ja&video_start_ms=26871&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=49871ms bytes=800000 skip=False segs=3 asr=4402.3ms mt=672.6ms total=5075.5ms
+             温柔的女高中生辣妹妆，穿上泡泡袜，最 | 色情夜店火爆之后，随之而来的是人满为 | 那其中，超级宽松的那家店总是排长队。
+INFO:     192.168.2.129:35120 - "POST /transcribe?lang=ja&video_start_ms=49871&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=26392ms bytes=800000 skip=False segs=6 asr=4798.0ms mt=6409.7ms total=11208.2ms
+             そして平成時代啊 | 色情夜店诞生了摸乳店爆发了 | 90年代后期作为无心的抚摸酒吧
+INFO:     192.168.2.129:43388 - "POST /transcribe?lang=ja&video_start_ms=26392&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=49392ms bytes=800000 skip=False segs=3 asr=4848.6ms mt=624.0ms total=5473.3ms
+             一个有点亲切的角色 | 最近才女高中生时期的辣妹们合法性的色 | 其中，超级宽松的那家店总是排长队。
+INFO:     192.168.2.129:46180 - "POST /transcribe?lang=ja&video_start_ms=49392&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=0ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=61.8ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=0&keep_from_ms=500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=2000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=69.5ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=2000&keep_from_ms=2500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=4000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=69.3ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=4000&keep_from_ms=4500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=6000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=61.5ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=6000&keep_from_ms=6500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=8000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=64.0ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=8000&keep_from_ms=8500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=10000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=68.6ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=10000&keep_from_ms=10500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=12000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=62.5ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=12000&keep_from_ms=12500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=14000ms bytes=96000 skip=False segs=1 asr=1470.1ms mt=3804.7ms total=5275.4ms
+             我是Corey
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=14000&keep_from_ms=14500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=16000ms bytes=96000 skip=False segs=1 asr=1521.6ms mt=58.6ms total=1580.7ms
+             哦，我
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=16000&keep_from_ms=16500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=18000ms bytes=96000 skip=False segs=0 asr=1369.7ms mt=0.0ms total=1370.1ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=18000&keep_from_ms=18500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=20000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=73.9ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=20000&keep_from_ms=20500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=22000ms bytes=96000 skip=False segs=1 asr=1387.1ms mt=39.9ms total=1427.4ms
+             哦
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=22000&keep_from_ms=22500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=24000ms bytes=96000 skip=False segs=1 asr=1099.9ms mt=127.9ms total=1228.3ms
+             你的眼泪
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=24000&keep_from_ms=24500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=26000ms bytes=96000 skip=False segs=0 asr=837.6ms mt=0.0ms total=838.0ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=26000&keep_from_ms=26500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=28000ms bytes=96000 skip=False segs=1 asr=1572.3ms mt=172.2ms total=1745.3ms
+             这 gonna 是很刺激的
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=28000&keep_from_ms=28500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=30000ms bytes=96000 skip=False segs=0 asr=1237.6ms mt=0.0ms total=1238.3ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=30000&keep_from_ms=30500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=32000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=76.3ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=32000&keep_from_ms=32500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=34000ms bytes=96000 skip=False segs=0 asr=1036.8ms mt=0.0ms total=1037.2ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=34000&keep_from_ms=34500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=36000ms bytes=96000 skip=False segs=0 asr=1628.3ms mt=0.0ms total=1628.8ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=36000&keep_from_ms=36500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=38000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=66.7ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=38000&keep_from_ms=38500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=40000ms bytes=96000 skip=False segs=0 asr=1429.3ms mt=0.0ms total=1430.0ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=40000&keep_from_ms=40500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=42000ms bytes=96000 skip=False segs=0 asr=722.1ms mt=0.0ms total=722.7ms
+INFO:     192.168.2.129:58840 - "POST /transcribe?lang=en&video_start_ms=42000&keep_from_ms=42500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=44000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=70.6ms
+INFO:     192.168.2.129:33370 - "POST /transcribe?lang=en&video_start_ms=44000&keep_from_ms=44500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=46000ms bytes=96000 skip=False segs=1 asr=1172.8ms mt=106.0ms total=1279.4ms
+             你惹到我了
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=46000&keep_from_ms=46500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=48000ms bytes=96000 skip=False segs=1 asr=763.6ms mt=60.2ms total=824.2ms
+             嗯
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=48000&keep_from_ms=48500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=50000ms bytes=96000 skip=False segs=0 asr=1055.2ms mt=0.0ms total=1055.6ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=50000&keep_from_ms=50500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=52000ms bytes=96000 skip=False segs=1 asr=2657.0ms mt=181.0ms total=2838.6ms
+             你看到我要看的了吗？
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=52000&keep_from_ms=52500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=54000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=74.1ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=54000&keep_from_ms=54500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=56000ms bytes=96000 skip=False segs=0 asr=1874.9ms mt=0.0ms total=1875.7ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=56000&keep_from_ms=56500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=58000ms bytes=96000 skip=False segs=0 asr=1351.8ms mt=0.0ms total=1352.3ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=58000&keep_from_ms=58500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=60000ms bytes=96000 skip=False segs=0 asr=1746.0ms mt=0.0ms total=1746.6ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=60000&keep_from_ms=60500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=62000ms bytes=96000 skip=False segs=1 asr=730.2ms mt=65.4ms total=796.3ms
+             嗯
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=62000&keep_from_ms=62500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=64000ms bytes=96000 skip=False segs=0 asr=998.8ms mt=0.0ms total=999.2ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=64000&keep_from_ms=64500&translate=true HTTP/1.1" 200 OK
+INFO:     192.168.2.2:65478 - "GET /health HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=66000ms bytes=96000 skip=False segs=0 asr=972.4ms mt=0.0ms total=973.0ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=66000&keep_from_ms=66500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=68000ms bytes=96000 skip=False segs=0 asr=1305.5ms mt=0.0ms total=1306.0ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=68000&keep_from_ms=68500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=70000ms bytes=96000 skip=False segs=0 asr=1474.6ms mt=0.0ms total=1475.0ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=70000&keep_from_ms=70500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=72000ms bytes=96000 skip=False segs=0 asr=1675.8ms mt=0.0ms total=1676.3ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=72000&keep_from_ms=72500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=74000ms bytes=96000 skip=False segs=0 asr=1033.3ms mt=0.0ms total=1033.8ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=74000&keep_from_ms=74500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=76000ms bytes=96000 skip=False segs=0 asr=985.9ms mt=0.0ms total=986.2ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=76000&keep_from_ms=76500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=78000ms bytes=96000 skip=False segs=0 asr=1070.7ms mt=0.0ms total=1071.2ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=78000&keep_from_ms=78500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=80000ms bytes=96000 skip=False segs=0 asr=1037.0ms mt=0.0ms total=1037.5ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=80000&keep_from_ms=80500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=82000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=56.0ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=82000&keep_from_ms=82500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=84000ms bytes=96000 skip=False segs=0 asr=856.2ms mt=0.0ms total=856.8ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=84000&keep_from_ms=84500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=86000ms bytes=96000 skip=False segs=0 asr=975.1ms mt=0.0ms total=975.6ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=86000&keep_from_ms=86500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=88000ms bytes=96000 skip=False segs=1 asr=76039.2ms mt=392.9ms total=76432.6ms
+             嗯哼
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=88000&keep_from_ms=88500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=94000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=70.0ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=94000&keep_from_ms=94500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=96000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=76.2ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=96000&keep_from_ms=96500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=98000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=72.6ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=98000&keep_from_ms=98500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=100000ms bytes=96000 skip=False segs=1 asr=1413.2ms mt=82.0ms total=1495.6ms
+             只有想要
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=100000&keep_from_ms=100500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=102000ms bytes=96000 skip=False segs=0 asr=1227.5ms mt=0.0ms total=1227.9ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=102000&keep_from_ms=102500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=104000ms bytes=96000 skip=False segs=1 asr=1604.2ms mt=206.3ms total=1810.9ms
+             你连每一平方英寸都想好了。
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=104000&keep_from_ms=104500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=106000ms bytes=96000 skip=False segs=0 asr=1102.8ms mt=0.0ms total=1103.4ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=106000&keep_from_ms=106500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=108000ms bytes=96000 skip=False segs=0 asr=2080.0ms mt=0.0ms total=2080.8ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=108000&keep_from_ms=108500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=110000ms bytes=96000 skip=False segs=1 asr=1098.4ms mt=112.2ms total=1211.4ms
+             嗯 哦
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=110000&keep_from_ms=110500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=112000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=73.3ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=112000&keep_from_ms=112500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=114000ms bytes=96000 skip=False segs=0 asr=1710.1ms mt=0.0ms total=1710.7ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=114000&keep_from_ms=114500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=116000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=83.2ms
+INFO:     192.168.2.129:41164 - "POST /transcribe?lang=en&video_start_ms=116000&keep_from_ms=116500&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=en start=118000ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=93.2ms
+INFO:     192.168.2.129:39078 - "POST /transcribe?lang=en&video_start_ms=118000&keep_from_ms=118500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=en start=120000ms bytes=96000 skip=False segs=0 asr=1994.8ms mt=0.0ms total=1995.3ms
+INFO:     192.168.2.129:39078 - "POST /transcribe?lang=en&video_start_ms=120000&keep_from_ms=120500&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=3202ms bytes=96000 skip=False segs=0 asr=2252.5ms mt=0.0ms total=2253.0ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=3202&keep_from_ms=3702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=5202ms bytes=96000 skip=False segs=0 asr=2270.3ms mt=0.0ms total=2270.7ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=5202&keep_from_ms=5702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=7202ms bytes=96000 skip=False segs=0 asr=2234.5ms mt=0.0ms total=2235.0ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=7202&keep_from_ms=7702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=9202ms bytes=96000 skip=False segs=0 asr=3412.3ms mt=0.0ms total=3414.2ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=9202&keep_from_ms=9702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=11202ms bytes=96000 skip=False segs=0 asr=5654.5ms mt=0.0ms total=5655.3ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=11202&keep_from_ms=11702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 3 段
+[transcribe] lang=ja start=13202ms bytes=96000 skip=False segs=0 asr=63689.5ms mt=0.0ms total=63690.2ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=13202&keep_from_ms=13702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=41202ms bytes=96000 skip=False segs=0 asr=2062.0ms mt=0.0ms total=2062.4ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=41202&keep_from_ms=41702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=43202ms bytes=96000 skip=False segs=0 asr=2846.5ms mt=0.0ms total=2847.0ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=43202&keep_from_ms=43702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=45202ms bytes=96000 skip=False segs=0 asr=2616.5ms mt=0.0ms total=2617.1ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=45202&keep_from_ms=45702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=47202ms bytes=96000 skip=False segs=0 asr=2232.4ms mt=0.0ms total=2232.9ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=47202&keep_from_ms=47702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=49202ms bytes=96000 skip=False segs=0 asr=924.5ms mt=0.0ms total=924.9ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=49202&keep_from_ms=49702&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=ja start=51202ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=76.3ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=51202&keep_from_ms=51702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 2 段
+[transcribe] lang=ja start=53202ms bytes=96000 skip=False segs=0 asr=54113.9ms mt=0.0ms total=54114.3ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=53202&keep_from_ms=53702&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=ja start=55202ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=78.4ms
+INFO:     192.168.2.129:54298 - "POST /transcribe?lang=ja&video_start_ms=55202&keep_from_ms=55702&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=1665ms bytes=96000 skip=False segs=1 asr=1412.8ms mt=3998.1ms total=5411.4ms
+             接下来是平成时代。
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=1665&keep_from_ms=2165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=3665ms bytes=96000 skip=False segs=1 asr=1630.1ms mt=82.0ms total=1712.5ms
+             平成刚刚就要到来的
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=3665&keep_from_ms=4165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=5665ms bytes=96000 skip=False segs=1 asr=1531.4ms mt=124.7ms total=1656.4ms
+             由于露毛解禁的潮流
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=5665&keep_from_ms=6165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=7665ms bytes=96000 skip=False segs=0 asr=2332.4ms mt=0.0ms total=2332.8ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=7665&keep_from_ms=8165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=9665ms bytes=96000 skip=False segs=0 asr=1475.1ms mt=0.0ms total=1475.6ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=9665&keep_from_ms=10165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=11665ms bytes=96000 skip=False segs=0 asr=2476.1ms mt=0.0ms total=2476.8ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=11665&keep_from_ms=12165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=13665ms bytes=96000 skip=False segs=0 asr=2214.3ms mt=0.0ms total=2215.0ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=13665&keep_from_ms=14165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=15665ms bytes=96000 skip=False segs=0 asr=2494.1ms mt=0.0ms total=2494.6ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=15665&keep_from_ms=16165&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=ja start=17665ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=71.7ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=17665&keep_from_ms=18165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=19665ms bytes=96000 skip=False segs=0 asr=1481.2ms mt=0.0ms total=1481.7ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=19665&keep_from_ms=20165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=21665ms bytes=96000 skip=False segs=0 asr=1579.8ms mt=0.0ms total=1580.5ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=21665&keep_from_ms=22165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=23665ms bytes=96000 skip=False segs=0 asr=2233.0ms mt=0.0ms total=2233.5ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=23665&keep_from_ms=24165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 3 段
+[transcribe] lang=ja start=25665ms bytes=96000 skip=False segs=0 asr=52208.7ms mt=0.0ms total=52209.3ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=25665&keep_from_ms=26165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=39665ms bytes=96000 skip=False segs=0 asr=2909.3ms mt=0.0ms total=2909.9ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=39665&keep_from_ms=40165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 5 段
+[transcribe] lang=ja start=41665ms bytes=96000 skip=False segs=0 asr=69906.3ms mt=0.0ms total=69906.9ms
+INFO:     192.168.2.129:42770 - "POST /transcribe?lang=ja&video_start_ms=41665&keep_from_ms=42165&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=10676ms bytes=96000 skip=False segs=0 asr=2326.0ms mt=0.0ms total=2326.5ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=10676&keep_from_ms=11176&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=12676ms bytes=96000 skip=False segs=0 asr=1488.1ms mt=0.0ms total=1488.5ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=12676&keep_from_ms=13176&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=14676ms bytes=96000 skip=False segs=0 asr=2328.7ms mt=0.0ms total=2329.2ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=14676&keep_from_ms=15176&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=16676ms bytes=96000 skip=False segs=0 asr=1865.8ms mt=0.0ms total=1866.2ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=16676&keep_from_ms=17176&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=18676ms bytes=96000 skip=False segs=0 asr=2110.2ms mt=0.0ms total=2110.6ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=18676&keep_from_ms=19176&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=ja start=20676ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=67.1ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=20676&keep_from_ms=21176&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=22676ms bytes=96000 skip=False segs=0 asr=1384.7ms mt=0.0ms total=1385.2ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=22676&keep_from_ms=23176&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=24676ms bytes=96000 skip=False segs=0 asr=1387.5ms mt=0.0ms total=1388.0ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=24676&keep_from_ms=25176&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=26676ms bytes=96000 skip=False segs=0 asr=1809.5ms mt=0.0ms total=1810.0ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=26676&keep_from_ms=27176&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 1 段
+[transcribe] lang=ja start=28676ms bytes=96000 skip=False segs=0 asr=40490.7ms mt=0.0ms total=40491.1ms
+INFO:     192.168.2.129:50176 - "POST /transcribe?lang=ja&video_start_ms=28676&keep_from_ms=29176&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=12821ms bytes=800000 skip=False segs=6 asr=10232.3ms mt=4897.9ms total=15130.8ms
+             当时流行的小辣妹们以全裸登场 | 不教而露其胸与发，结果被称作风尘女子 | 然后
+INFO:     192.168.2.129:58632 - "POST /transcribe?lang=ja&video_start_ms=12821&keep_from_ms=13821&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=35821ms bytes=800000 skip=False segs=5 asr=12444.3ms mt=604.3ms total=13049.0ms
+             全国都蔓延了 | 色情夜店工作的女性大都是之前的辣妹们 | 超赞等流行音乐的
+INFO:     192.168.2.129:33564 - "POST /transcribe?lang=ja&video_start_ms=35821&keep_from_ms=36821&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=1736ms bytes=96000 skip=False segs=1 asr=1357.6ms mt=94.2ms total=1452.3ms
+             接下来是平成时代。
+INFO:     192.168.2.129:41566 - "POST /transcribe?lang=ja&video_start_ms=1736&keep_from_ms=2236&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=3736ms bytes=96000 skip=False segs=1 asr=1374.4ms mt=112.7ms total=1487.6ms
+             平成刚刚开始不久就要到来
+INFO:     192.168.2.129:41566 - "POST /transcribe?lang=ja&video_start_ms=3736&keep_from_ms=4236&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=5736ms bytes=96000 skip=False segs=1 asr=1368.9ms mt=170.0ms total=1539.7ms
+             由于露毛解禁的潮流
+INFO:     192.168.2.129:41566 - "POST /transcribe?lang=ja&video_start_ms=5736&keep_from_ms=6236&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=11587ms bytes=96000 skip=False segs=0 asr=1666.1ms mt=0.0ms total=1666.6ms
+INFO:     192.168.2.129:43872 - "POST /transcribe?lang=ja&video_start_ms=11587&keep_from_ms=12087&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=13587ms bytes=96000 skip=False segs=1 asr=1869.8ms mt=153.0ms total=2023.2ms
+             当时风靡的辣妹们
+INFO:     192.168.2.129:43872 - "POST /transcribe?lang=ja&video_start_ms=13587&keep_from_ms=14087&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=15587ms bytes=96000 skip=False segs=1 asr=2012.3ms mt=104.8ms total=2117.5ms
+             好好努力嘛
+INFO:     192.168.2.129:43872 - "POST /transcribe?lang=ja&video_start_ms=15587&keep_from_ms=16087&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=17587ms bytes=96000 skip=False segs=0 asr=1654.6ms mt=0.0ms total=1655.4ms
+INFO:     192.168.2.129:43872 - "POST /transcribe?lang=ja&video_start_ms=17587&keep_from_ms=18087&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=19587ms bytes=96000 skip=False segs=0 asr=1814.6ms mt=0.0ms total=1815.4ms
+INFO:     192.168.2.129:43872 - "POST /transcribe?lang=ja&video_start_ms=19587&keep_from_ms=20087&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=21587ms bytes=96000 skip=False segs=1 asr=677.5ms mt=63.0ms total=741.2ms
+             然后
+INFO:     192.168.2.129:43872 - "POST /transcribe?lang=ja&video_start_ms=21587&keep_from_ms=22087&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=23587ms bytes=96000 skip=False segs=1 asr=1344.4ms mt=103.8ms total=1448.6ms
+             平成时代的sex
+INFO:     192.168.2.129:43872 - "POST /transcribe?lang=ja&video_start_ms=23587&keep_from_ms=24087&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=25587ms bytes=96000 skip=False segs=0 asr=1736.9ms mt=0.0ms total=1738.0ms
+INFO:     192.168.2.129:43872 - "POST /transcribe?lang=ja&video_start_ms=25587&keep_from_ms=26087&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 4 段
+[transcribe] lang=ja start=27587ms bytes=96000 skip=False segs=0 asr=46251.9ms mt=0.0ms total=46252.4ms
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=2588ms bytes=96000 skip=False segs=0 asr=1405.0ms mt=0.0ms total=1405.4ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=2588&keep_from_ms=3088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=4588ms bytes=96000 skip=False segs=0 asr=1663.1ms mt=0.0ms total=1663.5ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=4588&keep_from_ms=5088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=6588ms bytes=96000 skip=False segs=0 asr=1852.9ms mt=0.0ms total=1853.5ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=6588&keep_from_ms=7088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=8588ms bytes=96000 skip=False segs=0 asr=1624.3ms mt=0.0ms total=1624.8ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=8588&keep_from_ms=9088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=10588ms bytes=96000 skip=False segs=1 asr=2105.3ms mt=106.4ms total=2212.3ms
+             当时流行的小辣妹们
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=10588&keep_from_ms=11088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=12588ms bytes=96000 skip=False segs=1 asr=1967.9ms mt=102.7ms total=2071.0ms
+             好好努力嘛
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=12588&keep_from_ms=13088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=14588ms bytes=96000 skip=False segs=0 asr=1779.0ms mt=0.0ms total=1779.4ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=14588&keep_from_ms=15088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=16588ms bytes=96000 skip=False segs=0 asr=2216.0ms mt=0.0ms total=2231.5ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=16588&keep_from_ms=17088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=18588ms bytes=96000 skip=False segs=1 asr=641.9ms mt=73.3ms total=716.0ms
+             然后
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=18588&keep_from_ms=19088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=20588ms bytes=96000 skip=False segs=1 asr=1541.6ms mt=70.8ms total=1614.6ms
+             平成时代以来
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=20588&keep_from_ms=21088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=22588ms bytes=96000 skip=False segs=0 asr=1826.9ms mt=0.0ms total=1827.6ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=22588&keep_from_ms=23088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=24588ms bytes=96000 skip=False segs=0 asr=2572.8ms mt=0.0ms total=2573.3ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=24588&keep_from_ms=25088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=26588ms bytes=96000 skip=False segs=0 asr=1483.3ms mt=0.0ms total=1483.8ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=26588&keep_from_ms=27088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=28588ms bytes=96000 skip=False segs=0 asr=1501.2ms mt=0.0ms total=1501.7ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=28588&keep_from_ms=29088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=30588ms bytes=96000 skip=False segs=0 asr=2331.3ms mt=0.0ms total=2331.8ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=30588&keep_from_ms=31088&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=2328ms bytes=96000 skip=False segs=0 asr=2017.0ms mt=0.0ms total=2035.2ms
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=2328&keep_from_ms=2828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=4328ms bytes=96000 skip=False segs=0 asr=1963.1ms mt=0.0ms total=1963.6ms
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=4328&keep_from_ms=4828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=6328ms bytes=96000 skip=False segs=0 asr=2909.5ms mt=0.0ms total=2910.1ms
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=6328&keep_from_ms=6828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=8328ms bytes=96000 skip=False segs=0 asr=3215.8ms mt=0.0ms total=3216.2ms
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=8328&keep_from_ms=8828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 8 段
+[transcribe] lang=ja start=32588ms bytes=96000 skip=False segs=0 asr=59851.6ms mt=0.0ms total=59852.3ms
+INFO:     192.168.2.129:58818 - "POST /transcribe?lang=ja&video_start_ms=32588&keep_from_ms=33088&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=ja start=10328ms bytes=96000 skip=False segs=1 asr=3054.1ms mt=595.4ms total=3650.1ms
+             当时流行起来的小辣妹们
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=10328&keep_from_ms=10828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=12328ms bytes=96000 skip=False segs=1 asr=2641.8ms mt=331.5ms total=2974.0ms
+             抱歉，您提供的文本似乎有误或者不完整
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=12328&keep_from_ms=12828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=14328ms bytes=96000 skip=False segs=0 asr=4364.6ms mt=0.0ms total=4365.0ms
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=14328&keep_from_ms=14828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=16328ms bytes=96000 skip=False segs=0 asr=3402.3ms mt=0.0ms total=3404.3ms
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=16328&keep_from_ms=16828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=18328ms bytes=96000 skip=False segs=1 asr=1358.1ms mt=60.4ms total=1419.1ms
+             然后
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=18328&keep_from_ms=18828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=20328ms bytes=96000 skip=False segs=1 asr=1497.8ms mt=93.4ms total=1591.9ms
+             平成时代以来
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=20328&keep_from_ms=20828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=22328ms bytes=96000 skip=False segs=0 asr=1522.7ms mt=0.0ms total=1523.4ms
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=22328&keep_from_ms=22828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=24328ms bytes=96000 skip=False segs=0 asr=3249.4ms mt=0.0ms total=3250.1ms
+INFO:     192.168.2.129:59938 - "POST /transcribe?lang=ja&video_start_ms=24328&keep_from_ms=24828&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 8 段
+[transcribe] lang=ja start=26328ms bytes=96000 skip=False segs=0 asr=66900.6ms mt=0.0ms total=66901.4ms
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=1565ms bytes=96000 skip=False segs=1 asr=1510.6ms mt=241.4ms total=1752.5ms
+             接下来是平成时代。
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=1565&keep_from_ms=2065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=3565ms bytes=96000 skip=False segs=1 asr=1515.3ms mt=120.4ms total=1636.3ms
+             平成刚刚开始不久
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=3565&keep_from_ms=4065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=5565ms bytes=96000 skip=False segs=1 asr=1478.8ms mt=149.4ms total=1628.8ms
+             由于露毛解禁的潮流
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=5565&keep_from_ms=6065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=7565ms bytes=96000 skip=False segs=0 asr=2143.6ms mt=0.0ms total=2144.0ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=7565&keep_from_ms=8065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 3 段
+[transcribe] lang=ja start=9565ms bytes=96000 skip=False segs=0 asr=52734.5ms mt=0.0ms total=52735.0ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=9565&keep_from_ms=10065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=29565ms bytes=96000 skip=False segs=1 asr=1995.4ms mt=168.8ms total=2164.5ms
+             在色情夜店工作的女性中，大部分都是
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=29565&keep_from_ms=30065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=31565ms bytes=96000 skip=False segs=1 asr=1800.5ms mt=106.9ms total=1907.8ms
+             之前的小辣妹们
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=31565&keep_from_ms=32065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=33565ms bytes=96000 skip=False segs=0 asr=1965.3ms mt=0.0ms total=1965.8ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=33565&keep_from_ms=34065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 8 段
+[transcribe] lang=ja start=35565ms bytes=96000 skip=False segs=0 asr=59300.6ms mt=0.0ms total=59301.2ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=35565&keep_from_ms=36065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=39565ms bytes=96000 skip=False segs=0 asr=1396.1ms mt=0.0ms total=1396.6ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=39565&keep_from_ms=40065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=41565ms bytes=96000 skip=False segs=0 asr=2117.7ms mt=0.0ms total=2118.1ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=41565&keep_from_ms=42065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=43565ms bytes=96000 skip=False segs=0 asr=1443.5ms mt=0.0ms total=1443.9ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=43565&keep_from_ms=44065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=45565ms bytes=96000 skip=False segs=0 asr=1916.5ms mt=0.0ms total=1916.8ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=45565&keep_from_ms=46065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=47565ms bytes=96000 skip=False segs=0 asr=1308.2ms mt=0.0ms total=1308.7ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=47565&keep_from_ms=48065&translate=true HTTP/1.1" 200 OK
+[transcribe] lang=ja start=49565ms bytes=96000 skip=True segs=0 asr=0.0ms mt=0.0ms total=70.5ms
+INFO:     192.168.2.129:53004 - "POST /transcribe?lang=ja&video_start_ms=49565&keep_from_ms=50065&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 1 段
+[transcribe] lang=ja start=51565ms bytes=96000 skip=False segs=0 asr=67866.9ms mt=0.0ms total=67867.3ms
+INFO:     192.168.2.2:64095 - "GET /health HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=1764ms bytes=96000 skip=False segs=1 asr=1520.8ms mt=215.2ms total=1736.5ms
+             接下来是平成时代。
+INFO:     192.168.2.129:54982 - "POST /transcribe?lang=ja&video_start_ms=1764&keep_from_ms=2264&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=3764ms bytes=96000 skip=False segs=1 asr=1470.6ms mt=158.3ms total=1629.3ms
+             平成刚一开头就来了
+INFO:     192.168.2.129:54982 - "POST /transcribe?lang=ja&video_start_ms=3764&keep_from_ms=4264&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=5764ms bytes=96000 skip=False segs=0 asr=1376.3ms mt=0.0ms total=1376.8ms
+INFO:     192.168.2.129:54982 - "POST /transcribe?lang=ja&video_start_ms=5764&keep_from_ms=6264&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=7764ms bytes=96000 skip=False segs=0 asr=2252.8ms mt=0.0ms total=2253.2ms
+INFO:     192.168.2.129:54982 - "POST /transcribe?lang=ja&video_start_ms=7764&keep_from_ms=8264&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=9764ms bytes=96000 skip=False segs=0 asr=1510.9ms mt=0.0ms total=1511.4ms
+INFO:     192.168.2.129:54982 - "POST /transcribe?lang=ja&video_start_ms=9764&keep_from_ms=10264&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 5 段
+[transcribe] lang=ja start=11764ms bytes=96000 skip=False segs=0 asr=51353.6ms mt=0.0ms total=51354.2ms
+INFO:     192.168.2.129:54982 - "POST /transcribe?lang=ja&video_start_ms=11764&keep_from_ms=12264&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=2037ms bytes=96000 skip=False segs=0 asr=1502.7ms mt=0.0ms total=1503.3ms
+INFO:     192.168.2.129:58488 - "POST /transcribe?lang=ja&video_start_ms=2037&keep_from_ms=2537&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=4037ms bytes=96000 skip=False segs=1 asr=1406.7ms mt=833.4ms total=2240.7ms
+             刚进去就来了
+INFO:     192.168.2.129:58488 - "POST /transcribe?lang=ja&video_start_ms=4037&keep_from_ms=4537&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=6037ms bytes=96000 skip=False segs=0 asr=1959.5ms mt=0.0ms total=1959.9ms
+INFO:     192.168.2.129:58488 - "POST /transcribe?lang=ja&video_start_ms=6037&keep_from_ms=6537&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=8037ms bytes=96000 skip=False segs=0 asr=2071.5ms mt=0.0ms total=2072.0ms
+INFO:     192.168.2.129:58488 - "POST /transcribe?lang=ja&video_start_ms=8037&keep_from_ms=8537&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=10037ms bytes=96000 skip=False segs=1 asr=1833.3ms mt=90.4ms total=1924.4ms
+             当时流行的小辣妹
+INFO:     192.168.2.129:58488 - "POST /transcribe?lang=ja&video_start_ms=10037&keep_from_ms=10537&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=12037ms bytes=96000 skip=False segs=0 asr=1568.8ms mt=0.0ms total=1569.2ms
+INFO:     192.168.2.129:58488 - "POST /transcribe?lang=ja&video_start_ms=12037&keep_from_ms=12537&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=14037ms bytes=96000 skip=False segs=0 asr=2296.5ms mt=0.0ms total=2297.2ms
+INFO:     192.168.2.129:58488 - "POST /transcribe?lang=ja&video_start_ms=14037&keep_from_ms=14537&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 5 段
+[transcribe] lang=ja start=16037ms bytes=96000 skip=False segs=0 asr=52243.0ms mt=0.0ms total=52243.4ms
+INFO:     192.168.2.129:58488 - "POST /transcribe?lang=ja&video_start_ms=16037&keep_from_ms=16537&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=2639ms bytes=96000 skip=False segs=0 asr=1631.5ms mt=0.0ms total=1632.2ms
+INFO:     192.168.2.129:38584 - "POST /transcribe?lang=ja&video_start_ms=2639&keep_from_ms=3139&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=4639ms bytes=96000 skip=False segs=0 asr=1908.3ms mt=0.0ms total=1908.9ms
+INFO:     192.168.2.129:38584 - "POST /transcribe?lang=ja&video_start_ms=4639&keep_from_ms=5139&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=6639ms bytes=96000 skip=False segs=0 asr=2028.5ms mt=0.0ms total=2028.9ms
+INFO:     192.168.2.129:38584 - "POST /transcribe?lang=ja&video_start_ms=6639&keep_from_ms=7139&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=8639ms bytes=96000 skip=False segs=0 asr=2175.6ms mt=0.0ms total=2176.0ms
+INFO:     192.168.2.129:38584 - "POST /transcribe?lang=ja&video_start_ms=8639&keep_from_ms=9139&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=10639ms bytes=96000 skip=False segs=1 asr=2107.1ms mt=4116.2ms total=6223.8ms
+             当时风靡的コギャル们
+INFO:     192.168.2.129:38584 - "POST /transcribe?lang=ja&video_start_ms=10639&keep_from_ms=11139&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=12639ms bytes=96000 skip=False segs=1 asr=2226.1ms mt=61.8ms total=2288.4ms
+             好好努力吧
+INFO:     192.168.2.129:38584 - "POST /transcribe?lang=ja&video_start_ms=12639&keep_from_ms=13139&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=14639ms bytes=96000 skip=False segs=0 asr=1833.8ms mt=0.0ms total=1834.3ms
+INFO:     192.168.2.129:38584 - "POST /transcribe?lang=ja&video_start_ms=14639&keep_from_ms=15139&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[asr] 疑似热词表幻觉，整块丢弃 1 段
+[transcribe] lang=ja start=16639ms bytes=96000 skip=False segs=0 asr=61800.0ms mt=0.0ms total=61800.8ms
+INFO:     192.168.2.129:38584 - "POST /transcribe?lang=ja&video_start_ms=16639&keep_from_ms=17139&translate=true HTTP/1.1" 200 OK
+Setting `pad_token_id` to `eos_token_id`:151645 for open-end generation.
+[transcribe] lang=ja start=11620ms bytes=800000 skip=False segs=5 asr=11786.3ms mt=789.8ms total=12576.6ms
+             当时流行的小辣妹们以全裸登场 | 毫不掩饰地展示着胸部和阴毛，最终被称 | 然后
+INFO:     192.168.2.129:42308 - "POST /transcribe?lang=ja&video_start_ms=11620&keep_from_ms=12620&translate=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54651 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54662 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59165 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58547 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60760 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62181 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53069 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57849 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61298 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57474 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60001 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54801 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53629 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62696 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64293 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.2.2:64299 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65491 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51499 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53376 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56713 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58022 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55915 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58190 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52125 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52552 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56630 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56771 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49837 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60916 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62941 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49672 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63432 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53336 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54165 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64313 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59925 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52712 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61676 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61678 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64028 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58352 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63122 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59530 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62619 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49871 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61208 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58488 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51270 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59216 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65295 - "GET /health HTTP/1.1" 200 OK
