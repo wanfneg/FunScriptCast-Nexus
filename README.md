@@ -51,7 +51,9 @@ FunScriptCast-Nexus\
 │   └── config.json         ASR / VAD / 分段 / 翻译配置
 ├── models\                 8.0 GB：Qwen3-ASR-0.6B + Qwen3-ASR-1.7B + ForcedAligner-0.6B
 ├── .venv\                  5.0 GB：torch(cu128) + transformers + fastapi + pywebview
-└── _ui_check.js            前端集成自查（无头 Chrome + CDP）
+├── version.json            版本号（versionName / versionCode / channel）
+├── tools\make_icon.py      生成托盘 / 窗口图标（icon.ico + png 多尺寸）
+└── tests\                  自动化测试（ui_check.js / test_tray_run.py / test_frameless.py）
 ```
 
 ## 架构
@@ -78,14 +80,27 @@ FunScriptCast-Nexus\
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/state` | 全量状态（DLNA / 字幕 / GPU / 设置 / 事件） |
+| GET | `/api/state` | 全量状态（DLNA / 字幕 / 同步 / GPU / 设置 / 事件） |
 | GET/POST | `/api/settings` | 读写设置 |
 | POST | `/api/dlna/start` `/api/dlna/stop` | 启停 DLNA |
 | POST | `/api/subtitle/start` `/api/subtitle/stop` | 启停字幕子进程 |
 | GET/POST | `/api/subtitle/config` | 读写字幕服务 `config.json` |
 | GET | `/api/glossary` | 读取术语表 |
 | POST | `/api/glossary/save` | 保存术语表并触发热重载 |
+| GET | `/api/sync` | 同步状态（设备连接 / 两个槽位 / 日志） |
+| POST | `/api/sync/devices` | 扫描 adb 设备（含型号） |
+| POST | `/api/sync/connect` `/api/sync/disconnect` | 连接 / 断开设备 |
+| POST | `/api/sync/run` | 开始同步（`kind=script|video`，后台线程执行） |
 | POST | `/api/quit` | 退出应用 |
+
+前端 JS 桥（`window.pywebview.api`）：`win_minimize` / `win_close` / `win_hide` / `pick_folder`。
+
+## 窗口与托盘
+
+- 窗口 **无边框自绘标题栏**（`frameless=True` + `.pywebview-drag-region` 拖动）；
+  `tune_frameless_window()` 用 `WS_THICKFRAME` 找回原生缩放边框并打开 DWM 圆角。
+- 托盘常驻：关闭按钮按设置「最小化到托盘」或直接退出；托盘菜单可显示/退出。
+- 「启动时直接隐藏到托盘」适合开机自启只跑服务的场景。
 
 ## 已验证
 
@@ -96,9 +111,23 @@ FunScriptCast-Nexus\
 | DLNA（vendor） | `running=true`，`http://192.168.2.2:8899`，`description.xml` 200，SOAP Browse 200 |
 | 字幕子进程（vendor） | 启动 → `ready`，模型从 `./models` 加载，`cuda:0` |
 | 翻译后端 | Ollama 可达（5 个模型） |
-| 前端 | 控制台错误 0；溢出 0×0；DOM 1095 节点（预算 <1500） |
-| 窗口 | pywebview + WebView2 创建成功 |
+| 前端 | 控制台错误 0；溢出 0×0；DOM 1198 节点（预算 <1500） |
+| 窗口 | pywebview + WebView2；无原生标题栏 + 可缩放 + 圆角；关闭→隐藏、托盘→恢复 |
+| 设备同步 | 真机 Quest 3（`192.168.2.129:5555`）脚本同步：本地 1 / 设备 2707 / 推送 1 |
 | 显存回收 | 停止字幕服务后 5720 MB → 1736 MB |
+
+## 自动化测试
+
+```powershell
+# 前端渲染 + 数据绑定（需先启动 host_server.py）
+node tests\ui_check.js
+
+# 托盘：关闭到托盘、托盘恢复、/api/quit 真正退出
+.\.venv\Scripts\python.exe tests\test_tray_run.py
+
+# 无边框窗口：样式位 / 最小化 / 关闭到托盘 / 缩放边框
+.\.venv\Scripts\python.exe tests\test_frameless.py
+```
 
 ## 显存说明
 
@@ -109,7 +138,6 @@ FunScriptCast-Nexus\
 
 ## 待办
 
-1. 托盘图标 + 关闭到托盘的实际行为（设置项已落库，逻辑未接）
-2. 同步页（脚本/视频文件夹同步）——`vendor/dlna` 里的 `funscript_sync.py` / `video_sync.py` 尚未接入
-3. 术语表 CSV 导入/导出
-4. 打包单 EXE（PyInstaller，注意 torch 体积）
+1. 术语表 CSV 导入/导出
+2. 打包单 EXE（PyInstaller，注意 torch 体积）
+3. 同步页的进度条（当前是日志 + 结果计数）
