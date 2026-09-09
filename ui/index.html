@@ -403,6 +403,14 @@
             <p>提升专有名词识别与翻译质量 · 保存后自动热重载</p>
           </div>
           <div class="actions">
+            <span class="sub" style="align-self:center">CSV 目标</span>
+            <div class="seg" id="glossSeg" style="width:170px">
+              <span class="seg-thumb" id="glossThumb"></span>
+              <button data-glang-opt="ja" aria-selected="true">日语表</button>
+              <button data-glang-opt="en">英语表</button>
+            </div>
+            <button class="btn ghost" id="glossImport"><svg class="ic"><use href="#i-folder"/></svg>导入</button>
+            <button class="btn ghost" id="glossExport"><svg class="ic"><use href="#i-copy"/></svg>导出</button>
             <button class="btn primary" id="saveGloss">保存术语表</button>
           </div>
         </div>

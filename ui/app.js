@@ -7,9 +7,16 @@
 
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
-  var S = { state: null, settings: {}, glossary: { ja: {}, en: {} }, pollTimer: null, counts: {} };
+  var S = { state: null, settings: {}, glossary: { ja: {}, en: {} }, pollTimer: null, counts: {}, glossLang: "ja" };
 
   function motionOff() { return document.documentElement.getAttribute("data-motion") === "off"; }
+
+  /* pywebview JS 桥是否就绪（浏览器里直接开页面时没有） */
+  function bridgeReady() {
+    if (window.pywebview && window.pywebview.api) return true;
+    toast("仅桌面应用中可用", "浏览器里没有系统文件对话框", "warn");
+    return false;
+  }
 
   /* ---------------------------------------------------------- API */
   function api(path, method, body) {
@@ -531,6 +538,40 @@
       });
     });
 
+    /* 术语表 CSV 导入 / 导出 */
+    initSeg("glossSeg", "glossThumb", function (b) {
+      S.glossLang = b.getAttribute("data-glang-opt");
+    });
+    $("#glossExport").addEventListener("click", function () {
+      if (!bridgeReady()) return;
+      var lang = S.glossLang || "ja";
+      var name = (lang === "ja" ? "glossary_ja_zh" : "glossary_en_zh") + ".csv";
+      window.pywebview.api.pick_file("save", name, ["CSV 文件 (*.csv)", "所有文件 (*.*)"]).then(function (r) {
+        if (!r || !r.ok) return;
+        api("/api/glossary/export", "POST", { lang: lang, path: r.path }).then(function (res) {
+          if (res.ok) toast("已导出 " + res.count + " 条", res.path);
+          else toast("导出失败", res.error || "", "err");
+        });
+      });
+    });
+    $("#glossImport").addEventListener("click", function () {
+      if (!bridgeReady()) return;
+      var lang = S.glossLang || "ja";
+      window.pywebview.api.pick_file("open", "", ["CSV 文件 (*.csv)", "所有文件 (*.*)"]).then(function (r) {
+        if (!r || !r.ok) return;
+        api("/api/glossary/import", "POST", { path: r.path }).then(function (res) {
+          if (!res.ok) { toast("导入失败", res.error || "", "err"); return; }
+          var cur = S.glossary[lang] || {};
+          var before = Object.keys(cur).length;
+          Object.keys(res.terms).forEach(function (k) { cur[k] = res.terms[k]; });
+          S.glossary[lang] = cur;
+          renderGlossary(lang);
+          var added = Object.keys(cur).length - before;
+          toast("已解析 " + res.count + " 条（新增 " + added + "）", "点「保存术语表」写入并热重载", "warn");
+        });
+      });
+    });
+
     /* 设备同步 */
     $("#syncDevices").addEventListener("click", function () { scanDevices(true); });
     $("#syncConnect").addEventListener("click", function () {
@@ -578,7 +619,7 @@
       b.addEventListener("click", function () {
         var inp = document.getElementById(b.getAttribute("data-pick"));
         if (!inp) return;
-        if (!window.pywebview || !window.pywebview.api) { toast("请在桌面应用内使用目录选择", "", "warn"); return; }
+        if (!bridgeReady()) return;
         window.pywebview.api.pick_folder(inp.value || "").then(function (r) {
           if (r && r.ok) {
             inp.value = r.path;

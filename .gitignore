@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.pyc
 
@@ -10,6 +10,12 @@ models/
 *.log
 *.tmp
 _runtime/
+
+# 构建产物
+/dist/
+/dist-app/
+/build/work/
+/build/__pycache__/
 
 # 编辑器
 .vscode/

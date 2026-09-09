@@ -76,6 +76,40 @@ FunScriptCast-Nexus\
 - **单入口**：一个启动脚本、一个窗口；DLNA 与 UI 同进程。
 - **字幕服务独立子进程**：崩溃不拖垮主程序；停止后显存立刻回收——这是解决「ASR + Ollama 抢显存导致 67s 卡顿」的关键。
 
+## 打包成 EXE
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build\build_exe.ps1
+```
+
+产物在 `dist-app\`：
+
+| 内容 | 说明 |
+|---|---|
+| `FunScriptCast-Nexus.exe` | 应用本体，约 17.7 MB（含 pywebview / DLNA 模块） |
+| `ui\` `vendor\` `tools\` | **外置数据**：前端与两套服务源码，改完即生效，不用重打包 |
+| `version.json` | 版本号 |
+
+**为什么不做成「一个文件」**：torch 约 4 GB、模型约 8 GB，塞进 EXE 既慢又没意义。
+字幕服务继续以子进程调用 `.venv`，所以独立运行需要：
+
+```
+dist-app\
+├── FunScriptCast-Nexus.exe
+├── .venv\        ← 从仓库根目录复制（或建目录联接：mklink /J）
+└── models\       ← 同上（8 GB）
+```
+
+不带 `.venv` 也能跑：DLNA、设备同步、术语表都正常，只有「启动字幕服务」会
+直接报 `ModuleNotFoundError: No module named 'uvicorn'` 这类可读错误。
+
+### 构建期踩到的坑（已修）
+
+`build\_pyi_patch.py`：Python 3.10.0 的 `dis._unpack_opargs()` 在遇到不带参数的
+指令时忘了重置 `extended_arg`，导致 `dis.get_instructions()` 在分析 `bottle.py`
+（pywebview 的依赖）时抛 `IndexError`，PyInstaller 直接崩。spec 里在分析前替换掉
+这个函数，不需要动系统 Python。
+
 ## API
 
 | 方法 | 路径 | 说明 |
@@ -87,6 +121,8 @@ FunScriptCast-Nexus\
 | GET/POST | `/api/subtitle/config` | 读写字幕服务 `config.json` |
 | GET | `/api/glossary` | 读取术语表 |
 | POST | `/api/glossary/save` | 保存术语表并触发热重载 |
+| POST | `/api/glossary/export` | 导出为 CSV（UTF-8 BOM，Excel 直开不乱码） |
+| POST | `/api/glossary/import` | 解析 CSV 并返回词条（写盘仍走 save） |
 | GET | `/api/sync` | 同步状态（设备连接 / 两个槽位 / 日志） |
 | POST | `/api/sync/devices` | 扫描 adb 设备（含型号） |
 | POST | `/api/sync/connect` `/api/sync/disconnect` | 连接 / 断开设备 |
@@ -114,6 +150,8 @@ FunScriptCast-Nexus\
 | 前端 | 控制台错误 0；溢出 0×0；DOM 1198 节点（预算 <1500） |
 | 窗口 | pywebview + WebView2；无原生标题栏 + 可缩放 + 圆角；关闭→隐藏、托盘→恢复 |
 | 设备同步 | 真机 Quest 3（`192.168.2.129:5555`）脚本同步：本地 1 / 设备 2707 / 推送 1 |
+| 术语表 CSV | 导入解析（跳过表头/空行）、导出 UTF-8 BOM；110 / 81 条 |
+| 打包 EXE | 17.7 MB 单文件；DLNA `description.xml` 200；字幕服务 `ready` + `cuda:0` |
 | 显存回收 | 停止字幕服务后 5720 MB → 1736 MB |
 
 ## 自动化测试
@@ -138,6 +176,5 @@ node tests\ui_check.js
 
 ## 待办
 
-1. 术语表 CSV 导入/导出
-2. 打包单 EXE（PyInstaller，注意 torch 体积）
-3. 同步页的进度条（当前是日志 + 结果计数）
+1. 同步页的进度条（当前是日志 + 结果计数）
+2. 首次启动引导（自动检测 .venv / models，缺失时给出一键说明）

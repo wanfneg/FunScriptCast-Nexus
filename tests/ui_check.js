@@ -83,6 +83,20 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       dragRegion: (document.querySelector('.titlebar') || {}).className,
     };
     if (navBtn) document.querySelector('button[data-page="dashboard"]').click();
+    // 切到「术语表」页，验证 CSV 导入/导出控件就位
+    const gBtn = document.querySelector('button[data-page="glossary"]');
+    if (gBtn) gBtn.click();
+    const glossaryPage = {
+      navExists: !!gBtn,
+      importBtn: !!document.querySelector('#glossImport'),
+      exportBtn: !!document.querySelector('#glossExport'),
+      langSeg: document.querySelectorAll('#glossSeg button').length,
+      jaCount: t('#jaCount'),
+      enCount: t('#enCount'),
+      rows: document.querySelectorAll('#jaList .term-row').length,
+      saveBtn: !!document.querySelector('#saveGloss'),
+    };
+    if (gBtn) document.querySelector('button[data-page="dashboard"]').click();
     return {
       title: document.title,
       pills: { dlna: t('#pillDlna'), sub: t('#pillSub'), gpu: t('#pillGpu') },
@@ -93,6 +107,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       dlnaPage: { badge: t('#dlnaBadge'), url: (document.querySelector('#dlnaUrl')||{}).value, roots: document.querySelectorAll('#rootList .row').length },
       subPage: { badge: t('#subBadge'), model: t('#subModel'), device: t('#subDevice') },
       syncPage: syncPage,
+      glossaryPage: glossaryPage,
       timeline: document.querySelectorAll('#timeline .tl-item').length,
       ver: t('#verLine'), aboutIp: t('#aboutIp'),
       settings: {

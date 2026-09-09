@@ -18,10 +18,12 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import sys
@@ -32,7 +34,11 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parent
+# 打包成 EXE（PyInstaller）后 __file__ 指向解包临时目录，必须用 exe 所在目录；
+# ui/ 与 vendor/ 作为**外置数据**跟 EXE 放一起，方便查看与替换，也避免每次
+# 启动解压几十 MB 到 %TEMP%。
+FROZEN = bool(getattr(sys, "frozen", False))
+APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 UI_DIR = APP_DIR / "ui"
 VENDOR_DIR = APP_DIR / "vendor"
 MODELS_DIR = APP_DIR / "models"
@@ -43,7 +49,31 @@ MODELS_DIR = APP_DIR / "models"
 # 因此本应用不再依赖 E:\Development 下的任何其他目录。
 VRDLNA_DIR = Path(os.environ.get("VRDLNA_DIR", str(VENDOR_DIR / "dlna")))
 SUBTITLE_DIR = Path(os.environ.get("SUBTITLE_DIR", str(VENDOR_DIR / "subtitle")))
-SUBTITLE_VENV_PY = Path(os.environ.get("NEXUS_PY", str(APP_DIR / ".venv" / "Scripts" / "python.exe")))
+
+
+def _subtitle_python() -> Path:
+    """字幕服务用的解释器：优先自带 venv，其次 PATH 上的 python。
+
+    字幕服务依赖 torch（约 4 GB），不随 EXE 打包，仍走 .venv 子进程。
+    打包后如果没带 .venv，就退回系统 python，让报错信息更直白。
+    """
+    env = os.environ.get("NEXUS_PY")
+    if env:
+        return Path(env)
+    candidates = [
+        APP_DIR / ".venv" / "Scripts" / "python.exe",
+        APP_DIR / ".venv" / "bin" / "python",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    found = shutil.which("python") or shutil.which("python3")
+    if found:
+        return Path(found)
+    return Path(sys.executable)
+
+
+SUBTITLE_VENV_PY = _subtitle_python()
 
 # ---------------------------------------------------------------- 端口
 UI_API_PORT = int(os.environ.get("FS_HOST_PORT", "8790"))   # 前端 + API
@@ -287,7 +317,12 @@ def sub_start() -> dict:
 
     def worker() -> None:
         try:
-            py = SUBTITLE_VENV_PY if SUBTITLE_VENV_PY.exists() else Path(sys.executable)
+            py = SUBTITLE_VENV_PY
+            if FROZEN and py.resolve() == Path(sys.executable).resolve():
+                raise RuntimeError(
+                    "找不到 Python 解释器：字幕服务需要 torch，不随 EXE 打包。"
+                    f"请把 .venv 目录复制到 {APP_DIR}，或设置环境变量 NEXUS_PY 指向 python.exe"
+                )
             if not SUBTITLE_DIR.exists():
                 raise RuntimeError(f"字幕服务目录不存在：{SUBTITLE_DIR}")
             flags = 0
@@ -297,18 +332,23 @@ def sub_start() -> dict:
             # 模型随仓库自带，用绝对路径注入，避免 cwd 变化导致相对路径失效
             if MODELS_DIR.exists():
                 env.setdefault("ASR_MODEL", str(MODELS_DIR / "Qwen3-ASR-0.6B"))
+            # 用管道接住子进程输出：起来就挂（缺依赖等）时能给出可读原因
             proc = subprocess.Popen(
                 [str(py), "run_server.py", "--port", str(SUBTITLE_PORT)],
                 cwd=str(SUBTITLE_DIR),
                 env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 creationflags=flags,
             )
             with RT.lock:
                 RT.sub_proc = proc
                 RT.sub_starting = False
             RT.add_log(f"字幕服务子进程已拉起 · PID {proc.pid}", "ok")
+            _watch_subtitle(proc)
         except Exception as e:
             with RT.lock:
                 RT.sub_starting = False
@@ -317,6 +357,41 @@ def sub_start() -> dict:
 
     threading.Thread(target=worker, daemon=True, name="sub-start").start()
     return {"ok": True, "starting": True}
+
+
+def _watch_subtitle(proc: "subprocess.Popen") -> None:
+    """读子进程输出；若 3 秒内就退出，把最后几行输出作为错误上报。
+
+    字幕服务依赖 torch/uvicorn 等，环境不全时往往秒退，静默 DEVNULL 会让
+    界面一直显示「加载中」，所以这里保留最近输出用于诊断。
+    """
+    tail: list[str] = []
+
+    def reader() -> None:
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    tail.append(line)
+                    if len(tail) > 40:
+                        del tail[: len(tail) - 40]
+        except Exception:
+            pass
+
+    t = threading.Thread(target=reader, daemon=True, name="sub-out")
+    t.start()
+    # 3 秒后检查是否已经退出
+    for _ in range(12):
+        time.sleep(0.25)
+        if proc.poll() is not None:
+            break
+    if proc.poll() is not None:
+        detail = " / ".join(tail[-3:]) or "无输出"
+        with RT.lock:
+            RT.sub_error = f"子进程退出（code {proc.returncode}）：{detail}"
+            RT.sub_proc = None
+        RT.add_log(f"字幕服务启动失败：{RT.sub_error}", "err")
 
 
 def sub_stop() -> dict:
@@ -517,6 +592,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(save_subtitle_config(body))
             elif path == "/api/glossary/save":
                 self._json(save_glossary(body))
+            elif path == "/api/glossary/export":
+                self._json(glossary_export_csv(body))
+            elif path == "/api/glossary/import":
+                self._json(glossary_import_csv(body))
             elif path == "/api/sync/devices":
                 self._json(SYNC.list_devices())
             elif path == "/api/sync/connect":
@@ -568,10 +647,18 @@ def save_subtitle_config(patch: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+GLOSSARY_FILES = {"ja": "glossary_ja_zh.json", "en": "glossary_en_zh.json"}
+
+
+def glossary_file(lang: str) -> "Path | None":
+    fname = GLOSSARY_FILES.get(lang)
+    return (SUBTITLE_DIR / fname) if fname else None
+
+
 def glossary_payload() -> dict:
     out = {"ok": True, "langs": {}}
-    for lang, fname in (("ja", "glossary_ja_zh.json"), ("en", "glossary_en_zh.json")):
-        f = SUBTITLE_DIR / fname
+    for lang in GLOSSARY_FILES:
+        f = glossary_file(lang)
         try:
             out["langs"][lang] = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
         except Exception:
@@ -582,10 +669,9 @@ def glossary_payload() -> dict:
 def save_glossary(body: dict) -> dict:
     lang = body.get("lang")
     terms = body.get("terms")
-    fname = {"ja": "glossary_ja_zh.json", "en": "glossary_en_zh.json"}.get(lang)
-    if not fname or not isinstance(terms, dict):
+    f = glossary_file(lang)
+    if f is None or not isinstance(terms, dict):
         return {"ok": False, "error": "参数错误"}
-    f = SUBTITLE_DIR / fname
     try:
         tmp = f.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(terms, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -600,6 +686,76 @@ def save_glossary(body: dict) -> dict:
         return {"ok": True, "count": len(terms)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------- 术语表 CSV
+def glossary_export_csv(body: dict) -> dict:
+    """导出术语表为 CSV（UTF-8 BOM，Excel 直接打开不乱码）。"""
+    lang = body.get("lang")
+    f = glossary_file(lang)
+    path = (body.get("path") or "").strip()
+    if f is None:
+        return {"ok": False, "error": "参数错误：lang"}
+    if not path:
+        return {"ok": False, "error": "未指定导出路径"}
+    try:
+        data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except Exception as e:
+        return {"ok": False, "error": f"读取术语表失败：{e}"}
+    try:
+        with open(path, "w", encoding="utf-8-sig", newline="") as fp:
+            w = csv.writer(fp)
+            w.writerow(["term", "translation"])
+            for k, v in data.items():
+                w.writerow([k, v])
+    except Exception as e:
+        return {"ok": False, "error": f"写入失败：{e}"}
+    RT.add_log(f"术语表已导出（{lang} · {len(data)} 条 → {path}）", "ok")
+    return {"ok": True, "count": len(data), "path": path}
+
+
+def glossary_import_csv(body: dict) -> dict:
+    """解析 CSV 并返回词条；写盘与热重载交给 /api/glossary/save，避免两套逻辑。"""
+    path = (body.get("path") or "").strip()
+    if not path:
+        return {"ok": False, "error": "未指定导入路径"}
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as fp:
+            rows = list(csv.reader(fp))
+    except UnicodeDecodeError:
+        try:
+            with open(path, "r", encoding="gbk", newline="") as fp:
+                rows = list(csv.reader(fp))
+        except Exception as e:
+            return {"ok": False, "error": f"编码识别失败（试过 UTF-8 / GBK）：{e}"}
+    except Exception as e:
+        return {"ok": False, "error": f"读取失败：{e}"}
+
+    rows = [r for r in rows if any((c or "").strip() for c in r)]
+    if not rows:
+        return {"ok": False, "error": "文件是空的"}
+
+    # 首行是表头（term/translation 或 原文/译文）就跳过
+    head = [c.strip().lower() for c in rows[0][:2]]
+    header_words = {"term", "translation", "source", "target", "原文", "译文", "术语", "翻译"}
+    if head and (set(head) & header_words):
+        rows = rows[1:]
+
+    terms: dict = {}
+    skipped = 0
+    for r in rows:
+        if len(r) < 2:
+            skipped += 1
+            continue
+        k = (r[0] or "").strip()
+        v = (r[1] or "").strip()
+        if not k:
+            skipped += 1
+            continue
+        terms[k] = v
+    if not terms:
+        return {"ok": False, "error": "没有解析到有效词条（需要两列：原文, 译文）"}
+    return {"ok": True, "terms": terms, "count": len(terms), "skipped": skipped}
 
 
 # ================================================================ 设备同步
@@ -1061,6 +1217,29 @@ class NexusApi:
             if not res:
                 return {"ok": False, "cancelled": True}
             return {"ok": True, "path": res[0]}
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    def pick_file(self, mode: str = "open", filename: str = "", file_types: tuple = ()) -> dict:
+        """系统文件对话框：mode=open 选文件，mode=save 选保存位置。"""
+        try:
+            import webview
+
+            if mode == "save":
+                res = self._win.create_file_dialog(
+                    webview.SAVE_DIALOG,
+                    save_filename=filename or "",
+                    file_types=file_types or (),
+                )
+            else:
+                res = self._win.create_file_dialog(
+                    webview.OPEN_DIALOG,
+                    allow_multiple=False,
+                    file_types=file_types or (),
+                )
+            if not res:
+                return {"ok": False, "cancelled": True}
+            return {"ok": True, "path": res[0] if isinstance(res, (list, tuple)) else res}
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 

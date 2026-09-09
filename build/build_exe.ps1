@@ -1,0 +1,43 @@
+﻿# 构建 FunScriptCast-Nexus 单文件 EXE，并组装 dist-app/（EXE + ui + vendor）
+#
+#   powershell -ExecutionPolicy Bypass -File build\build_exe.ps1
+#
+# 产物：
+#   dist-app\FunScriptCast-Nexus.exe    应用本体（含 pywebview / DLNA 模块）
+#   dist-app\ui\                        前端静态资源（外置，改完即生效）
+#   dist-app\vendor\                    DLNA / 字幕服务源码（字幕服务仍用 .venv 跑）
+#   dist-app\start.bat                  备用启动器（源码模式）
+#
+# 注意：models\ 与 .venv\ 不进产物，运行时按 EXE 所在目录查找。
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$py = Join-Path $root '.venv\Scripts\python.exe'
+if (-not (Test-Path $py)) { throw "找不到 venv Python：$py" }
+
+Write-Host "[1/4] PyInstaller 打包…" -ForegroundColor Cyan
+& $py -m PyInstaller (Join-Path $PSScriptRoot 'nexus.spec') --noconfirm --clean --distpath (Join-Path $root 'dist') --workpath (Join-Path $root 'build\work')
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败（exit $LASTEXITCODE）" }
+
+$exe = Join-Path $root 'dist\FunScriptCast-Nexus.exe'
+if (-not (Test-Path $exe)) { throw "没有产出 EXE：$exe" }
+
+Write-Host "[2/4] 组装 dist-app…" -ForegroundColor Cyan
+$out = Join-Path $root 'dist-app'
+if (Test-Path $out) { Remove-Item $out -Recurse -Force }
+New-Item -ItemType Directory -Path $out | Out-Null
+Copy-Item $exe $out
+Copy-Item (Join-Path $root 'ui') (Join-Path $out 'ui') -Recurse
+Copy-Item (Join-Path $root 'vendor') (Join-Path $out 'vendor') -Recurse
+Copy-Item (Join-Path $root 'tools') (Join-Path $out 'tools') -Recurse
+Copy-Item (Join-Path $root 'version.json') $out
+Copy-Item (Join-Path $root 'start.bat') $out
+Copy-Item (Join-Path $root 'README.md') $out
+
+Write-Host "[3/4] 清理临时目录…" -ForegroundColor Cyan
+Remove-Item (Join-Path $root 'build\work') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'dist') -Recurse -Force -ErrorAction SilentlyContinue
+
+Write-Host "[4/4] 完成。" -ForegroundColor Green
+Get-ChildItem $out | Select-Object Name, @{n='Size';e={ if($_.PSIsContainer){''}else{"{0:N1} MB" -f ($_.Length/1MB)} }} | Format-Table -AutoSize
+Write-Host "把 .venv 和 models 复制到 $out 即可独立运行（字幕服务需要）。" -ForegroundColor Yellow
