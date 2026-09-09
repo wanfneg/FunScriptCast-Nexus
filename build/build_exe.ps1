@@ -1,6 +1,7 @@
 ﻿# 构建 FunScriptCast-Nexus 单文件 EXE，并组装 dist-app/（EXE + ui + vendor）
 #
 #   powershell -ExecutionPolicy Bypass -File build\build_exe.ps1
+#   powershell -ExecutionPolicy Bypass -File build\build_exe.ps1 -NoBump   # 不递增版本
 #
 # 产物：
 #   dist-app\FunScriptCast-Nexus.exe    应用本体（含 pywebview / DLNA 模块）
@@ -10,10 +11,18 @@
 #
 # 注意：models\ 与 .venv\ 不进产物，运行时按 EXE 所在目录查找。
 
+param([switch]$NoBump)
+
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $py = Join-Path $root '.venv\Scripts\python.exe'
 if (-not (Test-Path $py)) { throw "找不到 venv Python：$py" }
+
+if (-not $NoBump) {
+    Write-Host "[0/4] 递增版本号…" -ForegroundColor Cyan
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $root 'tools\bump_version.ps1')
+    if ($LASTEXITCODE -ne 0) { throw "版本号递增失败" }
+}
 
 Write-Host "[1/4] PyInstaller 打包…" -ForegroundColor Cyan
 & $py -m PyInstaller (Join-Path $PSScriptRoot 'nexus.spec') --noconfirm --clean --distpath (Join-Path $root 'dist') --workpath (Join-Path $root 'build\work')
