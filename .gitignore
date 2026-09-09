@@ -11,6 +11,9 @@ models/
 *.tmp
 _runtime/
 
+# 字幕缓存（运行时生成，不入库）
+/cache/
+
 # 术语表旧版备份（换表时留档，不入库）
 /backup/
 
