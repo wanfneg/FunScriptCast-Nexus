@@ -4,7 +4,10 @@ __pycache__/
 
 # 大体积本地资产（模型 8GB / venv 5GB，不入库）
 .venv/
+.venv-vibevoice/
 models/
+models/hf/
+models/vibevoice/
 
 # 运行数据
 *.log
