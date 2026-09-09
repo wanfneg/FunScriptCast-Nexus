@@ -31,8 +31,22 @@ from translate_engine import Translator
 
 BASE = Path(__file__).resolve().parent
 CFG = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
-# 环境变量覆盖（便于同一台机器快速切档测试/部署）
-if os.environ.get("ASR_MODEL"):
+
+
+def _abs_path(p: str) -> str:
+    """相对路径按本文件所在目录解析，避免 cwd 不同导致找不到模型。"""
+    if not p:
+        return p
+    q = Path(p)
+    return str(q if q.is_absolute() else (BASE / q).resolve())
+
+
+# config.json 是模型路径的唯一真相（可切 0.6B / 1.7B）。
+# 环境变量只在 config 没写时兜底，避免「改了 config 却不生效」。
+for _k in ("model", "aligner"):
+    if CFG.get("asr", {}).get(_k):
+        CFG["asr"][_k] = _abs_path(CFG["asr"][_k])
+if not CFG.get("asr", {}).get("model") and os.environ.get("ASR_MODEL"):
     CFG["asr"]["model"] = os.environ["ASR_MODEL"]
 if os.environ.get("TRANSLATE_BACKEND"):
     CFG["translate"]["backend"] = os.environ["TRANSLATE_BACKEND"]

@@ -487,8 +487,14 @@ def sub_start() -> dict:
             if os.name == "nt":
                 flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             env = dict(os.environ)
-            # 模型随仓库自带，用绝对路径注入，避免 cwd 变化导致相对路径失效
-            if MODELS_DIR.exists():
+            # 模型由 config.json 决定（服务端会把相对路径按自身目录解析），
+            # 所以这里只在 config 完全没写模型时才兜底注入绝对路径。
+            try:
+                _cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+                _m = str((_cfg.get("asr") or {}).get("model") or "").strip()
+            except Exception:
+                _m = ""
+            if not _m and MODELS_DIR.exists():
                 env.setdefault("ASR_MODEL", str(MODELS_DIR / "Qwen3-ASR-0.6B"))
             # 用管道接住子进程输出：起来就挂（缺依赖等）时能给出可读原因
             proc = subprocess.Popen(
