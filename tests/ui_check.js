@@ -1,4 +1,5 @@
 // 前端集成自查：无头 Chrome 打开真实宿主页面，验证数据绑定与控制台错误
+// 用法：先启动 host_server.py，再执行 `node tests/ui_check.js`
 const http = require('http');
 const { spawn } = require('child_process');
 
@@ -72,6 +73,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       subPage: { badge: t('#subBadge'), model: t('#subModel'), device: t('#subDevice') },
       timeline: document.querySelectorAll('#timeline .tl-item').length,
       ver: t('#verLine'), aboutIp: t('#aboutIp'),
+      settings: {
+        dlnaAuto: !!document.querySelector('#setDlnaAuto'),
+        subAuto: !!document.querySelector('#setSubAuto'),
+        closeTray: !!document.querySelector('#setCloseTray'),
+        startMin: !!document.querySelector('#setStartMin'),
+      },
       navIndicator: (() => { const e = document.querySelector('#navInd'); return e ? { h: Math.round(e.getBoundingClientRect().height), op: getComputedStyle(e).opacity } : null; })(),
       overflow: { x: document.documentElement.scrollWidth - innerWidth, y: document.documentElement.scrollHeight - innerHeight },
       domNodes: document.getElementsByTagName('*').length,

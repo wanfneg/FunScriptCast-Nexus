@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import socket
 import subprocess
 import sys
@@ -495,7 +496,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(save_glossary(body))
             elif path == "/api/quit":
                 self._json({"ok": True})
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                request_quit()
             else:
                 self._json({"ok": False, "error": "not found"}, 404)
         except Exception as e:
@@ -568,6 +569,143 @@ def save_glossary(body: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+# ================================================================ 托盘
+class TrayController:
+    """系统托盘：左键双击显示主窗口，右键菜单「显示 / 退出」。
+
+    复用 vendor/dlna/tray_icon.py（纯 ctypes，零依赖）。托盘消息循环在自己的
+    守护线程里跑，事件通过 queue 传回主线程处理——避免跨线程直接操作窗口。
+    """
+
+    def __init__(self) -> None:
+        self.q: "queue.Queue" = queue.Queue()
+        self.icon = None
+        self.window = None
+        self.started = False
+        self._stop = False
+        self._quitting = False
+
+    @property
+    def quitting(self) -> bool:
+        """真正退出中：closing 处理器据此放行，不再拦截为「最小化到托盘」。"""
+        return self._quitting
+
+    def begin_quit(self) -> None:
+        """标记退出并停止托盘消息泵。"""
+        self._stop = True
+        self._quitting = True
+
+    def start(self, window, tip: str = "FunScriptCast-Nexus") -> bool:
+        self.window = window
+        try:
+            sys.path.insert(0, str(VRDLNA_DIR))
+            from tray_icon import TrayIcon  # noqa: E402
+        except Exception as e:
+            RT.add_log(f"托盘不可用（{type(e).__name__}），改为最小化到任务栏", "warn")
+            return False
+        ico = APP_DIR / "tools" / "icon.ico"
+        self.icon = TrayIcon(self.q, str(ico) if ico.exists() else None)
+        ok = self.icon.start(tip)
+        self.started = ok
+        if ok:
+            threading.Thread(target=self._pump, daemon=True, name="tray-pump").start()
+            RT.add_log("托盘图标已就绪", "ok")
+        else:
+            RT.add_log("托盘图标启动失败，改为最小化到任务栏", "warn")
+        return ok
+
+    def _pump(self) -> None:
+        """消费托盘事件（守护线程）。"""
+        while not self._stop:
+            try:
+                evt = self.q.get(timeout=0.3)
+            except queue.Empty:
+                continue
+            except Exception:
+                break
+            try:
+                if evt[0] == "show":
+                    self.show_window()
+                elif evt[0] == "menu":
+                    self._popup_menu(int(evt[1]), int(evt[2]))
+            except Exception as e:
+                log.warning("托盘事件处理失败：%s", e)
+
+    def _popup_menu(self, x: int, y: int) -> None:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        m = tk.Menu(root, tearoff=0)
+        m.add_command(label="显示 FunScriptCast-Nexus", command=self.show_window)
+        m.add_separator()
+        m.add_command(label="退出", command=self.quit_app)
+        try:
+            m.tk_popup(x, y)
+        finally:
+            try:
+                m.grab_release()
+            except Exception:
+                pass
+            root.destroy()
+
+    def show_window(self) -> None:
+        if self.window is None:
+            return
+        try:
+            self.window.restore()
+            self.window.show()
+        except Exception as e:
+            log.warning("恢复窗口失败：%s", e)
+
+    def hide_window(self) -> None:
+        if self.window is None:
+            return
+        try:
+            self.window.hide()
+            RT.add_log("已最小化到托盘", "info")
+        except Exception as e:
+            log.warning("隐藏窗口失败：%s", e)
+
+    def quit_app(self) -> None:
+        request_quit()
+
+    def stop(self) -> None:
+        self._stop = True
+        if self.icon is not None:
+            try:
+                self.icon.stop()
+            except Exception:
+                pass
+            self.icon = None
+
+
+TRAY = TrayController()
+
+
+def request_quit() -> None:
+    """统一退出入口（UI 按钮 / 托盘菜单 / 无窗口模式）。
+
+    窗口模式下必须销毁 pywebview 窗口——只 shutdown HTTP 服务的话事件循环
+    仍在跑，进程不会退出。销毁动作放到独立线程，避免在窗口事件回调里重入。
+    """
+    RT.add_log("正在退出…", "warn")
+    TRAY.begin_quit()
+
+    def _do() -> None:
+        win = TRAY.window
+        if win is not None:
+            try:
+                win.destroy()
+                return
+            except Exception as e:
+                log.warning("销毁窗口失败：%s", e)
+        os._exit(0)                # 无窗口模式兜底
+
+    threading.Thread(target=_do, daemon=True, name="quit").start()
+
+
 # ================================================================ 启动
 def run(open_window: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
@@ -596,6 +734,7 @@ def run(open_window: bool = True) -> None:
 
     import webview  # 延迟导入，便于无窗口调试
 
+    close_to_tray = bool(s.get("close_to_tray", True))
     window = webview.create_window(
         "FunScriptCast-Nexus",
         f"http://127.0.0.1:{UI_API_PORT}/",
@@ -605,10 +744,41 @@ def run(open_window: bool = True) -> None:
         background_color="#07090f",
         text_select=False,
         easy_drag=False,
+        hidden=bool(s.get("start_minimized", False)),
     )
+
+    # 关闭按钮 → 最小化到托盘（可在设置里关掉）
+    def on_closing():
+        if TRAY.quitting:
+            return True            # 托盘「退出」放行
+        if close_to_tray and TRAY.started:
+            TRAY.hide_window()
+            return False           # 拦截关闭
+        return True
+
+    try:
+        window.events.closing += on_closing
+    except Exception as e:
+        log.warning("注册关闭事件失败：%s", e)
+
+    def on_loaded():
+        # 托盘常驻：即便关闭按钮不拦截，也需要托盘作为「启动即最小化」的恢复入口
+        TRAY.start(window)
+        if s.get("start_minimized"):
+            try:
+                window.hide()
+            except Exception:
+                pass
+
+    try:
+        window.events.loaded += on_loaded
+    except Exception as e:
+        log.warning("注册加载事件失败：%s", e)
+
     try:
         webview.start(debug=False)
     finally:
+        TRAY.stop()
         sub_stop()
         dlna_stop()
 

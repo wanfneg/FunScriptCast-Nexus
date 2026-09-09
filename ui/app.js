@@ -271,6 +271,7 @@
     $("#setDlnaAuto").checked = !!s.dlna_auto_start;
     $("#setSubAuto").checked = !!s.subtitle_auto_start;
     $("#setCloseTray").checked = !!s.close_to_tray;
+    $("#setStartMin").checked = !!s.start_minimized;
     if (document.activeElement !== $("#mtModel")) $("#mtModel").value = "";
     // 首次拉到设置后应用持久化的主题 / 动画强度
     if (!S.themeApplied) {
@@ -447,12 +448,21 @@
     $("#setCloseTray").addEventListener("change", function () {
       api("/api/settings", "POST", { close_to_tray: this.checked });
     });
+    $("#setStartMin").addEventListener("change", function () {
+      api("/api/settings", "POST", { start_minimized: this.checked });
+      toast(this.checked ? "下次启动将直接隐藏到托盘" : "下次启动将显示主窗口");
+    });
     $("#copyIp").addEventListener("click", function () {
       var ip = $("#aboutIp").textContent;
       if (ip && ip !== "—") copyText(ip, this);
     });
     $("#quitApp").addEventListener("click", function () {
-      api("/api/quit", "POST", {}).then(function () { window.close(); });
+      // 退出由后端执行（销毁窗口 + 收尾子进程）；这里不要调 window.close()，
+      // 否则会被「关闭到托盘」拦截器拦下，只隐藏不退出。
+      api("/api/quit", "POST", {}).then(function () {
+        toast("正在退出", "窗口即将关闭");
+        clearTimeout(S.pollTimer);
+      });
     });
 
     /* 快捷操作 */
