@@ -30,8 +30,12 @@ def join_tokens(parts):
     return out
 
 
-def _has_repetition_loop(text: str, max_run: int = 5) -> bool:
-    """检测同一字符连续重复过多（小模型的死循环退化）。"""
+def _has_repetition_loop(text: str, max_run: int = 3) -> bool:
+    """检测同一字符连续重复过多（小模型的死循环退化）。
+
+    阈值取 3：实测「ああああ気持ちああ」这类喘息/拟声退化会污染翻译
+    （译文被放大成几十个「啊」），4 个以上同字连排基本可以判退化。
+    """
     run = 1
     for i in range(1, len(text)):
         if text[i] == text[i - 1]:
@@ -50,7 +54,14 @@ class AsrEngine:
         self.dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[
             cfg.get("dtype", "bf16")]
         device = cfg.get("device", "cuda:0")
-        kwargs = dict(dtype=self.dtype, device_map=device)
+        # 生成上限：非语音/音乐段模型会退化生成直到上限（0.6B 约 20 tok/s，
+        # 默认 512 就是 25 秒/块）。按音频时长估算，实测 25s 音频从 25.4s 降到 3.2s，
+        # 文本不变。可用 config.json 的 asr.max_new_tokens_* 覆盖。
+        self.tok_per_sec = float(cfg.get("max_new_tokens_per_sec", 4.0))
+        self.tok_min = int(cfg.get("max_new_tokens_min", 48))
+        self.tok_max = int(cfg.get("max_new_tokens_max", 256))
+        kwargs = dict(dtype=self.dtype, device_map=device,
+                      max_new_tokens=int(cfg.get("max_new_tokens", self.tok_max)))
         aligner = cfg.get("aligner")
         self.use_aligner = bool(aligner)
         if self.use_aligner:
@@ -69,17 +80,68 @@ class AsrEngine:
             except Exception as e:  # VAD 只是优化，不可用时退化为全量识别
                 print("[asr] VAD 不可用，已跳过静音检测:", e)
 
+    def _budget_tokens(self, n_samples: int) -> int:
+        """按音频时长估算生成上限（秒数 × 每秒 token 数，夹在 min/max 之间）。"""
+        secs = n_samples / float(SR)
+        return int(max(self.tok_min, min(self.tok_max, secs * self.tok_per_sec)))
+
     # ---------------------------------------------------------------- VAD
     def has_speech(self, pcm: np.ndarray, threshold=0.5, min_speech_ms=250) -> bool:
         if self.vad is None:
             return True
+        return len(self.speech_spans(pcm, threshold, min_speech_ms)) > 0
+
+    def speech_spans(self, pcm: np.ndarray, threshold=0.5, min_speech_ms=250) -> list:
+        """返回语音区间 [(start_sec, end_sec)]（相对本块音频）。
+
+        只送语音段给 ASR 能大幅省时间：实测 25s 块里只有 1.1s 语音时，
+        整块送要 5.3s，裁剪后 1s 以内。
+        """
+        if self.vad is None:
+            return []
         from silero_vad import get_speech_timestamps
         ts = get_speech_timestamps(
             torch.from_numpy(pcm), self.vad, sampling_rate=SR,
             threshold=threshold, min_speech_duration_ms=min_speech_ms,
             return_seconds=True,
         )
-        return len(ts) > 0
+        return [(float(s["start"]), float(s["end"])) for s in ts]
+
+    @staticmethod
+    def _crop_to_spans(pcm: np.ndarray, spans: list, pad_sec: float = 0.25):
+        """把语音区间拼成一段音频，并返回「裁剪后时间 → 原块时间」的映射。
+
+        返回 (cropped_pcm, map_fn)，map_fn(t) 把裁剪音频里的秒数换算回原块秒数。
+        """
+        if not spans:
+            return pcm, (lambda t: t)
+        pad = int(pad_sec * SR)
+        pieces, bounds = [], []
+        for s, e in spans:
+            a = max(0, int(s * SR) - pad)
+            b = min(len(pcm), int(e * SR) + pad)
+            if b <= a:
+                continue
+            pieces.append(pcm[a:b])
+            bounds.append((a, b))
+        if not pieces:
+            return pcm, (lambda t: t)
+        cropped = np.concatenate(pieces)
+        # 裁剪时间 → 原块时间：逐段平移
+        offsets = []
+        acc = 0
+        for a, b in bounds:
+            offsets.append((acc, a, b - a))
+            acc += b - a
+
+        def map_fn(t_sec: float) -> float:
+            idx = int(t_sec * SR)
+            for start_i, orig_a, length in offsets:
+                if start_i <= idx < start_i + length:
+                    return (orig_a + (idx - start_i)) / float(SR)
+            return t_sec  # 越界时退化为原值
+
+        return cropped, map_fn
 
     # ------------------------------------------------------------ 分句
     def _split_segments(self, stamps, base_ms, seg_cfg):
@@ -155,25 +217,42 @@ class AsrEngine:
         seg_cfg = seg_cfg or {}
         t0 = time.perf_counter()
 
-        if not self.has_speech(pcm, vad_cfg.get("threshold", 0.5), vad_cfg.get("min_speech_ms", 250)):
+        # VAD：先切出语音区间，只把语音段送 ASR（含少量前后 padding 防切头）
+        spans = self.speech_spans(pcm, vad_cfg.get("threshold", 0.5),
+                                  vad_cfg.get("min_speech_ms", 250))
+        if self.vad is not None and not spans:
             return {"language": None, "segments": [], "asr_ms": 0.0, "skipped": True}
+        if spans:
+            pcm_asr, tmap = self._crop_to_spans(
+                pcm, spans, float(vad_cfg.get("pad_sec", 0.25)))
+        else:
+            pcm_asr, tmap = pcm, (lambda t: t)   # VAD 不可用时保持原行为
 
         context = ""
         if self.cfg.get("use_glossary_context", True):
             context = self.glossary.asr_context(lang_key)
 
+        # 按送进去的音频时长收紧生成上限：退化生成不会再跑满全局上限
+        self.model.max_new_tokens = self._budget_tokens(len(pcm_asr))
         r = self.model.transcribe(
-            audio=(pcm, SR),
+            audio=(pcm_asr, SR),
             context=context,
             language=LANG_MAP.get(lang_key, lang_key),
             return_time_stamps=self.use_aligner,
         )[0]
 
         if self.use_aligner and getattr(r, "time_stamps", None):
-            segs = self._split_segments(r.time_stamps, video_start_ms, seg_cfg)
+            # 时间戳是相对裁剪音频的，先映射回原块时间再按 video_start_ms 偏移。
+            # ForcedAlignItem 是 frozen dataclass，必须 replace 重建而不是就地赋值。
+            import dataclasses
+            mapped = [dataclasses.replace(st, start_time=tmap(st.start_time),
+                                          end_time=tmap(st.end_time))
+                      for st in r.time_stamps]
+            segs = self._split_segments(mapped, video_start_ms, seg_cfg)
         else:
             text = (r.text or "").strip()
-            segs = ([{"start_ms": video_start_ms, "end_ms": video_start_ms + int(len(pcm) / SR * 1000),
+            segs = ([{"start_ms": video_start_ms,
+                      "end_ms": video_start_ms + int(len(pcm_asr) / SR * 1000),
                       "text": text}] if text else [])
 
         # 重叠区去重：只保留起点在保留区之后的句子（客户端传 video_start_ms + overlap）

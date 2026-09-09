@@ -68,6 +68,20 @@ class Translator:
         return (data["choices"][0]["message"]["content"] or "").strip()
 
     # ------------------------------------------------------------ 主入口
+    @staticmethod
+    def _is_degenerate(text: str, translation: str) -> bool:
+        """译文异常放大检测：小模型偶发把短文本翻成几十个重复字。
+
+        例：原文「ああああ気持ちああ」(8 字) → 「啊啊啊…啊」(31 字)。
+        判定：译文长度 > 原文 × 3 且译文里同一字符占比 > 60%。
+        """
+        tr = (translation or "").strip()
+        if not tr or len(tr) <= max(6, len(text) * 3):
+            return False
+        from collections import Counter
+        top = Counter(tr).most_common(1)[0][1]
+        return top / len(tr) > 0.6
+
     def translate_segments(self, segs: list, lang_key: str) -> None:
         """就地写入 seg['translation']；失败时留空并记录 seg['error']。"""
         prev_orig = prev_tr = ""
@@ -88,6 +102,9 @@ class Translator:
                     user = (USER_CTX.format(prev_orig=prev_orig, prev_tr=prev_tr, text=text)
                             if prev_tr else USER.format(text=text))
                     seg["translation"] = self._translate_ollama(user, system)
+                if self._is_degenerate(text, seg.get("translation", "")):
+                    seg["translation"] = ""
+                    seg["error"] = "translation_degenerate"
             except Exception as e:
                 seg["translation"] = ""
                 seg["error"] = str(e)

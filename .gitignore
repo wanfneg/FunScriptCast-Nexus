@@ -14,6 +14,10 @@ _runtime/
 # 术语表旧版备份（换表时留档，不入库）
 /backup/
 
+# 字幕测试产物
+/tests/subtitle_out/
+/tests/_*_log.txt
+
 # 构建产物
 /dist/
 /dist-app/
