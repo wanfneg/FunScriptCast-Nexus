@@ -55,27 +55,44 @@ SUBTITLE_DIR = Path(os.environ.get("SUBTITLE_DIR", str(VENDOR_DIR / "subtitle"))
 
 
 def _subtitle_python() -> Path:
-    """字幕服务用的解释器：优先自带 venv，其次 PATH 上的 python。
+    """字幕服务用的解释器：自带 venv → 上级目录的 venv → PATH 上的 python。
 
-    字幕服务依赖 torch（约 4 GB），不随 EXE 打包，仍走 .venv 子进程。
-    打包后如果没带 .venv，就退回系统 python，让报错信息更直白。
+    字幕服务依赖 torch/uvicorn（约 5 GB），不随 EXE 打包，仍走 .venv 子进程。
+    dist-app 里的 EXE 单独拿出来跑时没有 .venv，会一路退到系统 Python 而缺依赖
+    （实测报 "No module named 'uvicorn'"）。
+
+    打包版额外看**上一级目录**的 .venv：dist-app 通常就放在源码仓库里，上一级
+    那个 .venv 是现成的，没必要再复制 5 GB 一份。这不是"自包含"，所以挑中的
+    来源会记进日志，免得以后误以为这个包拷到别的机器也能跑。
     """
+    global SUBTITLE_PY_SOURCE
     env = os.environ.get("NEXUS_PY")
     if env:
+        SUBTITLE_PY_SOURCE = "环境变量 NEXUS_PY"
         return Path(env)
     candidates = [
-        APP_DIR / ".venv" / "Scripts" / "python.exe",
-        APP_DIR / ".venv" / "bin" / "python",
+        (APP_DIR / ".venv" / "Scripts" / "python.exe", "应用目录自带的 .venv"),
+        (APP_DIR / ".venv" / "bin" / "python", "应用目录自带的 .venv"),
     ]
-    for c in candidates:
+    if FROZEN:
+        candidates += [
+            (APP_DIR.parent / ".venv" / "Scripts" / "python.exe", "上一级目录的 .venv（非自包含）"),
+            (APP_DIR.parent / ".venv" / "bin" / "python", "上一级目录的 .venv（非自包含）"),
+        ]
+    for c, src in candidates:
         if c.exists():
+            SUBTITLE_PY_SOURCE = src
             return c
     found = shutil.which("python") or shutil.which("python3")
     if found:
+        SUBTITLE_PY_SOURCE = f"PATH 上的 python（多半缺依赖）：{found}"
         return Path(found)
+    SUBTITLE_PY_SOURCE = "当前解释器（不可用）"
     return Path(sys.executable)
 
 
+# 解释器是从哪儿来的（启动时记进日志，便于判断这个包是不是自包含）
+SUBTITLE_PY_SOURCE = ""
 SUBTITLE_VENV_PY = _subtitle_python()
 
 # ---------------------------------------------------------------- 端口
@@ -1952,6 +1969,13 @@ def run(open_window: bool = True) -> None:
     _migrate_settings()          # 先把历史设置里带引号的路径修掉，再读
     s = load_settings()
     RT.add_log(f"FunScriptCast-Nexus 启动（{lan_ip()}）", "ok")
+    # 字幕服务的解释器来源：自包含的包和"借用上级 .venv"的包在日志里要能一眼区分，
+    # 否则把 dist-app 拷到别的机器上才发现少依赖，会很莫名其妙。
+    if SUBTITLE_PY_SOURCE:
+        log.info("字幕服务解释器来源：%s → %s", SUBTITLE_PY_SOURCE, SUBTITLE_VENV_PY)
+        if "非自包含" in SUBTITLE_PY_SOURCE:
+            RT.add_log(f"字幕服务借用上级目录的 .venv（{SUBTITLE_VENV_PY.parent.parent}）；"
+                       f"要把这个目录拷到别的机器，需先复制 .venv 进来", "warn")
 
     httpd = ExclusiveHTTPServer(("127.0.0.1", UI_API_PORT), Handler)
     httpd.daemon_threads = True
