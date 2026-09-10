@@ -46,6 +46,16 @@
       "api_key_env": "DASHSCOPE_API_KEY",
       "model": "qwen-mt-turbo",
       "target_lang": "Chinese"
+    },
+    "batch_size": 10,
+    "max_steps": 3,
+    "thread_num": 4,
+    "cache": true,
+    "target_lang": "zh",
+    "fallback": {
+      "enabled": true,
+      "backend": "auto",
+      "after_fail_batches": 3
     }
   },
   "glossary": {

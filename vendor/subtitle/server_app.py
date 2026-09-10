@@ -114,8 +114,19 @@ def health():
         "aligner": asr.use_aligner if asr else False,
         "gpu_used_gb": _gpu_used_gb(),
         "translate_backend": state["translator"].backend if state["translator"] else None,
+        "translate": state["translator"].describe() if state["translator"] else None,
         "glossary": {k: state["glossary"].size(k) for k in state["glossary"].langs()} if state["glossary"] else {},
     }
+
+
+@app.get("/translate/stats")
+def translate_stats():
+    """翻译层累计统计（批量/缓存命中/纠错轮数/兜底）。用于 PC 端诊断页。"""
+    t = state["translator"]
+    if t is None:
+        return {"ready": False}
+    return {"ready": True, "describe": t.describe(), "cache_dir": t.cache_dir,
+            "stats": dict(t.stats)}
 
 
 @app.get("/glossary")

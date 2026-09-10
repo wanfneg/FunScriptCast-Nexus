@@ -250,6 +250,7 @@
       ? (sc.count + " 个视频已缓存 · 共 " + (sc.size_kb || 0) + " KB · 最近 "
          + (sc.newest ? new Date(sc.newest * 1000).toLocaleString() : "—"))
       : "还没有缓存字幕（首次播放会生成并保存）";
+    renderTranslateCache(st.translate || {}, st.translateCache || {});
 
     /* ---- 设备同步页 ---- */
     renderSync(st.sync || {});
@@ -258,6 +259,29 @@
     $("#aboutIp").textContent = (st.host && st.host.lan_ip) || "—";
     $("#aboutPort").textContent = (st.host && st.host.port) || "—";
     $("#verLine").textContent = "v" + (st.version || "—") + " · WebView2";    syncSettingsUI();
+  }
+
+  /* ---- 翻译层统计（批量 / 缓存命中 / 纠错 / 兜底） ---- */
+  function renderTranslateCache(tr, tc) {
+    var el = $("#cacheTrSub");
+    if (!el) { return; }
+    if (!tr || !tr.ready) { el.textContent = "翻译层：字幕服务未就绪"; return; }
+    var s = tr.stats || {};
+    var parts = ["LLM " + (s.batches || 0) + " 批"];
+    var hits = s.cache_hits || 0;
+    parts.push("命中 " + hits + (s.cache_disk_hits ? "（磁盘 " + s.cache_disk_hits + "）" : ""));
+    if (s.fix_rounds) { parts.push("纠错 " + s.fix_rounds + " 轮"); }
+    if (s.partial_batches) { parts.push("部分救回 " + s.partial_batches + " 批"); }
+    if (s.fail_batches) {
+      parts.push("失败 " + s.fail_batches + " 批");
+      if (s.fallback_batches) { parts.push("兜底 " + s.fallback_batches + " 批"); }
+    }
+    var line = "翻译层：" + parts.join(" · ");
+    if (tc && tc.count) { line += " · 译文缓存 " + tc.count + " 条 " + (tc.size_kb || 0) + " KB"; }
+    if (s.degraded || s.fallback_error) {
+      line += "（已降级：" + (s.fallback_error || "免费后端") + "）";
+    }
+    el.textContent = line;
   }
 
   function renderRoots(roots) {

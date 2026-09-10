@@ -128,6 +128,11 @@ RT = Runtime()
 # 任何一项变了就自动失效，避免「换了术语表还在用旧字幕」。
 SUBTITLE_CACHE_DIR = Path(os.environ.get("NEXUS_CACHE_DIR", str(APP_DIR / "cache" / "subtitles")))
 
+# 翻译层磁盘缓存（键 = 后端+端点+模型+目标语言+原文，见 vendor/subtitle/translate_engine.py）。
+# 与上面的字幕缓存分开：字幕缓存按"整段视频"存，这个按"批次原文"存，
+# 作用是同一句话在别的视频里出现时也不用重新请求 LLM。
+TRANSLATE_CACHE_DIR = Path(os.environ.get("NEXUS_CACHE_DIR", str(APP_DIR / "cache"))) / "translate"
+
 
 def _video_identity(path: str) -> dict:
     """视频身份：优先用绝对路径 + 大小 + mtime；文件不存在时退化为路径哈希。"""
@@ -240,11 +245,15 @@ def subtitle_cache_save(video_path: str, lang: str, segments: list,
 
 def subtitle_cache_summary() -> dict:
     """缓存概览（给 /api/state 用，避免每次轮询都读全部字幕）。"""
+    return _dir_summary(SUBTITLE_CACHE_DIR, "*.json")
+
+
+def _dir_summary(root: Path, pattern: str) -> dict:
     n = 0
     total = 0
     newest = 0.0
-    if SUBTITLE_CACHE_DIR.exists():
-        for f in SUBTITLE_CACHE_DIR.glob("*.json"):
+    if root.exists():
+        for f in root.glob(pattern):
             try:
                 st = f.stat()
             except Exception:
@@ -253,7 +262,16 @@ def subtitle_cache_summary() -> dict:
             total += st.st_size
             newest = max(newest, st.st_mtime)
     return {"count": n, "size_kb": round(total / 1024, 1),
-            "newest": newest, "dir": str(SUBTITLE_CACHE_DIR)}
+            "newest": newest, "dir": str(root)}
+
+
+def translate_cache_summary() -> dict:
+    """翻译缓存概览。翻译缓存按前两位哈希分桶，所以要递归统计。"""
+    root = TRANSLATE_CACHE_DIR
+    st = sub_translate_stats()
+    if st.get("cache_dir"):
+        root = Path(st["cache_dir"])   # 以服务端实际使用的目录为准
+    return _dir_summary(root, "**/*.json")
 
 
 def subtitle_cache_list() -> dict:
@@ -464,6 +482,25 @@ def sub_health() -> dict | None:
         return None
 
 
+_tr_stats_cache = {"ts": 0.0, "data": {}}
+
+
+def sub_translate_stats() -> dict:
+    """翻译层累计统计（批量/缓存命中/纠错/兜底）。2s 缓存，避免轮询压力。"""
+    now = time.time()
+    if now - _tr_stats_cache["ts"] < 2.0:
+        return _tr_stats_cache["data"]
+    data = {}
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{SUBTITLE_PORT}/translate/stats", timeout=1.0) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        data = {}
+    _tr_stats_cache.update(ts=now, data=data)
+    return data
+
+
 def sub_start() -> dict:
     with RT.lock:
         if RT.sub_proc and RT.sub_proc.poll() is None:
@@ -658,6 +695,8 @@ def state_payload() -> dict:
         },
         "subtitle": sub_state(),
         "subtitleCache": subtitle_cache_summary(),
+        "translate": sub_translate_stats(),
+        "translateCache": translate_cache_summary(),
         "sync": SYNC.public(),
         "gpu": gpu_info(),
         "settings": s,

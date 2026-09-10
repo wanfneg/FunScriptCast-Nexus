@@ -224,6 +224,16 @@ def main() -> int:
             json.dumps(all_segs, ensure_ascii=False, indent=2), encoding="utf-8")
         emit(f"已写出 {OUT_DIR / (stem + '.srt')}")
 
+        # 翻译层统计：批量/缓存/纠错/兜底——衡量这次改造效果的依据
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8756/translate/stats",
+                                        timeout=5) as r:
+                tr = json.loads(r.read().decode("utf-8"))
+            emit(f"翻译层：{tr.get('describe')}")
+            emit(f"         {json.dumps(tr.get('stats'), ensure_ascii=False)}")
+        except Exception as e:
+            emit(f"翻译层统计不可用：{e}")
+
         api_post("/api/subtitle/stop", {}, timeout=60)
         emit("字幕服务已停止（显存释放）")
     finally:
