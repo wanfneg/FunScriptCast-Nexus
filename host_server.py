@@ -25,6 +25,7 @@ import logging
 import os
 import queue
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -693,22 +694,102 @@ def _watch_subtitle(proc: "subprocess.Popen") -> None:
         RT.add_log(f"字幕服务启动失败：{RT.sub_error}", "err")
 
 
+def _port_owner_pids(port: int) -> list:
+    """占用某端口的 PID 列表（解析 netstat，不引第三方依赖）。"""
+    if os.name != "nt":
+        return []
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return []
+    pids: list = []
+    for line in out.splitlines():
+        p = line.split()
+        if len(p) >= 5 and p[1].endswith(f":{port}") and p[3] == "LISTENING":
+            try:
+                pid = int(p[4])
+            except ValueError:
+                continue
+            if pid not in pids:
+                pids.append(pid)
+    return pids
+
+
+def _proc_name(pid: int) -> str:
+    """进程映像名（小写）。用来确认要杀的是不是 audiocpp 后端，别误伤。"""
+    if os.name != "nt":
+        return ""
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                             capture_output=True, text=True, timeout=10).stdout
+        line = out.strip().splitlines()[0] if out.strip() else ""
+        return line.split(",")[0].strip().strip('"').lower()
+    except Exception:
+        return ""
+
+
+def _kill_tree(pid: int) -> None:
+    """结束进程**及整棵子树**。
+
+    必须带 /T：字幕服务的 audiocpp 后端是孙子进程，而 Windows 上
+    `terminate()` 走的是 TerminateProcess——它不给 Python 执行 lifespan 收尾的
+    机会，于是 `stop_server()` 永远不会被调用。实测停止字幕服务后
+    audiocpp_server 仍活着，带着 3 GB 内存并继续占着 8083 端口。
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=20)
+            return
+        except Exception as e:
+            log.warning("taskkill 失败（PID %s）：%s", pid, e)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def _audiocpp_port() -> int:
+    """audiocpp 后端端口，从字幕服务配置里读（读不到用 8083）。"""
+    try:
+        cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+        return int((cfg.get("asr") or {}).get("audiocpp", {}).get("port") or 8083)
+    except Exception:
+        return 8083
+
+
+def reap_orphan_audiocpp() -> int:
+    """收拾"在跑但没有字幕服务在用"的 audiocpp 后端，返回清掉的个数。
+
+    宿主被强杀时它会变成孤儿（见 _kill_tree 的说明），带着约 3 GB 内存常驻。
+    """
+    if sub_port_open():
+        return 0                     # 字幕服务在，audiocpp 是它在用的，别动
+    n = 0
+    for pid in _port_owner_pids(_audiocpp_port()):
+        if _proc_name(pid) == "audiocpp_server.exe":
+            _kill_tree(pid)
+            n += 1
+    if n:
+        RT.add_log(f"已清理残留的 audiocpp 后端（{n} 个进程，约 3 GB 内存）", "warn")
+    return n
+
+
 def sub_stop() -> dict:
     with RT.lock:
         proc = RT.sub_proc
         RT.sub_proc = None
         RT.sub_ready = False
+    stopped = False
     if proc and proc.poll() is None:
-        try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=6)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        except Exception as e:
-            log.warning("终止字幕服务失败：%s", e)
-        RT.add_log("字幕服务已停止 · 显存已释放", "warn")
-    return {"ok": True}
+        _kill_tree(proc.pid)          # /T：连它拉起的 audiocpp 子进程一起带走
+        stopped = True
+        RT.add_log("字幕服务已停止 · 模型内存已释放", "warn")
+    # 兜底：子树没被带走时（父子关系断裂、进程被重新挂到别处），按端口收拾。
+    # audiocpp 带着约 3 GB 内存，不还回来就等于"常驻"，只是晚一点发生。
+    reap_orphan_audiocpp()
+    return {"ok": True, "stopped": stopped}
 
 
 def sub_state() -> dict:
@@ -1805,6 +1886,10 @@ def run(open_window: bool = True) -> None:
         dlna_start()
     if s.get("subtitle_auto_start"):
         sub_start()
+
+    # 启动体检：上次被强杀可能留下 audiocpp 常驻进程（约 3 GB 内存）。
+    # 判据是"它在跑，但字幕服务并不在"——那它就没有主人，是残留。
+    threading.Thread(target=reap_orphan_audiocpp, daemon=True, name="reap-audiocpp").start()
 
     if not open_window:
         # 无窗口模式（调试/被外部托管）：保持进程存活

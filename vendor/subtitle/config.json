@@ -64,6 +64,7 @@
   },
   "server": {
     "host": "0.0.0.0",
-    "port": 8756
+    "port": 8756,
+    "idle_release_min": 15
   }
 }

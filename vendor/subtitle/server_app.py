@@ -15,6 +15,7 @@
   - ASR 与翻译串行执行；ASR 占 GPU，翻译默认走 Ollama/云端（8GB 卡上两者不能同时驻留）
 """
 
+import asyncio
 import json
 import os
 import time
@@ -56,6 +57,48 @@ state = {"asr": None, "translator": None, "glossary": None}
 # 进程启动时刻：/health 回给宿主，用来识别"这是不是我刚拉起来的那个进程"
 _BOOT_TS = time.time()
 
+# 最后一次真正干活的时刻（只有 /transcribe 算，/health 不算）。
+# 空闲回收靠它判断——如果把 /health 也算作活动，只要 PC 界面开着轮询，
+# 服务就永远回收不掉，等于又变回常驻。
+_LAST_REQ_TS = _BOOT_TS
+
+
+def _idle_release_min() -> float:
+    """空闲多久自动释放模型并退出（分钟）。0 或负数 = 不自动释放。
+
+    这是"按需加载"的另一半：只在用的时候加载，不用了得还回去。
+    只加载不释放的话，看过一次片之后 audiocpp 那约 3 GB 就一直挂着，
+    和"常驻"没有区别，只是发生得晚一点。
+    """
+    try:
+        return float((CFG.get("server") or {}).get("idle_release_min", 15) or 0)
+    except Exception:
+        return 15.0
+
+
+async def _idle_reaper() -> None:
+    """空闲到点就把自己关掉，并把 audiocpp 后端一起带走。
+
+    必须显式 stop_server() 再退出，不能直接 os._exit：后者跳过 lifespan 收尾，
+    audiocpp 会变成孤儿继续占着内存——这正是之前 sub_stop 踩过的坑。
+    """
+    while True:
+        await asyncio.sleep(30)
+        mins = _idle_release_min()
+        if mins <= 0:
+            continue
+        idle = time.time() - _LAST_REQ_TS
+        if idle < mins * 60:
+            continue
+        print(f"[server] 空闲 {idle / 60:.1f} 分钟 ≥ {mins:.0f} 分钟，"
+              f"释放模型并退出（下次要用会由头显重新拉起）", flush=True)
+        try:
+            if hasattr(state["asr"], "stop_server"):
+                state["asr"].stop_server()
+        except Exception as e:
+            print(f"[server] 释放 audiocpp 失败：{type(e).__name__}: {e}", flush=True)
+        os._exit(0)
+
 
 def _make_asr(cfg: dict, glossary):
     """按 asr.backend 选引擎。
@@ -87,7 +130,11 @@ async def lifespan(_app):
     state["translator"] = Translator(CFG.get("translate", {}), state["glossary"])
     print(f"[server] 翻译后端={state['translator'].backend}，"
           f"术语表 ja={state['glossary'].size('ja')} en={state['glossary'].size('en')}")
+    _reaper = asyncio.create_task(_idle_reaper())
+    print(f"[server] 空闲回收：{_idle_release_min():.0f} 分钟无识别请求后释放模型"
+          if _idle_release_min() > 0 else "[server] 空闲回收：已关闭（idle_release_min=0）")
     yield
+    _reaper.cancel()
     try:
         if hasattr(state["asr"], "stop_server"):
             state["asr"].stop_server()
@@ -155,6 +202,8 @@ def glossary_reload():
 @app.post("/transcribe")
 async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0,
                      keep_from_ms: int = 0, translate: bool = True):
+    global _LAST_REQ_TS
+    _LAST_REQ_TS = time.time()          # 只有真正干活才算"在用"，空闲回收看这个
     body = await request.body()
     if len(body) < 3200:  # <0.1s 音频，直接返回
         return {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
