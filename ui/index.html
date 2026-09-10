@@ -407,6 +407,17 @@
             <div class="kv"><div class="eyebrow">Translate</div><div class="mono kv-v" id="subMt">—</div></div>
             <div class="kv"><div class="eyebrow">Glossary</div><div class="mono kv-v" id="subGloss">—</div></div>
           </div>
+          <div class="notice warn top-3" id="subForeignNotice" style="display:none">
+            <svg class="ic"><use href="#i-triangle-alert"/></svg>
+            <div class="grow">
+              <div id="subForeignMsg">8756 上的字幕服务不是本程序启动的。</div>
+              <div class="hint" style="margin-top:5px">
+                它用的是启动那一刻的旧配置，之后改过的模型 / 翻译后端 / 术语表都不会生效——
+                界面却会显示"就绪"。通常来自上次宿主被强杀留下的残留进程。
+              </div>
+            </div>
+            <button class="btn ghost" id="subReclaim"><svg class="ic"><use href="#i-refresh-ccw"/></svg><span>结束并重启</span></button>
+          </div>
         </div>
 
         <div class="grid g2 stack">

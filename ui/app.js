@@ -289,6 +289,15 @@
     $("#subMt").textContent = h.translate_backend || "—";
     $("#subGloss").textContent = h.glossary ? Object.keys(h.glossary).map(function (k) { return k + " " + h.glossary[k]; }).join(" · ") : "—";
 
+    /* 8756 上挂着别人的服务（上次强杀宿主留下的残留）：必须显式告警。
+       它加载的是启动时的旧配置，用户改了模型/后端却不生效，光看界面完全看不出来。 */
+    var fn = $("#subForeignNotice");
+    if (fn) {
+      var fp = sub.foreignPid;
+      fn.style.display = fp ? "" : "none";
+      if (fp) $("#subForeignMsg").textContent = "8756 上的字幕服务不是本程序启动的（PID " + fp + "）";
+    }
+
     /* ---- 字幕缓存 ---- */
     var sc = st.subtitleCache || {};
     setBadge($("#cacheBadge"), sc.count ? "ok" : "", (sc.count || 0) + " 个");
@@ -756,6 +765,15 @@
       api("/api/dlna/stop", "POST", {}).then(function () { toast("DLNA 已停止"); poll(true); });
     });
     $("#qaSubStart").addEventListener("click", startSub);
+    $("#subReclaim").addEventListener("click", function () {
+      api("/api/subtitle/reclaim", "POST", {}).then(function (r) {
+        if (r.nothing) { toast("没有发现残留服务", "", "warn"); poll(true); return; }
+        toast(r.ok ? "已结束残留服务" : "回收失败",
+              r.error || (r.killed ? "PID " + r.killed + " 已结束，正在按当前配置重启" : ""),
+              r.ok ? "ok" : "err");
+        poll(true);
+      });
+    });
     $("#qaSubStop").addEventListener("click", function () {
       api("/api/subtitle/stop", "POST", {}).then(function () { toast("字幕服务已停止", "显存已释放"); poll(true); });
     });

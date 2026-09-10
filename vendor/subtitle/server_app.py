@@ -53,6 +53,9 @@ if os.environ.get("TRANSLATE_BACKEND"):
 
 state = {"asr": None, "translator": None, "glossary": None}
 
+# 进程启动时刻：/health 回给宿主，用来识别"这是不是我刚拉起来的那个进程"
+_BOOT_TS = time.time()
+
 
 def _make_asr(cfg: dict, glossary):
     """按 asr.backend 选引擎。
@@ -108,6 +111,11 @@ def health():
     asr = state["asr"]
     return {
         "ok": asr is not None,
+        # 进程身份：宿主靠它判断 8756 上跑的到底是不是自己拉起来的那个。
+        # 只看"端口开着"会被上次异常退出残留的进程骗过去，然后报一个假的 ready，
+        # 头显就会跳过等待、把音频发给一个陈旧进程（实测踩过）。
+        "pid": os.getpid(),
+        "started_at": _BOOT_TS,
         "asr_model": CFG["asr"]["model"],
         "device": CFG["asr"].get("device"),
         "vad": asr.vad is not None if asr else False,

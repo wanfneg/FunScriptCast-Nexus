@@ -107,6 +107,9 @@ class Runtime:
         self.sub_error = ""
         self.sub_ready = False
         self.sub_last_probe = 0.0
+        # 我们 spawn 字幕服务的时刻。用来判断 8756 上应答的到底是不是自己人：
+        # 孤儿一定是在我们启动**之前**就存在的（见 _service_ours）。
+        self.sub_spawn_ts = 0.0
         self.logs: list[dict] = []          # {ts, level, msg}
         self.dlna_logs: list[str] = []
 
@@ -525,6 +528,46 @@ def sub_translate_stats() -> dict:
     return data
 
 
+def _service_ours(health: dict | None) -> bool:
+    """8756 上应答的服务，是不是本程序拉起来的那个。
+
+    **不能用 PID 比**：Windows 上 venv 里的 python.exe 只是个启动器，它会再起一个
+    基础解释器来跑脚本，真正跑 uvicorn、应答 /health 的是那个**子进程**。
+    拿我们 spawn 到的 PID 去比永远对不上，会把自家服务误判成外来的
+    （本机就踩了这个坑：干净启动也报 foreignPid）。
+
+    判据是"服务自报的启动时刻 vs 我们 spawn 的时刻"——孤儿必然早于我们启动：
+      · sub_spawn_ts == 0 → 本次宿主从没启动过服务，那 8756 上的一定是别人的；
+      · started_at 缺失（老版本服务）→ 无从判断，当作自己人，宁可少报警。
+    """
+    if not health:
+        return False
+    with RT.lock:
+        spawn = RT.sub_spawn_ts
+    started = health.get("started_at")
+    if not spawn:
+        return False                # 我们没起过 → 不可能是自己人
+    if not started:
+        return True                 # 判不了，别误报
+    return float(started) >= float(spawn) - 1.0
+
+
+def foreign_service() -> dict | None:
+    """8756 上的服务是不是**别人**在跑（不是本程序拉起来的那个）。
+
+    为什么必须查：只看"端口开着"会被上次异常退出残留的进程骗过去——
+    那时 `sub_state()` 会报 ready，头显就会跳过等待、把音频发给一个陈旧进程，
+    而那个进程用的是它启动时的旧 config，改过的设置全都不生效。
+    本机反复 Stop-Process 杀宿主留下的就是这种残留（子进程会活下来）。
+    """
+    if not sub_port_open():
+        return None
+    health = sub_health()
+    if not health or _service_ours(health):
+        return None
+    return {"pid": health.get("pid"), "started_at": health.get("started_at")}
+
+
 def sub_start() -> dict:
     with RT.lock:
         if RT.sub_proc and RT.sub_proc.poll() is None:
@@ -533,6 +576,16 @@ def sub_start() -> dict:
             return {"ok": True, "starting": True}
         RT.sub_starting = True
         RT.sub_error = ""
+
+    # 端口已被别的进程占着：再拉一个也是徒劳（uvicorn 绑不上端口会立刻退出），
+    # 直接复用它并如实标注，别制造一个"刚起来就死"的子进程。
+    f = foreign_service()
+    if f:
+        with RT.lock:
+            RT.sub_starting = False
+        RT.add_log(f"8756 上已有其他字幕服务在跑（PID {f['pid']}），直接复用；"
+                   f"它不是本程序启动的，改过设置可能需要先结束它", "warn")
+        return {"ok": True, "foreign": True, "reused": True, "pid": f["pid"]}
 
     def worker() -> None:
         try:
@@ -557,6 +610,10 @@ def sub_start() -> dict:
                 _m = ""
             if not _m and MODELS_DIR.exists():
                 env.setdefault("ASR_MODEL", str(MODELS_DIR / "Qwen3-ASR-0.6B"))
+            # 记下 spawn 时刻：判断 8756 上应答的是不是自己人就靠它
+            # （服务自报的 started_at 若早于这个时刻，说明是上次残留的）。
+            with RT.lock:
+                RT.sub_spawn_ts = time.time()
             # 用管道接住子进程输出：起来就挂（缺依赖等）时能给出可读原因
             proc = subprocess.Popen(
                 [str(py), "run_server.py", "--port", str(SUBTITLE_PORT)],
@@ -649,8 +706,23 @@ def sub_state() -> dict:
         RT.sub_last_probe = now
         RT.sub_ready = sub_port_open()
     health = sub_health() if RT.sub_ready else None
-    if alive and RT.sub_ready:
+    # 端口开着 ≠ 我们的服务在跑。区分三种情况，否则会给出一个会骗人的 ready：
+    #   · 服务是别人在跑，但能正常应答 /health → 服务确实可用，算 ready，
+    #     只把"不是本程序管的"标出来（改过设置可能需要先结束它）；
+    #   · 端口开着却连 /health 都不应答 → 是个半死进程，必须报错，
+    #     否则 sub_start 会再拉一个绑不上端口的子进程、立刻退出，白折腾一轮。
+    foreign_pid = None
+    if health and not _service_ours(health):
+        foreign_pid = health.get("pid")
+    if health and foreign_pid:
         status = "ready"
+        if not alive:
+            err = err or f"8756 上的字幕服务不是本程序启动的（PID {foreign_pid}）"
+    elif alive and RT.sub_ready:
+        status = "ready"
+    elif not alive and RT.sub_ready and not starting:
+        status = "error"
+        err = err or "8756 被某个进程占用，但它不应答 /health，不像是正常的字幕服务"
     elif starting or (alive and not RT.sub_ready):
         status = "loading"
     elif err:
@@ -663,8 +735,38 @@ def sub_state() -> dict:
         "pid": proc.pid if alive else None,
         "port": SUBTITLE_PORT,
         "error": err,
+        # 非空表示 8756 上的服务不是本程序管的（残留进程），PC 端界面据此提示用户
+        "foreignPid": foreign_pid,
         "health": health,
     }
+
+
+def sub_reclaim() -> dict:
+    """结束 8756 上不属于本程序的服务，然后重新拉起自己那份。
+
+    为什么需要：宿主被强杀（任务管理器 / 崩溃）时字幕服务子进程会活下来，
+    下次启动端口就被它占着——而它加载的是**当时**的 config，之后改过的设置
+    （换模型、换翻译后端、改术语表）一律不生效，界面上却显示"就绪"。
+    唯一干净的做法是把它结束掉，再起一份按当前配置加载的。
+    """
+    f = foreign_service()
+    if not f:
+        return {"ok": True, "nothing": True}
+    pid = int(f["pid"])
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, timeout=12)
+        else:
+            os.kill(pid, 15)
+    except Exception as e:
+        return {"ok": False, "error": f"结束 PID {pid} 失败：{type(e).__name__}: {e}"}
+    RT.add_log(f"已结束残留的字幕服务（PID {pid}）", "warn")
+    time.sleep(1.2)
+    with RT.lock:
+        RT.sub_ready = False
+        RT.sub_last_probe = 0.0
+    return {"ok": True, "killed": pid, "restart": sub_start()}
 
 
 def headset_status() -> dict:
@@ -848,6 +950,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(sub_start())
             elif path == "/api/subtitle/stop":
                 self._json(sub_stop())
+            elif path == "/api/subtitle/reclaim":
+                self._json(sub_reclaim())
             elif path == "/api/subtitle/config":
                 self._json(save_subtitle_config(body))
             elif path == "/api/glossary/save":
