@@ -33,3 +33,11 @@ _runtime/
 # 编辑器
 .vscode/
 .idea/
+
+# Lucide 图标下载缓存（生成结果已经内联进 ui/index.html，缓存本身不入库）
+/tools/.lucide-cache/
+
+# 界面测试产物（截图与审计数据，可随时重新生成）
+/tests/_shots/
+/tests/_audit.json
+/tests/_geo.json

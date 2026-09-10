@@ -1,0 +1,23 @@
+/* 由 tools/fetch_fonts.py 生成，请勿手改。
+   Inter / Space Grotesk / JetBrains Mono · SIL OFL 1.1 · latin 子集可变字重。 */
+@font-face{
+  font-family:"Inter Variable";
+  font-style:normal;
+  font-weight:100 900;
+  font-display:swap;
+  src:url("fonts/inter-latin-wght-normal.woff2") format("woff2");
+}
+@font-face{
+  font-family:"Space Grotesk Variable";
+  font-style:normal;
+  font-weight:100 900;
+  font-display:swap;
+  src:url("fonts/space-grotesk-latin-wght-normal.woff2") format("woff2");
+}
+@font-face{
+  font-family:"JetBrains Mono Variable";
+  font-style:normal;
+  font-weight:100 900;
+  font-display:swap;
+  src:url("fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+}

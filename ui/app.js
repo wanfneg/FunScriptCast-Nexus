@@ -35,7 +35,7 @@
   function toast(title, desc, kind) {
     var el = document.createElement("div");
     el.className = "toast " + (kind || "ok");
-    el.innerHTML = '<svg class="ic"><use href="#' + (kind === "err" ? "i-warn" : "i-check") + '"/></svg>' +
+    el.innerHTML = '<svg class="ic"><use href="#' + (kind === "err" ? "i-triangle-alert" : kind === "warn" ? "i-triangle-alert" : "i-circle-check") + '"/></svg>' +
       '<div><div class="tt">' + esc(title) + "</div>" + (desc ? '<div class="td">' + esc(desc) + "</div>" : "") + "</div>";
     toastBox.appendChild(el);
     setTimeout(function () { el.classList.add("out"); setTimeout(function () { el.remove(); }, 220); }, 3000);
@@ -54,58 +54,104 @@
     ind.style.transform = "translateY(" + (r.top - pr.top) + "px)";
     ind.style.height = r.height + "px";
   }
+  function activeNavBtn() { return $('button[aria-current="true"]', nav); }
+
+  /* 页面切换：旧页先模糊上移淡出，新页挂上 .enter 让子元素逐级落下。
+     用定时器而不是 animationend —— 动画强度设为「关闭」时根本不会派发动画事件，
+     监听 animationend 会让旧页永远留在屏幕上。 */
+  var pageTimer = null;
+  function showPage(name) {
+    var btn = $('button[data-page="' + name + '"]', nav);
+    if (btn) {
+      $$("button[data-page]", nav).forEach(function (b) { b.removeAttribute("aria-current"); });
+      btn.setAttribute("aria-current", "true");
+      moveIndicator(btn);
+    }
+    var next = document.getElementById("page-" + name);
+    if (!next) return;
+    var cur = $(".page.active", content);
+    clearTimeout(pageTimer);
+    if (cur && cur !== next) {
+      cur.classList.remove("active");
+      if (!motionOff()) {
+        cur.classList.add("leaving");
+        pageTimer = setTimeout(function () { cur.classList.remove("leaving"); }, 170);
+      }
+    }
+    next.classList.add("active");
+    if (!motionOff()) {
+      next.classList.remove("enter");
+      void next.offsetWidth;      // 强制重排，让动画能重新触发
+      next.classList.add("enter");
+    }
+    content.scrollTop = 0;
+    /* 分段控件与 canvas 在隐藏页里量不到尺寸（getBoundingClientRect 全是 0），
+       所以每次页面显示后都要重新摆一次；等一帧让 display 生效。 */
+    requestAnimationFrame(function () { placeAllSegs(); resizeSignal(); });
+  }
   nav.addEventListener("click", function (e) {
     var btn = e.target.closest("button[data-page]");
-    if (!btn) return;
-    $$("button[data-page]", nav).forEach(function (b) { b.removeAttribute("aria-current"); });
-    btn.setAttribute("aria-current", "true");
-    moveIndicator(btn);
-    $$(".page", content).forEach(function (p) { p.classList.remove("active"); });
-    var page = document.getElementById("page-" + btn.getAttribute("data-page"));
-    if (page) { page.classList.add("active"); content.scrollTop = 0; }
+    if (btn) showPage(btn.getAttribute("data-page"));
   });
-  window.addEventListener("resize", function () { moveIndicator($('button[aria-current="true"]', nav)); });
+  window.addEventListener("resize", function () { moveIndicator(activeNavBtn()); placeAllSegs(); });
 
   /* ---------------------------------------------------------- 分段控件 */
+  var segs = [];   // 已注册的分段控件，字体加载完/窗口缩放时统一重新摆位
   function initSeg(segId, thumbId, onPick) {
     var seg = document.getElementById(segId), thumb = document.getElementById(thumbId);
     if (!seg || !thumb) return;
-    function place(btn) {
+    var ctl = { seg: seg, thumb: thumb };
+    segs.push(ctl);
+
+    ctl.place = function (btn) {
       if (!btn) return;
+      /* 绝对定位子元素的 left:0/top:0 落在**内边距盒**上（边框内侧），
+         所以位移要减掉**边框宽度**而不是内边距。减错的话滑块会整体偏掉
+         一个边框宽（实测偏 2px），而且这种偏差肉眼几乎看不出来。 */
+      var cs = getComputedStyle(seg);
+      var padT = parseFloat(cs.paddingTop) || 0;
+      var bl = seg.clientLeft || 0, bt = seg.clientTop || 0;
       var r = btn.getBoundingClientRect(), pr = seg.getBoundingClientRect();
       thumb.style.width = r.width + "px";
-      thumb.style.transform = "translateX(" + (r.left - pr.left - 3) + "px)";
-    }
+      thumb.style.height = Math.max(0, seg.clientHeight - padT * 2) + "px";
+      thumb.style.transform = "translate(" + (r.left - pr.left - bl) + "px," + (r.top - pr.top - bt) + "px)";
+    };
+
     seg.addEventListener("click", function (e) {
       var b = e.target.closest("button");
       if (!b) return;
       $$("button", seg).forEach(function (x) { x.setAttribute("aria-selected", x === b ? "true" : "false"); });
-      place(b);
+      ctl.place(b);
       if (onPick) onPick(b);
     });
     var cur = $('button[aria-selected="true"]', seg) || $("button", seg);
-    if (cur) { cur.setAttribute("aria-selected", "true"); place(cur); }
-    window.addEventListener("resize", function () { place($('button[aria-selected="true"]', seg)); });
+    if (cur) { cur.setAttribute("aria-selected", "true"); ctl.place(cur); }
   }
+  function placeAllSegs() { segs.forEach(function (c) { c.place($('button[aria-selected="true"]', c.seg)); }); }
 
   /* ---------------------------------------------------------- 主题 / 动效 */
   function placeSegThumb(segId, thumbId, sel) {
-    var seg = document.getElementById(segId), thumb = document.getElementById(thumbId);
+    var seg = document.getElementById(segId);
+    var ctl = null;
+    for (var i = 0; i < segs.length; i++) if (segs[i].seg === seg) { ctl = segs[i]; break; }
     var b = $(sel, seg);
-    if (!seg || !thumb || !b) return;
-    var r = b.getBoundingClientRect(), pr = seg.getBoundingClientRect();
-    thumb.style.width = r.width + "px";
-    thumb.style.transform = "translateX(" + (r.left - pr.left - 3) + "px)";
+    if (ctl) ctl.place(b);
   }
   function setTheme(t, persist) {
     document.documentElement.setAttribute("data-theme", t);
     var label = t === "dark" ? "亮色" : "暗色";
     var tip = t === "dark" ? "切换到亮色" : "切换到暗色";
+    // 图标跟着目标状态走：暗色下显示太阳（点了会变亮），反之显示月亮
+    var icon = t === "dark" ? "i-sun" : "i-moon";
     ["themeLabel", "themeLabel2"].forEach(function (id) {
       var el = document.getElementById(id); if (el) el.textContent = label;
     });
     ["themeToggle", "themeToggle2"].forEach(function (id) {
-      var el = document.getElementById(id); if (el) el.title = tip;
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.title = tip;
+      var u = el.querySelector("use");
+      if (u) u.setAttribute("href", "#" + icon);
     });
     if (persist) api("/api/settings", "POST", { theme: t });
   }
@@ -259,7 +305,11 @@
     $("#aboutIp").textContent = (st.host && st.host.lan_ip) || "—";
     $("#aboutPort").textContent = (st.host && st.host.port) || "—";
     $("#aboutLanApi").textContent = (st.host && st.host.lan_api_url) || "—";
-    $("#verLine").textContent = "v" + (st.version || "—") + " · WebView2";    syncSettingsUI();
+    $("#verLine").textContent = "v" + (st.version || "—") + " · WebView2";
+    syncSettingsUI();
+
+    /* ---- 信号波形（振幅/频率都来自上面的真实状态） ---- */
+    setSignalFromState(st);
   }
 
   /* ---- 翻译层统计（批量 / 缓存命中 / 纠错 / 兜底） ---- */
@@ -289,10 +339,10 @@
     var box = $("#rootList");
     if (!roots.length) { box.innerHTML = '<div class="empty">还没有媒体根目录</div>'; return; }
     box.innerHTML = roots.map(function (p, i) {
-      return '<div class="row"><svg class="ic" style="color:var(--ink-3)"><use href="#i-folder"/></svg>' +
+      return '<div class="row"><svg class="ic muted"><use href="#i-folder"/></svg>' +
         '<div class="grow"><div class="name mono" style="font-size:12px">' + esc(p) + "</div></div>" +
         '<span class="badge acc">已启用</span>' +
-        '<button class="icon-btn del" data-del-root="' + i + '" title="移除"><svg class="ic"><use href="#i-trash"/></svg></button></div>';
+        '<button class="icon-btn del" data-del-root="' + i + '" title="移除"><svg class="ic"><use href="#i-trash-2"/></svg></button></div>';
     }).join("");
   }
 
@@ -728,7 +778,7 @@
   function copyText(txt, btn) {
     try { navigator.clipboard && navigator.clipboard.writeText(txt); } catch (_) {}
     var old = btn.innerHTML;
-    btn.innerHTML = '<svg class="ic"><use href="#i-check"/></svg>';
+    btn.innerHTML = '<svg class="ic"><use href="#i-circle-check"/></svg>';
     btn.style.color = "var(--ok)";
     setTimeout(function () { btn.innerHTML = old; btn.style.color = ""; }, 1200);
   }
@@ -763,14 +813,165 @@
   document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(true); });
 
   /* ---------------------------------------------------------- 启动 */
+  /* ================================================================
+     画布层：指针环境光 + 信号波形
+     ================================================================ */
+
+  /* 指针光晕。位置写进 CSS 变量，并做插值跟随——直接把鼠标坐标赋进去的话
+     快速移动时是一格一格跳的，插值后才有"光被拖着走"的手感。 */
+  var ptr = { tx: 0, ty: 0, x: 0, y: 0, on: false };
+  function initPointerLight() {
+    if (!$("#pointerLight")) return;
+    window.addEventListener("pointermove", function (e) {
+      ptr.tx = e.clientX; ptr.ty = e.clientY;
+      if (!ptr.on) { ptr.on = true; ptr.x = ptr.tx; ptr.y = ptr.ty; document.body.classList.add("ptr"); }
+    });
+    window.addEventListener("pointerleave", function () {
+      ptr.on = false; document.body.classList.remove("ptr");
+    });
+  }
+  function stepPointerLight() {
+    if (!ptr.on || motionOff()) return;
+    ptr.x += (ptr.tx - ptr.x) * 0.13;
+    ptr.y += (ptr.ty - ptr.y) * 0.13;
+    var s = document.documentElement.style;
+    s.setProperty("--mx", ptr.x.toFixed(1) + "px");
+    s.setProperty("--my", ptr.y.toFixed(1) + "px");
+  }
+
+  /* 信号波形。振幅来自"有几个服务在跑"，频率来自 GPU 占用——它同时承担
+     "一眼看出系统在不在干活"的职责，不是纯装饰。canvas 每帧只画百来个点。 */
+  var sig = { cv: null, ctx: null, w: 0, h: 0, dpr: 1, t: 0, amp: 0, freq: 0.7,
+              mode: "IDLE", dirty: true, stamp: "" };
+  var sigColors = { accent: "#4cc9f0", accent2: "#7b5cff", line: "rgba(255,255,255,.12)" };
+
+  function initSignal() {
+    sig.cv = $("#pulseCanvas");
+    if (!sig.cv) return;
+    sig.ctx = sig.cv.getContext("2d");
+    resizeSignal();
+    window.addEventListener("resize", resizeSignal);
+  }
+  function resizeSignal() {
+    if (!sig.cv) return;
+    var r = sig.cv.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    sig.dpr = Math.min(2, window.devicePixelRatio || 1);
+    sig.cv.width = Math.round(r.width * sig.dpr);
+    sig.cv.height = Math.round(r.height * sig.dpr);
+    sig.w = r.width; sig.h = r.height;
+    sig.dirty = true;
+  }
+  function refreshSignalColors() {
+    var cs = getComputedStyle(document.documentElement);
+    function v(n, fb) { var x = cs.getPropertyValue(n).trim(); return x || fb; }
+    sigColors.accent = v("--accent", "#4cc9f0");
+    sigColors.accent2 = v("--accent-2", "#7b5cff");
+    sigColors.line = v("--line-2", "rgba(255,255,255,.12)");
+    sig.stamp = document.documentElement.getAttribute("data-theme") || "dark";
+    sig.dirty = true;
+  }
+
+  /* 由 /api/state 推出波形参数与状态标签 */
+  function setSignalFromState(st) {
+    var d = st.dlna || {}, sub = st.subtitle || {}, g = st.gpu || {};
+    var amp = 0, freq = 0.7, tags = [];
+    if (d.running) { amp += 0.42; tags.push("DLNA"); }
+    if (sub.status === "ready") { amp += 0.46; tags.push("ASR"); }
+    else if (sub.status === "loading") { amp += 0.30; tags.push("LOADING"); }
+    if (d.starting) { freq += 0.5; tags.push("STARTING"); }
+    var gpu = g.total_mb ? (g.used_mb / g.total_mb) : 0;
+    if (gpu > 0.02) { amp += gpu * 0.55; freq += gpu * 1.3; tags.push("GPU " + Math.round(gpu * 100) + "%"); }
+    if (amp === 0) { amp = 0.13; }               // 全停时留一条安静的呼吸线
+    sig.amp = Math.min(1.35, amp);
+    sig.freq = Math.min(3.2, freq);
+    sig.mode = tags.length ? tags.join(" + ") : "IDLE";
+    var lbl = $("#pulseState");
+    if (lbl && lbl.textContent !== sig.mode) lbl.textContent = sig.mode;
+    sig.dirty = true;
+  }
+
+  function drawSignal(dt) {
+    if (!sig.ctx || !sig.w) return;
+    if (sig.stamp !== (document.documentElement.getAttribute("data-theme") || "dark")) refreshSignalColors();
+    if (!motionOff()) sig.t += dt * (document.documentElement.getAttribute("data-motion") === "reduced" ? 0.35 : 1);
+
+    var ctx = sig.ctx, w = sig.w, h = sig.h, mid = h * 0.52;
+    ctx.setTransform(sig.dpr, 0, 0, sig.dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // 基线
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = sigColors.line;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
+
+    // 波形：三段不同频率叠加，两端用 sin 包络收束，避免被硬切
+    var grd = ctx.createLinearGradient(0, 0, w, 0);
+    grd.addColorStop(0, "rgba(0,0,0,0)");
+    grd.addColorStop(0.14, sigColors.accent);
+    grd.addColorStop(0.74, sigColors.accent2);
+    grd.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = grd;
+    ctx.lineWidth = 1.7;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    var n = Math.max(64, Math.floor(w / 3));
+    for (var i = 0; i <= n; i++) {
+      var p = i / n, env = Math.sin(Math.PI * p);
+      var y = mid
+        + Math.sin(p * 11 * sig.freq + sig.t * 1.7) * 11 * sig.amp * env
+        + Math.sin(p * 29 * sig.freq - sig.t * 2.8) * 4.6 * sig.amp * env
+        + Math.sin(p * 5 * sig.freq + sig.t * 0.85) * 7.5 * sig.amp * env;
+      if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(p * w, y);
+    }
+    ctx.stroke();
+
+    // 一条更淡的镜像线，做出"信号有厚度"的感觉
+    ctx.globalAlpha = 0.18;
+    ctx.beginPath();
+    for (i = 0; i <= n; i++) {
+      p = i / n; env = Math.sin(Math.PI * p);
+      y = mid - (Math.sin(p * 11 * sig.freq + sig.t * 1.7) * 11 * sig.amp * env
+        + Math.sin(p * 29 * sig.freq - sig.t * 2.8) * 4.6 * sig.amp * env);
+      if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(p * w, y);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  function frame(now) {
+    var dt = Math.min(0.05, (now - (frame.last || now)) / 1000);
+    frame.last = now;
+    stepPointerLight();
+    if (document.hidden) { requestAnimationFrame(frame); return; }  // 窗口不可见时不做任何绘制
+    if (motionOff()) {
+      if (sig.dirty) { sig.dirty = false; drawSignal(0); }
+    } else {
+      drawSignal(dt);
+    }
+    requestAnimationFrame(frame);
+  }
+
   function boot() {
     bind();
     setTheme("dark", false);
     setMotion("full", false);
+    initPointerLight();
+    initSignal();
+    refreshSignalColors();
+    requestAnimationFrame(frame);
     poll(false);
     loadSubtitleConfig();
     loadGlossary();
     setTimeout(function () { loadSubtitleConfig(); }, 2500);
+    // 字体是异步落地的，加载完行高会变，指示块与分段滑块要重新对齐
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(function () {
+        moveIndicator(activeNavBtn()); placeAllSegs(); resizeSignal();
+      });
+    }
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
