@@ -1,0 +1,16 @@
+{
+  "host": "127.0.0.1",
+  "port": 8083,
+  "backend": "cpu",
+  "device": 0,
+  "threads": 8,
+  "models": [
+    {
+      "id": "qwen3-asr",
+      "family": "qwen3_asr",
+      "path": "E:\\audiocpp-portable\\models\\Qwen3-ASR-0.6B",
+      "task": "asr",
+      "mode": "offline"
+    }
+  ]
+}

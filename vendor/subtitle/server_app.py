@@ -54,15 +54,42 @@ if os.environ.get("TRANSLATE_BACKEND"):
 state = {"asr": None, "translator": None, "glossary": None}
 
 
+def _make_asr(cfg: dict, glossary):
+    """按 asr.backend 选引擎。
+
+    - "pytorch"（默认）：原来的 Qwen3-ASR + torch 实现
+    - "audiocpp"：audiocpp 常驻服务（CPU 后端显存 0 占用；必须先 VAD 裁剪语音段，
+      否则长音频会退化出成百上千连重复——见 audiocpp_backend 模块注释）
+    """
+    kind = str(cfg.get("backend", "pytorch") or "pytorch").lower()
+    if kind in ("audiocpp", "cpp", "ggml"):
+        try:
+            from audiocpp_backend import AudioCppBackend
+
+            be = AudioCppBackend(cfg.get("audiocpp", {}) or {})
+            be.ensure_server()
+            print(f"[server] ASR 后端 = audiocpp（{be.backend}, {be.threads} 线程, 端口 {be.port}）")
+            return be
+        except Exception as e:
+            print(f"[server] audiocpp 不可用（{type(e).__name__}: {e}），回退 PyTorch")
+    engine = AsrEngine(cfg, glossary)
+    print(f"[server] ASR 后端 = pytorch（加载 {engine.load_s:.1f}s）")
+    return engine
+
+
 @asynccontextmanager
 async def lifespan(_app):
     state["glossary"] = Glossary(CFG.get("glossary", {}), base_dir=BASE)
-    state["asr"] = AsrEngine(CFG.get("asr", {}), state["glossary"])
+    state["asr"] = _make_asr(CFG.get("asr", {}), state["glossary"])
     state["translator"] = Translator(CFG.get("translate", {}), state["glossary"])
-    print(f"[server] ASR 就绪（加载 {state['asr'].load_s:.1f}s），"
-          f"翻译后端={state['translator'].backend}，"
+    print(f"[server] 翻译后端={state['translator'].backend}，"
           f"术语表 ja={state['glossary'].size('ja')} en={state['glossary'].size('en')}")
     yield
+    try:
+        if hasattr(state["asr"], "stop_server"):
+            state["asr"].stop_server()
+    except Exception:
+        pass
 
 
 app = FastAPI(title="VRFunScriptCast AI Subtitle Server", version="0.1", lifespan=lifespan)
