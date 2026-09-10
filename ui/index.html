@@ -528,6 +528,18 @@
             <div class="row" style="padding-left:0;padding-right:0">
               <div class="grow"><div class="name">宿主端口</div><div class="sub mono" id="aboutPort">—</div></div>
             </div>
+            <div class="row" style="padding-left:0;padding-right:0">
+              <div class="grow">
+                <div class="name">头显接口</div>
+                <div class="sub mono" id="aboutLanApi">—</div>
+              </div>
+              <button class="icon-btn" id="copyLanApi"><svg class="ic"><use href="#i-copy"/></svg></button>
+            </div>
+            <div class="hint" style="margin-top:8px">
+              头显（Quest / PICO）用这个地址查字幕缓存、并在需要时请本机把模型拉起来。
+              它只开放「查缓存 / 查状态 / 启动字幕服务」三个接口，设置与术语表等仍只在
+              本机可访问。若头显一直提示「PC 端没响应」，先确认它和电脑在同一局域网。
+            </div>
             <div style="display:flex;gap:8px;margin-top:12px">
               <button class="btn danger" id="quitApp">退出应用</button>
             </div>

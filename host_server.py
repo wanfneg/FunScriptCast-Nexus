@@ -78,8 +78,13 @@ def _subtitle_python() -> Path:
 SUBTITLE_VENV_PY = _subtitle_python()
 
 # ---------------------------------------------------------------- 端口
-UI_API_PORT = int(os.environ.get("FS_HOST_PORT", "8790"))   # 前端 + API
+UI_API_PORT = int(os.environ.get("FS_HOST_PORT", "8790"))   # 前端 + API（仅环回）
 SUBTITLE_PORT = int(os.environ.get("FS_SUBTITLE_PORT", "8756"))
+# 头显（Quest/PICO）专用接口：绑 0.0.0.0，但只放开三个路由。
+# 为什么不把 8790 直接绑到局域网：那上面还有设置、术语表、设备同步、adb、退出……
+# 单独一个端口 + 单独一个 Handler，按构造就不可能误暴露，而不是靠一处
+# "记得判断 client_address"的检查（漏一处就全开）。
+LAN_API_PORT = int(os.environ.get("FS_HOST_LAN_PORT", "8791"))
 DLNA_PORT_DEFAULT = 8899
 
 log = logging.getLogger("host")
@@ -181,7 +186,11 @@ def _resolve_video_path(video_path: str) -> str:
     p = Path(video_path)
     if p.exists():
         return str(p)
-    name = p.name or video_path.rstrip("/").split("/")[-1]
+    # DLNA 流 URL 常带查询串（`.../a.mp4?sid=1`）。必须先剥掉再取文件名，
+    # 否则 Path.name 会把 "a.mp4?sid=1" 整个当成文件名，永远找不到同名文件——
+    # 表现是"头显看第二遍仍然重跑 ASR"，没有任何报错，极难发现。
+    raw = video_path.split("?", 1)[0].split("#", 1)[0]
+    name = Path(raw).name or raw.rstrip("/").split("/")[-1]
     if not name:
         return video_path
     roots = list(load_settings().get("dlna_roots") or [])
@@ -196,7 +205,10 @@ def _resolve_video_path(video_path: str) -> str:
                 return str(cand)
         except Exception:
             continue
-    return video_path
+    # 找不到同名文件：至少返回剥掉查询串的形式。DLNA 每次播放可能带不同的
+    # sid/token，带着它算身份会让同一部片子每次都得到一个新缓存键，
+    # 命中率恒为 0——而且照样一声不响。
+    return raw
 
 
 def subtitle_cache_get(video_path: str, lang: str) -> dict:
@@ -210,6 +222,7 @@ def subtitle_cache_get(video_path: str, lang: str) -> dict:
         return {"ok": False, "hit": False, "error": f"缓存损坏：{e}"}
     return {"ok": True, "hit": True, "path": str(f), "resolved": resolved,
             "count": len(data.get("segments") or []),
+            "cover_ms": data.get("cover_ms") or 0,
             "created_at": data.get("created_at"),
             "video": data.get("video"),
             "lang": data.get("lang"),
@@ -223,6 +236,15 @@ def subtitle_cache_save(video_path: str, lang: str, segments: list,
     resolved = _resolve_video_path(video_path)
     SUBTITLE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     f = subtitle_cache_path(resolved, lang)
+    # 覆盖到的时间点：调用方（头显）用它判断这份缓存是不是"看完整了"。
+    # 只看了前 20 分钟的缓存如果被当成命中，后 10 分钟就永远没有字幕——
+    # 所以这个字段是必需的，不是装饰。
+    cover_ms = 0
+    for s in segments:
+        try:
+            cover_ms = max(cover_ms, int(s.get("end_ms") or 0))
+        except Exception:
+            continue
     payload = {
         "video": _video_identity(resolved),
         "requested": video_path,
@@ -230,6 +252,7 @@ def subtitle_cache_save(video_path: str, lang: str, segments: list,
         "config_fingerprint": _config_fingerprint(),
         "created_at": time.time(),
         "count": len(segments),
+        "cover_ms": cover_ms,
         "segments": segments,
         "meta": meta or {},
     }
@@ -240,7 +263,8 @@ def subtitle_cache_save(video_path: str, lang: str, segments: list,
     except Exception as e:
         return {"ok": False, "error": str(e)}
     RT.add_log(f"字幕已缓存（{lang} · {len(segments)} 段 → {f.name}）", "ok")
-    return {"ok": True, "path": str(f), "count": len(segments)}
+    return {"ok": True, "path": str(f), "count": len(segments),
+            "cover_ms": cover_ms, "lang": lang}
 
 
 def subtitle_cache_summary() -> dict:
@@ -643,6 +667,26 @@ def sub_state() -> dict:
     }
 
 
+def headset_status() -> dict:
+    """头显轮询用：模型起来没有。
+
+    刻意只回最小字段——这个接口是暴露在局域网上的，`/api/state` 里有本机路径、
+    日志、设备序列号之类的东西，不适合给头显（也就等于给整个局域网）。
+    """
+    st = sub_state()
+    h = st.get("health") or {}
+    status = st.get("status")
+    return {
+        "ok": True,
+        "ready": status == "ready",
+        "status": status,
+        "error": st.get("error"),
+        "asr": h.get("asr_model"),
+        "translate": h.get("translate"),
+        "version": app_version()["name"],
+    }
+
+
 # ================================================================ 指标
 _gpu_cache = {"ts": 0.0, "data": {}}
 
@@ -683,7 +727,9 @@ def state_payload() -> dict:
         "version": app_version()["name"],
         "versionInfo": app_version(),
         "uptime": round(uptime, 1),
-        "host": {"port": UI_API_PORT, "lan_ip": lan_ip(), "started_at": RT.started_at},
+        "host": {"port": UI_API_PORT, "lan_ip": lan_ip(), "started_at": RT.started_at,
+                 "lan_api_port": LAN_API_PORT,
+                 "lan_api_url": f"http://{lan_ip()}:{LAN_API_PORT}"},
         "dlna": {
             "running": dlna_on,
             "starting": dlna_starting,
@@ -849,6 +895,119 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:  # 静默访问日志
         return
+
+
+# ================================================================ 头显接口
+class ExclusiveHTTPServer(ThreadingHTTPServer):
+    """禁用 SO_REUSEADDR 的 HTTP 服务。
+
+    Python 的 HTTPServer 默认 `allow_reuse_address = 1`。这在 Linux 上只是允许
+    快速重启，但在 **Windows 上允许两个进程绑同一个端口**，之后连接会随机落到
+    其中一个进程上——表现是"接口时好时坏、日志对不上、改了代码却不生效"，
+    极难排查（本机调试就踩过：新进程明明有新路由，请求却被打到旧进程上返回 403）。
+
+    宁可让第二个实例启动就明确报错，也不要留两个半残的服务在同一个端口上抢请求。
+    """
+
+    allow_reuse_address = False
+
+
+class HeadsetHandler(BaseHTTPRequestHandler):
+    """头显（Quest/PICO）专用接口，绑 0.0.0.0。
+
+    **只放开这四个路由**，其余一律 403：
+
+      GET  /api/headset/status        模型起来没有（头显轮询用）
+      GET  /api/subtitle/cache        查该视频的字幕缓存（命中就完全不用跑 ASR）
+      POST /api/subtitle/start        请求 PC 拉起 ASR + 翻译服务
+      POST /api/subtitle/cache/save   播完把字幕存回来（否则缓存永远是空的）
+
+    设计取舍：8790 上挂着设置、术语表 CSV 导入导出、设备同步（会调 adb）、退出……
+    把它绑到局域网就等于把这些全开了。所以这里另起一个端口、另写一个 Handler，
+    白名单是"正向枚举"的——新增路由必须显式加进来，不可能因为漏了一处判断而
+    意外暴露。头显是可信设备，但局域网不一定只有头显。
+    """
+
+    server_version = "FSHost-Headset/1.0"
+    # 头显端 OkHttp 的 Origin 是 null/自定义，DLNA 播放器也可能带跨源请求
+    _ALLOW_HEADERS = ("Content-Type", "Authorization")
+
+    # ---- 工具 ----
+    def _json(self, obj, code: int = 200) -> None:
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", ", ".join(self._ALLOW_HEADERS))
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _deny(self, path: str) -> None:
+        log.warning("[头显] 拒绝未开放路径 %s（来自 %s）", path, self.client_address[0])
+        self._json({"ok": False, "error": "该接口不对局域网开放"}, 403)
+
+    def _query(self) -> dict:
+        return urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+
+    def _drain(self) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            return {}
+        try:
+            raw = self.rfile.read(n)
+            return json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            return {}
+
+    # ---- 路由 ----
+    def do_GET(self) -> None:  # noqa: N802
+        path = self.path.split("?")[0]
+        try:
+            if path == "/api/headset/status":
+                self._json(headset_status())
+            elif path == "/api/subtitle/cache":
+                q = self._query()
+                vp = (q.get("video") or [""])[0]
+                lg = (q.get("lang") or ["ja"])[0]
+                if not vp:
+                    self._json({"ok": False, "error": "缺少 video 参数"}, 400)
+                else:
+                    self._json(subtitle_cache_get(vp, lg))
+            else:
+                self._deny(path)
+        except Exception as e:
+            self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = self.path.split("?")[0]
+        body = self._drain()
+        try:
+            if path == "/api/subtitle/start":
+                RT.add_log(f"头显（{self.client_address[0]}）请求启动字幕服务", "info")
+                self._json(sub_start())
+            elif path == "/api/subtitle/cache/save":
+                # 头显播完/看完整后把字幕存回来。没有这一条，缓存永远是空的——
+                # "同一视频看第二遍不再重跑 ASR"就只是个写在界面上的说法。
+                r = subtitle_cache_save((body.get("video") or "").strip(),
+                                        (body.get("lang") or "ja").strip(),
+                                        body.get("segments") or [],
+                                        body.get("meta") or {})
+                if r.get("ok"):
+                    RT.add_log(f"头显保存字幕缓存：{r.get('count')} 段", "ok")
+                self._json(r)
+            else:
+                self._deny(path)
+        except Exception as e:
+            self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._json({"ok": True})
+
+    def log_message(self, fmt: str, *args) -> None:
+        log.info("[头显] %s %s", self.client_address[0], fmt % args)
 
 
 # ---------------------------------------------------------------- 字幕服务配置 / 术语表
@@ -1503,10 +1662,22 @@ def run(open_window: bool = True) -> None:
     s = load_settings()
     RT.add_log(f"FunScriptCast-Nexus 启动（{lan_ip()}）", "ok")
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", UI_API_PORT), Handler)
+    httpd = ExclusiveHTTPServer(("127.0.0.1", UI_API_PORT), Handler)
     httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, daemon=True, name="ui-api").start()
     log.info("UI/API: http://127.0.0.1:%d", UI_API_PORT)
+
+    # 头显接口：绑局域网，但只放开四个路由（见 HeadsetHandler）。
+    # 起不来（端口被占）不该拖垮整个程序——PC 端自己的功能不受影响。
+    try:
+        lan = ExclusiveHTTPServer(("0.0.0.0", LAN_API_PORT), HeadsetHandler)
+        lan.daemon_threads = True
+        threading.Thread(target=lan.serve_forever, daemon=True, name="headset-api").start()
+        log.info("头显接口: http://%s:%d", lan_ip(), LAN_API_PORT)
+        RT.add_log(f"头显接口已就绪：http://{lan_ip()}:{LAN_API_PORT}", "ok")
+    except Exception as e:
+        log.warning("头显接口启动失败（%s: %s），头显将无法查询缓存/拉起模型", type(e).__name__, e)
+        RT.add_log(f"头显接口启动失败：{e}", "warn")
 
     # 按设置自动启动
     if s.get("dlna_auto_start") and s.get("dlna_roots"):

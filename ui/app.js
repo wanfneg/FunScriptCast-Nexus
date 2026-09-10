@@ -258,6 +258,7 @@
     /* ---- 设置页 ---- */
     $("#aboutIp").textContent = (st.host && st.host.lan_ip) || "—";
     $("#aboutPort").textContent = (st.host && st.host.port) || "—";
+    $("#aboutLanApi").textContent = (st.host && st.host.lan_api_url) || "—";
     $("#verLine").textContent = "v" + (st.version || "—") + " · WebView2";    syncSettingsUI();
   }
 
@@ -683,6 +684,10 @@
     $("#copyIp").addEventListener("click", function () {
       var ip = $("#aboutIp").textContent;
       if (ip && ip !== "—") copyText(ip, this);
+    });
+    $("#copyLanApi").addEventListener("click", function () {
+      var u = $("#aboutLanApi").textContent;
+      if (u && u !== "—") copyText(u, this);
     });
     $("#quitApp").addEventListener("click", function () {
       // 退出由后端执行（销毁窗口 + 收尾子进程）；这里不要调 window.close()，
