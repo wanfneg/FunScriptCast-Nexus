@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import re
 import subprocess
 import tempfile
 import threading
@@ -56,6 +56,8 @@ class AudioCppBackend:
         self.pad_sec = float(cfg.get("pad_sec", 0.25))
         self.merge_gap = float(cfg.get("merge_gap_sec", 0.5))
         self.min_speech_ms = int(cfg.get("min_speech_ms", 250))
+        # 单段最长秒数：超过此长度的语音段先切开再送 ASR（防退化）
+        self.max_span_sec = float(cfg.get("max_span_sec", 8.0))
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
 
@@ -222,16 +224,28 @@ class AudioCppBackend:
         if not spans:
             return {"language": lang_key, "segments": [], "asr_ms": 0.0,
                     "skipped": True, "backend": "audiocpp"}
+        merged_raw = spans
 
         # 合并过近的语音段（避免切出大量 0.x 秒碎片）
         merged: list = []
-        for s, e in spans:
+        for s, e in merged_raw:
             if merged and s - merged[-1][1] <= self.merge_gap:
                 merged[-1] = (merged[-1][0], e)
             else:
                 merged.append((s, e))
         # 过滤低于阈值的碎段
         merged = [(s, e) for s, e in merged if (e - s) * 1000 >= min_ms]
+        # 长段再切：VAD 合并出的长段（>max_span_sec）会让模型退化出成百连重复，
+        # 实测有一段 11.5s 吐出 342 连「あ」。切成 <=max_span_sec 后消失。
+        capped: list = []
+        for s, e in merged:
+            cur = s
+            while e - cur > self.max_span_sec:
+                capped.append((cur, cur + self.max_span_sec))
+                cur += self.max_span_sec
+            if e - cur > 0.05:
+                capped.append((cur, e))
+        merged = capped
 
         pad = self.pad_sec
         segs = []
@@ -256,6 +270,9 @@ class AudioCppBackend:
                     pass
             text = (r.get("text") or "").strip()
             if not text:
+                continue
+            # 重复退化过滤（与 PyTorch 后端同思路）：同一字符连续 >=8 次判退化
+            if re.search(r"(.)\1{7,}", text):
                 continue
             segs.append({
                 "start_ms": video_start_ms + int(a / SR * 1000),
