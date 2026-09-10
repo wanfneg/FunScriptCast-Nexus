@@ -528,16 +528,39 @@
     $("#dlnaStop").addEventListener("click", function () {
       api("/api/dlna/stop", "POST", {}).then(function () { toast("DLNA 已停止"); poll(true); });
     });
-    $("#addRoot").addEventListener("click", function () {
-      var v = ($("#newRoot").value || "").trim();
-      if (!v) { toast("请输入目录路径", "", "warn"); return; }
+    /* 添加媒体根：走 /api/dlna/roots —— 它会顺手校验路径是否存在。
+       不校验的话，路径写错只表现为"头显里那个文件夹是空的"，猜不到原因。 */
+    function addRoots(list) {
       var roots = (S.settings.dlna_roots || []).slice();
-      if (roots.indexOf(v) >= 0) { toast("该目录已存在", "", "warn"); return; }
-      roots.push(v);
-      api("/api/settings", "POST", { dlna_roots: roots }).then(function () {
+      var added = 0, dup = 0;
+      (list || []).forEach(function (p) {
+        p = String(p == null ? "" : p).trim();
+        if (!p) return;
+        if (roots.indexOf(p) >= 0) { dup++; return; }
+        roots.push(p); added++;
+      });
+      if (!added) { toast(dup ? "这些目录已经在列表里了" : "请先选择或输入目录", "", "warn"); return; }
+      api("/api/dlna/roots", "POST", { roots: roots }).then(function (r) {
         $("#newRoot").value = "";
-        toast("已添加媒体根", v);
+        if (r.missing && r.missing.length) {
+          toast("已添加，但这些目录不存在", r.missing.join("；"), "err");
+        } else {
+          toast("已添加 " + added + " 个媒体根目录");
+        }
         poll(true);
+      });
+    }
+    $("#addRoot").addEventListener("click", function () { addRoots([$("#newRoot").value]); });
+    /* 系统「选择文件夹」：主入口。手打路径容易带进引号/全角字符，
+       而那种错误在头显里只表现为"目录为空"。支持一次多选。 */
+    $("#pickRoot").addEventListener("click", function () {
+      if (!bridgeReady()) return;
+      window.pywebview.api.pick_folder($("#newRoot").value || "", true).then(function (r) {
+        if (!r || !r.ok) {
+          if (r && r.error) toast("打开选择器失败", r.error, "err");
+          return;
+        }
+        addRoots(r.paths || [r.path]);
       });
     });
     $("#rootList").addEventListener("click", function (e) {

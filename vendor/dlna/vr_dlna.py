@@ -601,6 +601,13 @@ class MediaLibrary:
                 lambda: sorted(os.scandir(dir_path), key=lambda e: e.name.casefold()),
                 what=f"scandir {dir_path}",
             )
+        except (FileNotFoundError, NotADirectoryError) as e:
+            # 路径根本不存在 = 配置写错了，不是"云盘卷抖动"。
+            # **绝不能塞进坏目录黑名单**：那是给临时故障用的 24h 退避，把配置错误
+            # 也记进去的话，用户即使补建了目录也会被继续隐藏一整天。
+            # 大声报出来即可——这里只影响脚本枚举，目录浏览见 _dir_items。
+            log.error("目录不存在，已跳过：%s（%s）", dir_path, e)
+            return ""
         except OSError:
             # 云盘卷暂时不可访问或坏条目：记录黑名单，返回空目录（DeoVR 显示空文件夹而非报错）
             self._mark_broken(dir_path)

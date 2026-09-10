@@ -372,14 +372,89 @@ def load_settings() -> dict:
                     s[k] = data[k]
     except Exception as e:
         log.warning("读取设置失败：%s", e)
+    # 兼容历史数据：早期版本会把用户粘进来的引号一起存下来（`"D:\my folder"`），
+    # 那个路径永远不存在，DLNA 只会安静地列出空目录——头显里就是"文件夹是空的"，
+    # 界面上却显示"已启用"。读的时候顺手修掉，落盘由 _migrate_settings 负责。
+    for k in PATH_KEYS:
+        if isinstance(s.get(k), str):
+            s[k] = norm_path(s[k])
+    if isinstance(s.get("dlna_roots"), list):
+        s["dlna_roots"] = [norm_path(x) for x in s["dlna_roots"] if norm_path(x)]
     return s
+
+
+def _migrate_settings() -> None:
+    """把规整后的设置写回磁盘（只在内容确实变了时才写）。
+
+    不做的话，历史坏值每次读取都要靠内存里的临时修正，而别的地方（比如
+    `/api/dlna/roots` 把 roots 拼给前端）拿到的仍是修正后的值——但文件里
+    一直是错的，用户拿文件去核对会以为没问题。
+    """
+    try:
+        if not SETTINGS_FILE.exists():
+            return
+        raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        fixed = load_settings()
+        if json.dumps(raw, sort_keys=True, ensure_ascii=False) != \
+           json.dumps(fixed, sort_keys=True, ensure_ascii=False):
+            save_settings({})
+            RT.add_log("已修正设置里带引号的路径（历史数据）", "warn")
+    except Exception as e:
+        log.warning("设置迁移失败：%s", e)
+
+
+# 会被当成路径的键：写入前统一规整
+PATH_KEYS = ("script_folder", "video_folder", "device_folder",
+             "device_folder_script", "device_folder_video", "adb_path")
+# 用户可能带上的引号：半角成对、以及中文输入法的全角引号
+_QUOTES = ('"', "'", "“", "”", "‘", "’")
+
+
+def norm_path(v) -> str:
+    """规整用户输入的路径。
+
+    **必须做**：用户习惯把带空格的路径连引号一起粘进来（`"D:\\my folder"`），
+    这在任何 shell 里都合法，但不处理的话我们会把引号**当成文件名的一部分**存下来
+    ——那个路径永远不存在，DLNA 于是列不出任何东西，头显里表现为"目录为空"，
+    而界面上还显示"已启用"，完全给不出线索（实测踩过）。
+    顺带处理中文输入法的全角引号，以及前后空白。
+    """
+    s = str(v or "").strip()
+    changed = True
+    while changed and len(s) >= 2:
+        changed = False
+        if s[0] in _QUOTES and s[-1] in _QUOTES:
+            s = s[1:-1].strip()
+            changed = True
+    return s
+
+
+def missing_roots(roots) -> list:
+    """返回其中**不存在**的根目录（用于在添加时立刻提示，而不是等头显里看到空目录）。"""
+    out = []
+    for r in roots or []:
+        p = norm_path(r)
+        try:
+            if not p or not Path(p).is_dir():
+                out.append(str(r))
+        except OSError:
+            out.append(str(r))
+    return out
 
 
 def save_settings(patch: dict) -> dict:
     s = load_settings()
     for k, v in patch.items():
-        if k in DEFAULT_SETTINGS:
-            s[k] = v
+        if k not in DEFAULT_SETTINGS:
+            continue
+        # 路径类字段统一规整（去引号/去空白）。放在这一层是因为所有入口都会
+        # 经过它：界面输入、托盘、REST 接口——只在前端做的话，别的调用方照样能
+        # 把带引号的路径写进来。
+        if k in PATH_KEYS and isinstance(v, str):
+            v = norm_path(v)
+        elif k == "dlna_roots" and isinstance(v, list):
+            v = [norm_path(x) for x in v if norm_path(x)]
+        s[k] = v
     try:
         SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = SETTINGS_FILE.with_suffix(".json.tmp")
@@ -1042,8 +1117,16 @@ class Handler(BaseHTTPRequestHandler):
                 s = load_settings()
                 roots = body.get("roots")
                 if isinstance(roots, list):
+                    roots = [norm_path(x) for x in roots if norm_path(x)]
                     save_settings({"dlna_roots": roots})
-                self._json({"ok": True, "roots": s.get("dlna_roots")})
+                    # 立刻校验：路径不存在的话 DLNA 会安静地列出空目录，
+                    # 那头显里就只是"文件夹是空的"，完全猜不到是路径写错了。
+                    bad = missing_roots(roots)
+                    if bad:
+                        RT.add_log(f"这些媒体根目录不存在：{'；'.join(bad)}", "err")
+                    self._json({"ok": True, "roots": roots, "missing": bad})
+                else:
+                    self._json({"ok": True, "roots": s.get("dlna_roots")})
             elif path == "/api/subtitle/start":
                 self._json(sub_start())
             elif path == "/api/subtitle/stop":
@@ -1816,18 +1899,23 @@ class NexusApi:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def pick_folder(self, current: str = "") -> dict:
-        """系统「选择文件夹」对话框；取消返回 ok=False。"""
+    def pick_folder(self, current: str = "", multiple: bool = False) -> dict:
+        """系统「选择文件夹」对话框；取消返回 ok=False。
+
+        multiple=True 时返回 paths（媒体根通常分散在好几个盘/目录，一次选完更省事）。
+        """
         try:
             import webview
 
             res = self._win.create_file_dialog(
                 webview.FOLDER_DIALOG,
                 directory=current or "",
+                allow_multiple=bool(multiple),
             )
             if not res:
                 return {"ok": False, "cancelled": True}
-            return {"ok": True, "path": res[0]}
+            paths = [str(p) for p in res]
+            return {"ok": True, "path": paths[0], "paths": paths}
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -1861,6 +1949,7 @@ JSAPI = NexusApi()
 # ================================================================ 启动
 def run(open_window: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    _migrate_settings()          # 先把历史设置里带引号的路径修掉，再读
     s = load_settings()
     RT.add_log(f"FunScriptCast-Nexus 启动（{lan_ip()}）", "ok")
 
