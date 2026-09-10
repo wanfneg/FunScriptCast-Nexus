@@ -597,6 +597,23 @@ def sub_start() -> dict:
                 )
             if not SUBTITLE_DIR.exists():
                 raise RuntimeError(f"字幕服务目录不存在：{SUBTITLE_DIR}")
+            # 先确认这个解释器真的跑得起来字幕服务。
+            # dist-app 里没有 .venv 时 _subtitle_python() 会退回系统 Python，
+            # 而它多半没装 uvicorn——不先探一下的话，用户看到的是一句
+            # "No module named 'uvicorn'"，完全指不出该做什么（本机实测过）。
+            probe = subprocess.run([str(py), "-c", "import uvicorn, fastapi"],
+                                   capture_output=True, text=True, timeout=40)
+            if probe.returncode != 0:
+                tail = ""
+                for ln in reversed((probe.stderr or "").strip().splitlines()):
+                    if ln.strip():
+                        tail = ln.strip()
+                        break
+                raise RuntimeError(
+                    f"解释器 {py} 缺依赖（uvicorn/fastapi）{('：' + tail) if tail else ''}。"
+                    f"把本仓库的 .venv 复制到 {APP_DIR}，"
+                    f"或设环境变量 NEXUS_PY 指向装好依赖的 python.exe"
+                )
             flags = 0
             if os.name == "nt":
                 flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
