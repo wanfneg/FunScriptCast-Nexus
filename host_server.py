@@ -1126,6 +1126,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/settings":
                 self._json({"ok": True, "settings": save_settings(body)})
+            elif path == "/api/win/show":
+                # 供「重复启动」唤起已有实例的窗口（见 run() 开头的单实例处理）。
+                # 托盘图标可能被系统收进溢出面板、用户找不到入口，这条路始终可用。
+                TRAY.show_window()
+                self._json({"ok": True})
             elif path == "/api/dlna/start":
                 self._json(dlna_start(body.get("port"), body.get("roots")))
             elif path == "/api/dlna/stop":
@@ -1724,7 +1729,8 @@ class TrayController:
             RT.add_log(f"托盘不可用（{type(e).__name__}），改为最小化到任务栏", "warn")
             return False
         ico = APP_DIR / "tools" / "icon.ico"
-        self.icon = TrayIcon(self.q, str(ico) if ico.exists() else None)
+        self.icon = TrayIcon(self.q, str(ico) if ico.exists() else None,
+                             on_quit=self.quit_app)
         ok = self.icon.start(tip)
         self.started = ok
         if ok:
@@ -1968,6 +1974,52 @@ def run(open_window: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
     _migrate_settings()          # 先把历史设置里带引号的路径修掉，再读
     s = load_settings()
+
+    # 单实例：已经在跑就唤起它的窗口并退出，不再起第二个进程。
+    #
+    # 为什么需要：托盘图标有可能被 Windows 收进溢出面板（用户反馈"最小化后托盘没有、
+    # 不知道去哪重新打开"），此时双击启动是唯一直觉入口。若这里不做处理，
+    # 第二次启动只会静默失败在端口占用上，用户更无路可走。
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(0.6)
+        running = probe.connect_ex(("127.0.0.1", UI_API_PORT)) == 0
+        probe.close()
+    except Exception:
+        running = False
+    if running:
+        log.info("检测到已有实例在运行（端口 %d），改为唤起它的窗口", UI_API_PORT)
+        try:
+            # **必须绕过系统代理**：urllib 默认继承 http_proxy/系统代理设置，
+            # 本机请求被送去代理就会失败 —— 那样这里会误判成"没有实例在跑"，
+            # 于是继续启动并撞上端口占用而报错（"打开软件打开不了还报错"）。
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            opener.open(
+                f"http://127.0.0.1:{UI_API_PORT}/api/win/show",
+                data=b"{}",
+                timeout=3,
+            ).read()
+            log.info("已请求已有实例显示窗口，本进程退出")
+            return
+        except Exception as e:
+            # 走到这里说明"端口有监听但唤不起窗口"，属于异常状态：
+            # 与其继续启动（必然在端口占用上失败、还留下更难懂的报错），
+            # 不如明确告知用户。
+            log.error("已有实例在运行但无法唤起其窗口：%s", e)
+            log.error("请先在任务管理器结束旧的 FunScriptCast-Nexus 进程，再重新启动。")
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(
+                    None,
+                    "检测到 FunScriptCast-Nexus 已在运行，但无法把它的窗口叫出来。\n\n"
+                    "请在任务管理器里结束所有 FunScriptCast-Nexus / python 进程后再启动。",
+                    "FunScriptCast-Nexus",
+                    0x30,  # MB_ICONWARNING
+                )
+            except Exception:
+                pass
+            return
+
     RT.add_log(f"FunScriptCast-Nexus 启动（{lan_ip()}）", "ok")
     # 字幕服务的解释器来源：自包含的包和"借用上级 .venv"的包在日志里要能一眼区分，
     # 否则把 dist-app 拷到别的机器上才发现少依赖，会很莫名其妙。
@@ -2046,8 +2098,8 @@ def run(open_window: bool = True) -> None:
         log.warning("注册关闭事件失败：%s", e)
 
     def on_loaded():
-        # 托盘常驻：即便关闭按钮不拦截，也需要托盘作为「启动即最小化」的恢复入口
-        TRAY.start(window)
+        # 托盘已在 webview.start() 之前于**主线程**创建（见下方注释）。
+        # 这里只做窗口相关的收尾。
         # 无边框窗口补回原生缩放边框 + 圆角
         try:
             r = tune_frameless_window(window)
@@ -2066,8 +2118,21 @@ def run(open_window: bool = True) -> None:
     except Exception as e:
         log.warning("注册加载事件失败：%s", e)
 
+    # 托盘必须在**主线程**创建（这里），不能放在 on_loaded 里 —— 实测根因：
+    # on_loaded 由 pywebview 在它的 GUI 线程上回调，托盘宿主窗口就建在了那个线程上，
+    # 而 TrayIcon 的消息循环又跑在第三个线程里，三者不一致 → Shell_NotifyIcon 注册
+    # 返回成功、但图标始终不显示（日志可比对：独立脚本里建窗口的线程 == 主线程，图标正常）。
+    # 旧项目 VR-DLNA 能用，也是因为它在 tkinter mainloop() 之前就把托盘建好了。
+    if TRAY.start(window):
+        log.info("托盘已就绪")
+    else:
+        log.warning("托盘启动失败，关闭窗口时将降级为最小化到任务栏")
+
     try:
         webview.start(debug=False)
+    except Exception as e:
+        log.error("webview.start 失败：%s", e)
+        raise
     finally:
         TRAY.stop()
         sub_stop()
