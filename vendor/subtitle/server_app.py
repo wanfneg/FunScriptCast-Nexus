@@ -18,6 +18,7 @@
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import threading
@@ -35,6 +36,26 @@ from translate_engine import Translator
 
 BASE = Path(__file__).resolve().parent
 CFG = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+
+
+def _code_signature() -> str:
+    """管线源码签名（vendor/subtitle 顶层 *.py 内容哈希）。
+
+    排障利器：/health 与启动日志都会带上它——"改了代码但表现没变"的陈旧
+    实例问题（2026-09-16 曾浪费半天），对比两份 /health 的 code_sig 即可
+    一眼判定是否跑的是同一份代码。
+    """
+    h = hashlib.sha256()
+    for f in sorted(BASE.glob("*.py")):
+        if f.name == Path(__file__).name:
+            h.update(f.read_bytes())
+        else:
+            h.update(f.name.encode("utf-8"))
+            h.update(f.read_bytes())
+    return h.hexdigest()[:12]
+
+
+CODE_SIG = _code_signature()
 
 # config 缺段防御：宁可补空段也不能 import 即崩（裸 KeyError 报错信息极差）
 for _sec in ("asr", "translate", "server", "vad", "segment", "glossary"):
@@ -171,6 +192,7 @@ async def lifespan(_app):
     state["glossary"] = Glossary(_gl_cfg, base_dir=BASE, extra=_gl_cfg.get("extra"))
     state["asr"] = _make_asr(CFG.get("asr", {}), state["glossary"])
     state["translator"] = Translator(CFG.get("translate", {}), state["glossary"])
+    print(f"[server] 管线代码签名 code_sig={CODE_SIG}（陈旧实例排障用）", flush=True)
     print(f"[server] 翻译后端={state['translator'].backend}，"
           f"术语表 ja={state['glossary'].size('ja')} en={state['glossary'].size('en')}")
     _reaper = asyncio.create_task(_idle_reaper())
@@ -205,6 +227,7 @@ def health():
     asr = state["asr"]
     return {
         "ok": asr is not None,
+        "code_sig": CODE_SIG,
         # 进程身份：宿主靠它判断 8756 上跑的到底是不是自己拉起来的那个。
         # 只看"端口开着"会被上次异常退出残留的进程骗过去，然后报一个假的 ready，
         # 头显就会跳过等待、把音频发给一个陈旧进程（实测踩过）。

@@ -113,3 +113,15 @@
   （指纹跟随服务实际运行的快照，机制双向验证）；还原代码 → 恢复
 - 代码变更：无（验证轮）
 - 风险点：无
+
+## Round 11（05:45–06:00）：/health 暴露管线代码签名（陈旧实例永久性排障手段）
+
+- 是否联网检索：否
+- 代码变更：server_app 新增 `_code_signature()`（vendor/subtitle 顶层 *.py 内容哈希），
+  /health 返回 `code_sig` 字段 + lifespan 启动日志打印；已同步 dist-app 并重启生产
+- 实测：health 返回 code_sig=406d7d5c6f02；今后"改了代码但表现没变"对比两份
+  /health 的 code_sig 即可判定
+- 中途事故与修复：第一版编辑断言失败整体未写入、PowerShell 空参数丢弃、
+  build_exe 组装时未停 8756/宿主导致 dist-app 残缺（已在 build_exe.ps1 补
+  "组装前停字幕服务与应用"并重跑完整构建）
+- 风险点：无（只读字段）

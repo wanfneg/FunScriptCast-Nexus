@@ -33,6 +33,12 @@ if (-not (Test-Path $exe)) { throw "没有产出 EXE：$exe" }
 
 Write-Host "[2/4] 组装 dist-app…" -ForegroundColor Cyan
 $out = Join-Path $root 'dist-app'
+# 组装前必须停掉字幕服务：它就从 dist-appendor\subtitle 运行，
+# 进程不死会导致删除/覆盖不完整，产出残缺目录（2026-09-16 实测踩坑）
+Get-NetTCPConnection -LocalPort 8756 -State Listen -ErrorAction SilentlyContinue |     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+# 应用本体也锁 exe：一并停止（构建完成后由安装/用户重新启动）
+Get-Process -Name 'FunScriptCast-Nexus' -ErrorAction SilentlyContinue |     Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
 if (Test-Path $out) {
     try {
         Remove-Item $out -Recurse -Force -ErrorAction Stop
