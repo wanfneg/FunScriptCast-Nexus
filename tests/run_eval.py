@@ -26,6 +26,8 @@ PY = ROOT / ".venv" / "Scripts" / "python.exe"
 SR = 16000
 PCM = Path(r"E:/Development/_ref/eval/sivr001.pcm")
 SRT = Path(r"E:/testvideo/SIVR-001-002 Yua Mikami/SIVR-001.srt")
+PCM2 = Path(r"E:/Development/_ref/eval/sivr002.pcm")
+SRT2 = Path(r"E:/testvideo/SIVR-001-002 Yua Mikami/SIVR-002.srt")
 EVAL_DIR = Path(r"E:/Development/_ref/eval")
 PORT = 8759
 
@@ -52,11 +54,14 @@ def main() -> int:
     ap.add_argument("--overlap-sec", type=float, default=2.0)
     ap.add_argument("--transport", choices=["offline", "stream"], default="offline",
                     help="offline=当前生产管线（/transcribe 离线 VAD 端点）；stream=旧流式桥")
+    ap.add_argument("--video", choices=["sivr001", "sivr002"], default="sivr001")
     ap.add_argument("--keep-service", action="store_true")
     args = ap.parse_args()
 
+    pcm_src = PCM if args.video == "sivr001" else PCM2
+    srt_src = SRT if args.video == "sivr001" else SRT2
     pcm_slice = EVAL_DIR / f"eval_slice.pcm"
-    with open(PCM, "rb") as f:
+    with open(pcm_src, "rb") as f:
         f.seek(args.start * SR * 2)
         data = f.read(args.sec * SR * 2)
     pcm_slice.write_bytes(data)
@@ -104,7 +109,7 @@ def main() -> int:
         wall = time.time() - t0
 
         r2 = subprocess.run(
-            [str(PY), str(ROOT / "tests" / "compare_with_reference.py"), str(SRT),
+            [str(PY), str(ROOT / "tests" / "compare_with_reference.py"), str(srt_src),
              str(EVAL_DIR / f"eval_{args.tag}.json")],
             capture_output=True, text=True)
         # 只保留指标区（前 25 行），去掉样例明细
