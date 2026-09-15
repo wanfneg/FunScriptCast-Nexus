@@ -181,3 +181,15 @@
 - 结论：质量排序 7B > 1.5B > 3b；**默认 1.5B**（7B 部署需 OLLAMA_MODELS 迁 E 盘 +
   C 盘清理，GGUF 与测试实例已备好，等用户决策）
 - 风险点：7B 与 audiocpp 同卡时 VRAM 6.7GB/8GB 偏紧
+
+## Round 18（06:15–06:30）：免费兜底繁体输出守卫
+
+- 是否联网检索：是（1 次：python zhconv opencc 繁體簡體 轻量包）
+- 搜索关键词：python zhconv opencc 繁體轉簡體 lightweight pure python
+- 参考开源项目：gumblex/zhconv（https://github.com/gumblex/zhconv）——纯 Python
+  MediaWiki/OpenCC 词典简繁转换，轻量无原生依赖
+- 代码变更：free_translators 新增 _to_hans（zhconv 可选依赖，未装则跳过）；
+  Google 后端出口与 AutoTranslator 出口统一繁→简归一（实测"有時候覺得…"
+  →"有时候觉得…"）；zhconv 1.4.3 装入 .venv 与 dist-app runtime
+- 测试：py_compile ✓ + 转换样例 ✓；生产 8756 重启加载（code_sig 一致）
+- 风险点：zhconv 词级转换对已简体文本偶有词汇级改动（可接受，仅作用于免费兜底路径）

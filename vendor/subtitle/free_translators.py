@@ -27,6 +27,20 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+def _to_hans(text: str) -> str:
+    """繁体→简体归一：免费后端（Google/Bing）偶发输出繁体（实测全片 1 句
+    "有時候覺得…"）。zhconv 为可选依赖：未安装时原样返回。已经是简体的
+    文本经 zh-cn 转换是无操作。"""
+    try:
+        from zhconv import convert
+    except ImportError:
+        return text
+    try:
+        return convert(text or "", "zh-cn")
+    except Exception:
+        return text
 from concurrent.futures import ThreadPoolExecutor
 
 BING_LANG = {"zh": "zh-Hans", "zh-CN": "zh-Hans", "ja": "ja", "en": "en"}
@@ -111,7 +125,7 @@ class GoogleTranslator:
             return []
         tl = GOOGLE_LANG.get(target, "zh-CN")
         with ThreadPoolExecutor(max_workers=max(1, min(self.workers, len(texts)))) as ex:
-            return list(ex.map(lambda t: self.one(t, tl), texts))
+            return [_to_hans(x) for x in ex.map(lambda t: self.one(t, tl), texts)]
 
 
 # ------------------------------------------------------------------------ Bing
@@ -282,7 +296,7 @@ class AutoTranslator:
         if t is None:
             raise RuntimeError("无可用免费后端 —— " + (self.last_error or "探测冷却中/未配置"))
         try:
-            return t.translate(texts, target)
+            return [_to_hans(x) for x in t.translate(texts, target)]
         except Exception:
             # 选中的后端这次挂了：清掉选择，下次重新探测（token 过期等）
             self.picked = None
