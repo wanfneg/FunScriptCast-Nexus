@@ -168,6 +168,31 @@ adb -s 192.168.2.129:5555 logcat -d | Select-String 'AiSubtitle\] \+|跳过空�
 3. ✅ `text_filters.is_prompt_echo`：规范化后与 prompt 全等或为其尾部子串即判回显
 4. ⏳ 远期：SenseVoiceSmall（ja）做 CPU 备用引擎 / Fun-ASR-Nano，精度需先实测对比 Qwen3-ASR
 
+### 云端接入调研（2026-09-16，等用户提供 API Key 后才动手）
+
+| 痛点 | 云端方案 | 改动量 |
+|---|---|---|
+| 翻译不对 | qwen-mt-turbo / qwen-flash（DashScope） | **配置翻转级**（translate_engine 已支持 backend=openai，config 已预置） |
+| ASR 听错（人名/同音） | DashScope qwen3-asr-flash（本地同家族云端版，按块文件式调用） | 加一个 ASR 后端分支 |
+| 延迟 | Gummy 实时语音直出中文（auto-caption gummy.py 是完整参考） | 大（持久会话重构） |
+
+- **零代码通路已内置**：translate_engine 支持 `backend="openai"`，config 已预置 DashScope
+  compatible-mode + qwen-mt-turbo + api_key_env=DASHSCOPE_API_KEY。注意 qwen-mt 系对
+  "JSON 批量指令"服从性未验证；备选 qwen-flash 或 qwen-mt 逐句模式（MT 模式已具备）
+- 免费兜底已有（Google gtx + Bing），Google 偶发输出繁体
+- 隐私权衡（音频/文本出境）必须用户拍板；成本量级：翻译每部片几毛~几块，ASR 每小时几块（以官网为准）
+
+### 翻译特化模型 Sakura（2026-09-16 已接入，逐句 MT 模式）
+
+`translate.mt_system`（+ 可选 `mt_user_prefix`）配置非空即启用**逐句 MT 模式**：
+翻译特化模型（Sakura 系，galgame/轻小说领域微调，Qwen2.5 底座）按"单文本 +
+专用系统提示词"直翻，带缓存/术语表修补/漏译退化检查，并发 thread_num 路。
+推荐提示词与采样参数（temp 0.1 / top_p 0.3）来自 https://github.com/SakuraLLM/SakuraLLM 。
+实测 1.5B（180s 切片）：覆盖 0.267→0.392、速度持平。注意：
+① 许可 CC BY-NC-SA 4.0（禁商用，发布机翻需显著标注）；
+② 风格偏意译，偶有增译（评测可见"脱下这条内裤"为原文所无），漏译/退化判据保留兜底；
+③ GGUF 用 hf-mirror.com 下载（直连 HF 不可达）；④ 大 GGUF 下载需 `--proxy ""`（系统代理残留会劫持）。
+
 **关键数据（SIVR-001 全片，对照人工字幕）**：
 
 | 方案 | 召回 | 内容覆盖 | 时序中位 | 滞后 |
