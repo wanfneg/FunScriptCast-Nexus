@@ -199,3 +199,76 @@
 - SIVR-001：召回 88.7%｜覆盖 0.481/中位 0.500｜高度一致 17.9%｜时序 −246ms｜硬缺陷 0/0/0
 - SIVR-002：召回 92.1%｜覆盖 0.512/中位 0.455｜高度一致 22.6%｜时序 −182ms｜硬缺陷 0/0/0
 - 代码变更：无（回归验证）
+
+
+---
+
+# ══════════ 最终报告与交接说明 ══════════
+
+## 一、迭代总览
+
+- 周期：2026-09-16 04:45 – （进行中，上限 08:15）
+- 轮次：Round 0（基线）+ R1–R20，每轮均 git 快照（见 git log "Round*"）
+- 联网检索：共 3 次（符合每轮 ≤3 上限），关键词与来源见各轮记录
+- 参考开源项目：SakuraLLM/SakuraLLM（已采纳）、kotoba-tech/kotoba-whisper（候选，已记录）、
+  gumblex/zhconv（已采纳）、realtime-subtitle（细节已采纳）、sub-title / auto-caption / LiveSubtitles（调研）
+- 只借鉴思路，未复制任何代码
+
+## 二、关键指标变化（全片对照人工字幕，SIVR-001 1254s）
+
+| 指标 | 迭代前基线 | 迭代后（当前） |
+|---|---|---|
+| 识别召回 | 81.5% | **88.7%**（+7.2pp） |
+| 译文内容覆盖 | 0.381 | **0.481**（+26%） |
+| 高度一致行（≥0.8） | 4.1% | **17.9%**（4.4×） |
+| 时序中位偏差 | −240ms | −246ms（持平） |
+| 硬缺陷（空/假名/夹英文） | 0/0/0 | 0/0/0 |
+| 翻译引擎 | qwen2.5:3b | **Sakura-1.5B**（领域微调）+ 免费兜底繁体守卫 |
+
+SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺陷 0 —— 修复跨内容通用。
+
+## 三、本周期代码变更清单（均已在仓库 + dist-app 同步）
+
+| 轮 | 变更 | 文件 |
+|---|---|---|
+| R1 | 一键评测脚本（隔离端口/复用实例/双 transport/双素材） | tests/run_eval.py |
+| R2 | 字幕缓存指纹补**管线源码签名**+翻译配置 | host_server.py |
+| R11 | /health 暴露 code_sig（陈旧实例排障） | server_app.py |
+| R12 | MT 模式接免费兜底安全网 | translate_engine.py |
+| R13 | **keep_from 跨块丢句修复**（判据放宽为整句在重叠区才丢） | audiocpp_backend.py |
+| R6+R18 | 逐句 MT 模式（Sakura）+ 免费兜底繁体守卫 | translate_engine.py, free_translators.py |
+| R17前置 | asr_engine torch/qwen_asr 懒加载 + runtime\ 解释器优先 | asr_engine.py, host_server.py |
+| 安装器 | build_installer.ps1 + make_runtime.ps1 + installer/setup.iss | 新增 |
+
+## 四、实验结论（负结果也有价值）
+
+1. Qwen3-ASR 为 argmax 贪心解码，同请求输出确定；跨运行差异来自
+   CPU/GPU 后端与热词上下文，不是随机性
+2. VAD min_speech_ms 250→180 无显著差异（已回退）
+3. qwen2.5:7b 翻译质量与 3b 持平但慢 8.7×（实时不可用）；**Sakura-1.5B 才是
+   质量与速度双优的解**（+18% 覆盖且更快）
+4. 纯客户端 VAD 切句时序极准但碎片翻译差（覆盖 0.23-0.28）——已由服务端
+   VAD（离线端点）替代
+
+## 五、交接说明（下一个接手人）
+
+1. **部署形态第一课**：用户跑的是 dist-app 打包版（详见 README「⚠️ 运行形态」）。
+   仓库改完必须：同步文件到 dist-appendor\subtitle → 清 dist-app\cache\subtitles →
+   经 POST :8791/api/subtitle/start 或界面"结束并重启"拉起。判别代码版本：
+   /health 的 code_sig 或进程命令行（run_server.py=快照，-m uvicorn=仓库）
+2. **评测**：`.venv/Scripts/python.exe tests/run_eval.py --video sivr001 --start 0 --sec 1254 --tag X`
+   （自动起 :8759 隔离实例，勿与生产 8756 混用）；对照工具 analyze_fidelity / compare_with_reference
+3. **待用户决策**：① 翻译模型升 Sakura-7B（需 OLLAMA_MODELS 迁 E 盘 + C 盘清理，
+   GGUF 已在 E:\Development\_ref\models-sakura\）② 云端接入（qwen-mt-turbo /
+   qwen3-asr-flash / Gummy，需 API Key，隐私权衡）③ C 盘 96% 满的清理
+4. **当前默认配置**：翻译=Sakura-1.5B 逐句 MT + 免费兜底（繁体守卫）；
+   缓存=关（用户指示）；术语表=开；ASR=audio.cpp Qwen3-ASR 0.6B（8081，双模型注册）
+5. **头显端**：v1.6.12（10s 块/离线端点/浮层 end+4s），本轮未改
+
+## 六、风险点汇总
+
+- Sakura 许可 CC BY-NC-SA 4.0（禁商用；发布机翻需标注）
+- 翻译覆盖天花板 ~0.5（1.5B/3b 级模型）；上升空间 = Sakura-7B 或云端
+- 免费兜底（Google/Bing）在 CN 网络不稳定，偶发繁体已加守卫
+- keep_from 放宽后依赖客户端 LCS 去重兜底（已验证无重复恶化）
+- C 盘 96% 满（系统健康问题，非本项目但影响 ollama 模型操作）
