@@ -165,3 +165,19 @@
 - 工具：run_eval.py 支持 --video sivr001/sivr002
 - 代码变更：无新逻辑（验证轮）
 - keep_from 放宽的重复句风险检查：相邻段高相似对 ≈ 0（LCS 客户端去重兜底有效）
+
+## Round 17（06:15–06:50）：联网检索（日语 ASR 升级候选）+ Sakura-7B 全片评测
+
+- 是否联网检索：是（1 次：kotoba-whisper 日本語 精度比較）
+- 搜索关键词：kotoba-whisper Japanese ASR faster whisper distil 日本語 特化 精度比較
+- 参考开源项目/模型：
+  - kotoba-tech/kotoba-whisper-v2.0（https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0）
+    —— 日语特化蒸馏 Whisper，CER 优于 whisper-large-v3、6.3× 快、12s 块稳定长音频、
+    内建标点/标签预测 → **记为 ASR 升级候选**（需新后端 + ja 参考语料 A/B，本轮不动）
+  - NVIDIA Riva kotoba_whisper v2.2（完整 large-v3 encoder + 蒸馏 decoder）
+- 代码变更：无（评测轮）
+- Sakura-7B 全片评测（第二 ollama 实例 E:\ollama-models-test，无副作用）：
+  内容覆盖 0.497/中位 0.500（1.5B 0.451、3b 0.381），硬缺陷 0，181 句重翻译仅 33s
+- 结论：质量排序 7B > 1.5B > 3b；**默认 1.5B**（7B 部署需 OLLAMA_MODELS 迁 E 盘 +
+  C 盘清理，GGUF 与测试实例已备好，等用户决策）
+- 风险点：7B 与 audiocpp 同卡时 VRAM 6.7GB/8GB 偏紧
