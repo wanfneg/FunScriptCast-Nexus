@@ -473,7 +473,14 @@ class AudioCppBackend:
         # 整块丢弃会一次损失整段音频，代价远大于它的收益。
 
         if keep_from_ms:
-            segs = [x for x in segs if x["start_ms"] >= keep_from_ms]
+            # 去重判据：只丢"整句基本都在重叠区"的段（句尾也早于 keep_from+300ms）。
+            # 旧判据 "start < keep_from 即丢" 会把**跨块长句在两个块里都扔掉**：
+            # 句子横跨块 A 尾/块 B 头时，两边的 start 都落在各自的 keep_from 之前
+            # （实测 192.8s "今天特别破例让你看看哦" 整句消失）。
+            # 容差 300ms：句尾恰好在重叠区内但主体在新区块的句子保留。
+            segs = [x for x in segs
+                    if x["start_ms"] >= keep_from_ms
+                    or x["end_ms"] > keep_from_ms + 300]
         return {"language": lang_key, "segments": segs,
                 "asr_ms": round((time.perf_counter() - t0) * 1000, 1),
                 "skipped": False, "backend": "audiocpp",
