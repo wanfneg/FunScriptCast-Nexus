@@ -576,6 +576,15 @@ class Translator:
         workers = max(1, min(self.thread_num, len(todo)))
         with ThreadPoolExecutor(max_workers=workers) as ex:
             results = list(ex.map(work1, [s for _, s in todo]))
+        # 失败句 → 免费后端兜底（与批量模式同一安全网；MT 模式此前漏接）。
+        # 免费结果若仍夹假名则保持失败（宁缺不上日文，见 _display_zh 同策略）。
+        failed_pos = [n for n, r in enumerate(results) if not r]
+        if failed_pos and self.fallback_kind:
+            filled = self._free_translate([todo[n][1].get("text") or "" for n in failed_pos])
+            for n, v in zip(failed_pos, filled):
+                src = todo[n][1].get("text") or ""
+                if v and not self._has_untranslated(src, v):
+                    results[n] = v
         for (_, s), tr in zip(todo, results):
             s.pop("error", None)
             if not tr:
