@@ -41,3 +41,6 @@ _runtime/
 /tests/_shots/
 /tests/_audit.json
 /tests/_geo.json
+
+# 安装包产物
+/dist-installer/

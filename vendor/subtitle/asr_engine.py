@@ -5,12 +5,25 @@
 时间基：返回的 start_ms/end_ms 已加上调用方给的 video_start_ms。
 """
 
+import threading
 import time
 
 import numpy as np
-import torch
 
-from qwen_asr import Qwen3ASRModel
+from text_filters import has_repetition_loop, is_glossary_echo
+
+# torch / qwen_asr 只被 **PyTorch 回退引擎** 用到（audiocpp 主路径完全不需要，
+# 两者合计约 5 GB）。改为懒加载：模块导入不再要求安装它们——这样字幕服务可以
+# 跑在自包含安装包的轻量运行时上（fastapi+uvicorn+numpy 约 40 MB）。
+# 用到 torch/qwen_asr 的入口在 PyTorch 引擎构造处，缺依赖会在那里给出可读报错。
+try:
+    import torch
+    from qwen_asr import Qwen3ASRModel
+    _HEAVY_DEPS_OK = True
+except ImportError:
+    torch = None
+    Qwen3ASRModel = None
+    _HEAVY_DEPS_OK = False
 
 SR = 16000
 SENT_END = "。！？!?…；;"
@@ -29,28 +42,22 @@ def join_tokens(parts):
         out += t
     return out
 
-
-def _has_repetition_loop(text: str, max_run: int = 3) -> bool:
-    """检测同一字符连续重复过多（小模型的死循环退化）。
-
-    阈值取 3：实测「ああああ気持ちああ」这类喘息/拟声退化会污染翻译
-    （译文被放大成几十个「啊」），4 个以上同字连排基本可以判退化。
-    """
-    run = 1
-    for i in range(1, len(text)):
-        if text[i] == text[i - 1]:
-            run += 1
-            if run > max_run:
-                return True
-        else:
-            run = 1
-    return False
+# 重复退化判据统一在 text_filters.has_repetition_loop（与 audiocpp 后端共用，
+# 且对「えーーーっと」这类合法拖长音放宽），此处不再本地实现。
 
 
 class AsrEngine:
     def __init__(self, cfg: dict, glossary):
+        if not _HEAVY_DEPS_OK:
+            raise RuntimeError(
+                "PyTorch 引擎依赖未安装（torch / qwen_asr）。轻量运行时只支持 audiocpp 后端；"
+                "要使用 PyTorch 引擎请安装完整依赖（约 5 GB）。")
         self.cfg = cfg
         self.glossary = glossary
+        # /transcribe 走 FastAPI 线程池，可能并发进来。共享模型上每次请求都要
+        # 改 max_new_tokens、silero VAD 带内部状态（LSTM）——并发调用会互相
+        # 覆盖预算/污染状态，GPU 上并发 forward 还会显存翻倍。串行化整个转写。
+        self._lock = threading.Lock()
         self.dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[
             cfg.get("dtype", "bf16")]
         device = cfg.get("device", "cuda:0")
@@ -103,11 +110,6 @@ class AsrEngine:
         return int(max(self.tok_min, min(self.tok_max, secs * self.tok_per_sec)))
 
     # ---------------------------------------------------------------- VAD
-    def has_speech(self, pcm: np.ndarray, threshold=0.5, min_speech_ms=250) -> bool:
-        if self.vad is None:
-            return True
-        return len(self.speech_spans(pcm, threshold, min_speech_ms)) > 0
-
     def speech_spans(self, pcm: np.ndarray, threshold=0.5, min_speech_ms=250) -> list:
         """返回语音区间 [(start_sec, end_sec)]（相对本块音频）。
 
@@ -228,8 +230,18 @@ class AsrEngine:
 
     # -------------------------------------------------------- 主入口
     def transcribe(self, pcm: np.ndarray, lang_key: str, video_start_ms: int = 0,
-                   keep_from_ms: int = 0, vad_cfg=None, seg_cfg=None) -> dict:
-        """pcm: float32 [-1,1] @16k mono；返回 {"language","segments","asr_ms","skipped"}"""
+                   keep_from_ms: int = 0, vad_cfg=None, seg_cfg=None,
+                   extra_context: str = "") -> dict:
+        """pcm: float32 [-1,1] @16k mono；返回 {"language","segments","asr_ms","skipped"}
+
+        整个转写串行（self._lock）：模型与 VAD 都不允许并发进入。"""
+        with self._lock:
+            return self._transcribe_locked(pcm, lang_key, video_start_ms,
+                                           keep_from_ms, vad_cfg, seg_cfg, extra_context)
+
+    def _transcribe_locked(self, pcm: np.ndarray, lang_key: str, video_start_ms: int = 0,
+                           keep_from_ms: int = 0, vad_cfg=None, seg_cfg=None,
+                           extra_context: str = "") -> dict:
         vad_cfg = vad_cfg or {}
         seg_cfg = seg_cfg or {}
         t0 = time.perf_counter()
@@ -248,6 +260,9 @@ class AsrEngine:
         context = ""
         if self.cfg.get("use_glossary_context", True):
             context = self.glossary.asr_context(lang_key)
+        if extra_context:
+            # 上一句转写结果作为热词补充（与 audiocpp 后端同策略，治跨块人名听错）
+            context = (context + " " + extra_context).strip()
 
         # 按送进去的音频时长收紧生成上限：退化生成不会再跑满全局上限
         self.model.max_new_tokens = self._budget_tokens(len(pcm_asr))
@@ -268,9 +283,20 @@ class AsrEngine:
             segs = self._split_segments(mapped, video_start_ms, seg_cfg)
         else:
             text = (r.text or "").strip()
-            segs = ([{"start_ms": video_start_ms,
-                      "end_ms": video_start_ms + int(len(pcm_asr) / SR * 1000),
-                      "text": text}] if text else [])
+            if text:
+                # 无 aligner 时没有词级时间戳，但 VAD 的语音区间是原块时间，
+                # 直接可用：start 用首个语音段起点、end 用末个语音段终点。
+                # 旧实现 start 用块起点、end 用裁剪后时长——字幕会同时
+                # 提前出现、提前消失（裁掉的静音没算回去）。
+                if spans:
+                    start_sec, end_sec = spans[0][0], spans[-1][1]
+                else:
+                    start_sec, end_sec = 0.0, len(pcm_asr) / SR
+                segs = [{"start_ms": video_start_ms + int(round(start_sec * 1000)),
+                         "end_ms": video_start_ms + int(round(end_sec * 1000)),
+                         "text": text}]
+            else:
+                segs = []
 
         # 重叠区去重：只保留起点在保留区之后的句子（客户端传 video_start_ms + overlap）
         if keep_from_ms:
@@ -284,9 +310,10 @@ class AsrEngine:
             segs = []
         else:
             segs = [s for s in segs if not self._is_glossary_echo(s["text"], lang_key)]
-        # 重复退化过滤：小模型偶发 "才才才才才才…" 这类死循环
+        # 重复退化过滤：小模型偶发 "才才才才才才…" 这类死循环（判据与
+        # audiocpp 后端共用，见 text_filters.has_repetition_loop）
         before = len(segs)
-        segs = [s for s in segs if not _has_repetition_loop(s["text"])]
+        segs = [s for s in segs if not has_repetition_loop(s["text"])]
         if len(segs) != before:
             print(f"[asr] 重复退化，丢弃 {before - len(segs)} 段", flush=True)
 
@@ -294,12 +321,7 @@ class AsrEngine:
                 "asr_ms": round((time.perf_counter() - t0) * 1000, 1), "skipped": False}
 
     def _is_glossary_echo(self, text: str, lang_key: str) -> bool:
-        """判定该文本是否只是把热词表复读出来（术语覆盖率过高）。"""
+        """判定该文本是否只是把热词表复读出来（判据见 text_filters.is_glossary_echo，
+        与 audiocpp 后端共用同一实现，避免两边漂移）。"""
         keys = self.glossary.keys(lang_key)
-        if not keys or len(text) < 4:
-            return False
-        hits = [k for k in keys if k in text]
-        if len(hits) < 3:
-            return False
-        covered = sum(len(k) for k in hits)
-        return covered / max(1, len(text)) > 0.6
+        return is_glossary_echo(text, keys)

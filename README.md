@@ -33,6 +33,32 @@
 >
 > （`git config --local http.proxy ""` 无效——git 把空值当未设置，会回退到全局配置。）
 
+## ⚠️ 运行形态（改任何服务端代码前必读）
+
+**用户的日常运行形态有两种，共同点：字幕服务跑的都是 `vendor\subtitle` 的"快照"，不是仓库工作目录**：
+
+| 形态 | 服务代码来源 | 说明 |
+|---|---|---|
+| **安装版（推荐）** | `dist-installer\*-Setup.exe` 安装后的 `vendor\subtitle` | 自包含：内嵌 `runtime\`（embeddable Python + 依赖，audiocpp 模式不需要 torch），装完即用，支持目录选择/桌面快捷方式/开机自启/卸载器 |
+| **便携目录** | `dist-app\`（exe + ui + vendor + runtime） | 绿色版，拷走即用 |
+
+**开发/修复字幕服务的固定顺序（跳步 = 改了白改，2026-09-16 一整轮修复因此"看起来无效"）**：
+
+1. 在仓库 `vendor\subtitle\` 改代码与配置；
+2. 重新打包：`powershell -ExecutionPolicy Bypass -File builduild_installer.ps1`（自动串联 PyInstaller →
+   自带运行时 → Inno Setup；需要 ISCC.exe，winget 装 `JRSoftware.InnoSetup` 即可，中文语言包随仓库分发并自动装入编译器目录）；
+3. 快速验证（不重打安装包）时，把变更文件**同时**拷到 `dist-appendor\subtitle\`（和已安装目录的
+   `vendor\subtitle\`），再清 `cache\subtitles\`，重启服务；
+4. 判断当前进程跑的是哪份代码：`Get-CimInstance Win32_Process` 看命令行——`run_server.py` = 快照
+   （安装版/便携版），`-m uvicorn server_app:app` = 仓库源码。Nexus 界面出现"不是本程序启动的（PID xxx）"
+   黄色警告 = 端口被外来进程占用，点"结束并重启"。
+
+自带运行时的解释器解析优先级（host_server._subtitle_python）：`runtime\python.exe`（自包含安装）→
+`.venv`（应用目录 → 上一级目录，非自包含的旧形态）→ PATH 上的 python（多半缺依赖）。
+`vendor\subtitlesr_engine` 的 torch/qwen_asr 已懒加载：轻量运行时只带 fastapi/uvicorn/numpy
+（约 79 MB），audiocpp 主路径不需要 torch。
+
+详细协议与排障见 [docs/AI-SUBTITLE-STATUS.md](docs/AI-SUBTITLE-STATUS.md)。
 
 ## 赞助与支持
 

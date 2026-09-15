@@ -8,11 +8,16 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import uvicorn
 
 BASE = Path(__file__).resolve().parent
+# 自包含安装的 embeddable Python 用 ._pth 封闭 sys.path，不含脚本所在目录，
+# 这里显式补上，否则 uvicorn 找不到同目录的 server_app（实测 Not Found）。
+if str(BASE) not in sys.path:
+    sys.path.insert(0, str(BASE))
 
 if __name__ == "__main__":
     cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))

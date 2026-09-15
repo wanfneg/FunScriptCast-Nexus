@@ -70,7 +70,11 @@ def _subtitle_python() -> Path:
     if env:
         SUBTITLE_PY_SOURCE = "环境变量 NEXUS_PY"
         return Path(env)
+    # 自包含安装（installer）自带轻量运行时：embeddable Python + fastapi/uvicorn/
+    # numpy（audiocpp 主路径不需要 torch，见 asr_engine 的懒加载说明）。放第一位，
+    # 命中即"自包含"，不再借用任何外部 .venv。
     candidates = [
+        (APP_DIR / "runtime" / "python.exe", "自带运行时（自包含安装）"),
         (APP_DIR / ".venv" / "Scripts" / "python.exe", "应用目录自带的 .venv"),
         (APP_DIR / ".venv" / "bin" / "python", "应用目录自带的 .venv"),
     ]

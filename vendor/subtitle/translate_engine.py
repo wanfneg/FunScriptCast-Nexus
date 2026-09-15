@@ -28,7 +28,6 @@ import json
 import os
 import re
 import threading
-import urllib.error
 import urllib.request
 from collections import Counter
 from pathlib import Path
@@ -63,6 +62,13 @@ BATCH_PROMPT = """把下面 JSON 里的每条文本翻译成简体中文。
 FIX_PROMPT = ("上一次的输出有问题：{err}\n"
               "请修正后重新输出**完整的** JSON 对象（必须包含全部 {n} 个键）。")
 
+# 最后一轮不累加错误说明，改用干净提示词重来——原因见 _translate_batch 里的注释。
+# ⚠️ 不要在这里描述键的取值范围：work() 传进来的键是**全局段索引**（第 2 批是
+# "10".."19"），任何写死 "0 到 {last}" 的提示词都会跟 payload 自相矛盾，
+# 模型听提示词返回 0..9 键 → _validate 判缺键 → 末轮翻盘机会被亲手毁掉。
+RETRY_PROMPT = ("注意：只输出一个 JSON 对象，键与输入 JSON 里的键完全一致，"
+                "值是对应的简体中文译文。对象前后不要有任何其他文字。")
+
 SINGLE_PROMPT = "把下面的文本翻译成简体中文，只输出译文，不要解释：\n{text}"
 
 # 漏译检测用：假名（平假名 + 片假名）、连续拉丁字母
@@ -72,11 +78,47 @@ _LATIN = re.compile(r"[A-Za-z]{2,}")
 # 缓存版本：流程/判据改动后 +1，让旧的（可能不合格的）译文自动失效。
 # 只按「后端+模型+原文」做缓存键是不够的——提示词或判据一变，旧译文就是错的，
 # 而它看起来"命中了"，属于最难查的一类 bug。
-_CACHE_VERSION = 2
+#   v3：加 JSON 归一化 + 术语表修补 + 历史最好一轮保全（v2 缓存里的空白译文必须作废）
+#   v4：空译文也算不合格（v3 把 `{"0":""}` 当合格存进了缓存，必须作废）
+_CACHE_VERSION = 4
 
-# 提示词指纹：改了 SYSTEM/BATCH/FIX 任何一段，指纹就变，缓存自动失效。
+# 提示词指纹：改了 SYSTEM/BATCH/FIX/RETRY 任何一段，指纹就变，缓存自动失效。
 _PROMPT_FP = hashlib.sha256(
-    (SYSTEM + BATCH_PROMPT + FIX_PROMPT).encode("utf-8")).hexdigest()[:10]
+    (SYSTEM + BATCH_PROMPT + FIX_PROMPT + RETRY_PROMPT).encode("utf-8")).hexdigest()[:10]
+
+# ---------------------------------------------------------------- JSON 归一化
+# 小模型（qwen2.5:3b）经常输出"中文式 JSON"：引号是全角/弯引号，分隔符是全角逗号。
+# 内容其实完全正确，但 json.loads 直接判死。实测：
+#   {"0": "米粒呢”，“1”: “嗯。”，“2”: “嗯。”，“3”: “哦。”，...}
+# 7 个键一个不少，归一化后就是合法 JSON；不归一化则整批判失败。
+_QUOTE_CH = '"“”„‟「」『』｢｣'
+_COMMA_CH = "，、"
+_COLON_CH = "：:＝"
+
+
+def _normalize_jsonish(s: str) -> str:
+    """把"中文式 JSON"归一成合法 JSON。
+
+    必须**扫描**而不是全局替换：全角逗号出现在字符串内部时（`"嗯，"`）不能动，
+    所以得跟踪引号状态。另外引号在值里出现时按"开关"处理——`“米粒呢”，“1”: “嗯。”`
+    里的 `”` 实际充当了收尾引号，开关语义刚好把它补回来。
+    """
+    out = []
+    in_str = False
+    for ch in s:
+        if ch in _QUOTE_CH:
+            out.append('"')
+            in_str = not in_str
+        elif not in_str and ch in _COMMA_CH:
+            out.append(",")
+        elif not in_str and ch in _COLON_CH:
+            out.append(":")
+        else:
+            out.append(ch)
+    t = "".join(out)
+    t = re.sub(r"([{,]\s*)(\d+)(\s*:)", r'\1"\2"\3', t)   # 无引号数字键 {0: "x"}
+    t = re.sub(r",\s*([}\]])", r"\1", t)                  # 尾随逗号
+    return t
 
 
 class BatchPartial(Exception):
@@ -125,7 +167,23 @@ class Translator:
                       "fix_rounds": 0, "leak_rounds": 0, "fail_batches": 0,
                       "fail_kinds": {}, "skipped_batches": 0, "partial_batches": 0,
                       "fallback_batches": 0, "fallback_errors": 0,
-                      "fallback_error": "", "degraded": False, "segments": 0}
+                      "fallback_error": "", "degraded": False, "segments": 0,
+                      "leak_kept": 0, "glossary_repaired": 0,
+                      "fatal_errors": 0, "fatal_error": "",
+                      "single_fallbacks": 0, "single_capped": 0}
+        # 后台预热兜底后端：探测要真发一条请求，代理关闭时单次 30s。放后台做，
+        # 真需要兜底时结果（含"全挂"的负缓存）已经就绪，不会在字幕流程中间卡住。
+        if self.fallback_kind:
+            threading.Thread(target=self._warmup_fallback, daemon=True,
+                             name="fallback-warmup").start()
+
+    def _warmup_fallback(self) -> None:
+        try:
+            fb = self._get_fallback()
+            if fb is not None:
+                fb._pick()          # AutoTranslator: 探测并缓存结果
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ 缓存
     def _backend_cfg(self) -> dict:
@@ -140,10 +198,12 @@ class Translator:
         return (f"v{_CACHE_VERSION}|{_PROMPT_FP}|{self.backend}|{base}|"
                 f"{self._model_name()}|{self.target}")
 
-    def _key(self, texts: list, system: str = "") -> str:
-        """缓存键。system 里含着命中到的术语表条目，所以术语表变了键也变。"""
+    def _key(self, texts: list, system: str = "", lang_key: str = "") -> str:
+        """缓存键。system 里含着命中到的术语表条目，所以术语表变了键也变；
+        源语言也要并进去——术语表无命中时 system 相同，ja/en 的同形短文本
+        （如 "OK"）否则会串语言复用同一份译文。"""
         gl = hashlib.sha256((system or "").encode("utf-8")).hexdigest()[:12]
-        raw = (self._cache_ns() + "|" + gl + "\n"
+        raw = (self._cache_ns() + "|" + lang_key + "|" + gl + "\n"
                + json.dumps(texts, ensure_ascii=False))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -152,12 +212,17 @@ class Translator:
         return Path(self.cache_dir) / key[:2] / (key + ".json")
 
     def _cache_get(self, key: str, n: int):
-        """L1 内存 → L2 磁盘。返回与 texts 等长的译文列表，未命中返回 None。"""
+        """L1 内存 → L2 磁盘。返回与 texts 等长的译文列表，未命中返回 None。
+
+        命中统计在这里分层计数：cache_hits 只算 L1，cache_disk_hits 只算 L2，
+        两者相加才是总命中（调用方不再重复累加）。"""
         if not self.cache_enabled:
             return None
         with self._lock:
             hit = self._mem.get(key)
         if hit is not None:
+            with self._lock:
+                self.stats["cache_hits"] += 1
             return hit
         try:
             with open(self._cache_path(key), "r", encoding="utf-8") as f:
@@ -178,7 +243,10 @@ class Translator:
             return
         with self._lock:
             if len(self._mem) > 5000:
-                self._mem.clear()
+                # 淘汰一半最旧的（dict 保插入序），整体 clear 会让长视频
+                # 周期性全冷、缓存命中率锯齿状抖动
+                for k in list(self._mem.keys())[:len(self._mem) // 2]:
+                    del self._mem[k]
             self._mem[key] = value
         try:
             p = self._cache_path(key)
@@ -236,33 +304,56 @@ class Translator:
 
     # ------------------------------------------------------------ 解析
     @staticmethod
-    def _parse_json_dict(raw: str) -> dict | None:
-        """从模型输出里抠出 JSON 字典（容忍 markdown 围栏与前后废话）。"""
+    def _parse_json_dict(raw: str, want_keys: list | None = None) -> dict | None:
+        """从模型输出里抠出 JSON 字典（容忍 markdown 围栏、前后废话、中文式 JSON）。
+
+        依次尝试：原文 → 截取 `{...}` → 两者各自归一化后的版本，命中即返回。
+        `want_keys` 给定时，模型返回**裸数组**（`["译文1","译文2"]`）也按顺序配对——
+        小模型被要求"输出 JSON"时给数组是常见退化，按位配对能直接救回来。
+        """
         if not raw:
             return None
-        s = raw.strip()
+        s = str(raw).strip()
         # 去掉 ```json ... ``` 围栏
         if s.startswith("```"):
             s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
             s = re.sub(r"\s*```$", "", s)
-        try:
-            d = json.loads(s)
-            return d if isinstance(d, dict) else None
-        except Exception:
-            pass
-        # 退一步：截取第一个 { 到最后一个 }
+        cands = [s]
         i, j = s.find("{"), s.rfind("}")
         if 0 <= i < j:
+            cands.append(s[i:j + 1])
+        li, lj = s.find("["), s.rfind("]")
+        if 0 <= li < lj:
+            cands.append(s[li:lj + 1])
+        for cand in list(cands):
+            cands.append(_normalize_jsonish(cand))
+        for cand in cands:
             try:
-                d = json.loads(s[i:j + 1])
-                return d if isinstance(d, dict) else None
+                d = json.loads(cand)
             except Exception:
-                return None
+                continue
+            if isinstance(d, dict):
+                return d
+            # 裸数组：[{"text":...}] 或 ["译文", ...] → 按 want_keys 顺序配对
+            if isinstance(d, list) and want_keys:
+                vals = []
+                for item in d:
+                    if isinstance(item, dict):
+                        v = (item.get("translation") or item.get("译文")
+                             or item.get("text") or "")
+                    else:
+                        v = item
+                    vals.append(v)
+                if len(vals) == len(want_keys):
+                    return {k: v for k, v in zip(want_keys, vals)}
         return None
 
     def _validate(self, got: dict | None, want_keys: list) -> tuple:
         if not isinstance(got, dict):
-            return False, f"输出不是 JSON 对象（实际 {type(got).__name__}）"
+            # ⚠️ 这句会被拼进重试提示词。**绝对不要**把 Python 类型名（NoneType）
+            # 写进去：小模型会照着 echo，实测连错两轮后第 3 轮只回了一个 "None"，
+            # 于是"响应不是合法 JSON，前 120 字：'None'"——真凶其实是这句报错。
+            return False, "模型没有按要求返回 JSON 对象"
         gk = {str(k) for k in got.keys()}
         wk = set(want_keys)
         if gk != wk:
@@ -294,6 +385,10 @@ class Translator:
 
         另外中文译文里冒出英文单词、而原文没有英文，同样是没翻译干净
         （实测 `ああ、そう。→ 啊啊、 yeah。`）。
+
+        局限：第二判据对**拉丁字母源语言**（en→zh）天然失效——原文必含拉丁
+        字母，条件恒 False，"译文夹英文"检测等于关闭。en 源要可靠检测需要
+        统计译文中长拉丁词占比，误伤风险高，暂不启用。
         """
         tr = (tr or "").strip()
         if not tr:
@@ -302,54 +397,151 @@ class Translator:
             return True
         return bool(_LATIN.search(tr)) and not _LATIN.search(src or "")
 
+    def _repair_with_glossary(self, lang_key: str, src: str, tr: str) -> str:
+        """术语表自动修补：译文里残留的**原文**术语直接换成术语表译文。
+
+        实测 `こんにちは、三上ゆあです。→ 你好，三上ゆあ。`——术语表里明明有
+        `三上ゆあ→三上悠亚` 并已注入 system，小模型就是不套用。让模型再改一轮
+        既不保证成功又慢，直接替换反而确定。长词优先，避免短词先吃掉长词的一部分。
+        """
+        tr = (tr or "").strip()
+        if not tr or not self.glossary:
+            return tr
+        try:
+            hit = self.glossary.match(lang_key, src or "")
+        except Exception:
+            return tr
+        if not hit:
+            return tr
+        repaired = False
+        for s, d in sorted(hit.items(), key=lambda kv: -len(kv[0])):
+            if s and d and s in tr:
+                tr = tr.replace(s, d)
+                repaired = True
+        if repaired:
+            with self._lock:
+                self.stats["glossary_repaired"] += 1
+        return tr
+
     # ------------------------------------------------------------ 单批翻译
-    def _translate_batch(self, texts: list, indices: list, system: str) -> list:
-        """翻译一批（含纠错循环）；返回与 texts 等长的译文列表。"""
+    def _translate_batch(self, texts: list, indices: list, system: str,
+                         lang_key: str = "", context: str = "") -> list:
+        """翻译一批（含纠错循环）；返回与 texts 等长的译文列表。
+
+        三轮纠错的两条实测教训（都曾造成整批空白译文）：
+
+        1. **不能用最后一轮覆盖前面的结果**。实测第 1 轮译文内容完全正确（只是引号
+           是全角），第 3 轮退化成只回了 `None`；原来只保留最后一轮 → 7 条全空。
+           所以这里记录"历史最好的一轮"（命中键数 − 漏译数）并优先用它。
+        2. **最后一轮要换干净提示词**。把连续两轮的报错拼进 user 消息，小模型会
+           照着报错里的词 echo；而且提示词越长，它越倾向于放弃格式。
+
+        context：上一块的原文/译文参考（剧情承接，治代词/场景断裂）。**只拼进
+        user 消息、绝不进 system**——缓存键含 system 哈希，上下文进 system 会让
+        键随剧情滚动、缓存永久失效（参考 realtime-subtitle 的 context carryover）。
+        """
         keys = [str(i) for i in indices]
         payload = json.dumps({str(i): t for i, t in zip(indices, texts)},
                              ensure_ascii=False)
-        user = BATCH_PROMPT.format(n=len(texts), payload=payload)
+        base_user = BATCH_PROMPT.format(n=len(texts), payload=payload)
+        if context:
+            base_user = context + "\n\n" + base_user
+        user = base_user
 
-        last = None
+        best = None            # (得分, dict, leak) —— 历史最好的一轮
+        last_err = ""
         last_raw = ""
-        leak: list = []
-        for step in range(max(1, self.max_steps)):
+        steps = max(1, self.max_steps)
+        for step in range(steps):
             if step > 0:
                 with self._lock:
                     self.stats["fix_rounds"] += 1
             raw = self._chat(system, user)
             last_raw = raw
-            got = self._parse_json_dict(raw)
+            got = self._parse_json_dict(raw, keys)
             ok, err = self._validate(got, keys)
-            leak = []
+            leak: list = []
             if ok:
                 vals = [str(got[k]).strip() for k in keys]
+                # 术语表自动修补：模型抄原文没翻时，按术语表直接替换
+                vals = [self._repair_with_glossary(lang_key, t, v)
+                        for t, v in zip(texts, vals)]
+                got = dict(zip(keys, vals))
+                # 空值也算不合格！`{"0": "", "1": "..."}` 是**键齐全**的合法 JSON，
+                # 只看键就会判合格直接返回——实测漏掉过 `だから。→空`。
+                # `_has_untranslated("")` 返回 False，所以必须单独挑出来。
+                blank = [k for k, v in zip(keys, vals) if not v]
                 leak = [k for k, v, t in zip(keys, vals, texts)
-                        if self._has_untranslated(t, v)]
-                if not leak:
+                        if v and self._has_untranslated(t, v)]
+                if not blank and not leak:
                     return vals
+                reasons = []
+                if blank:
+                    reasons.append("以下键的译文是空的，必须给出译文："
+                                   + ",".join(blank[:10]))
+                if leak:
+                    reasons.append("以下键的译文还是原文/夹着原文，没有真正翻译成中文："
+                                   + ",".join(leak[:10]))
+                err = "；".join(reasons)
+                leak = blank + [k for k in leak if k not in set(blank)]
                 with self._lock:
                     self.stats["leak_rounds"] += 1
-                err = ("以下键的译文还是原文/夹着原文，没有真正翻译成中文："
-                       + ",".join(leak[:10]))
-            last = (got, err)
-            user = user + "\n\n" + FIX_PROMPT.format(err=err, n=len(texts))
-        msg = f"批量翻译校验失败：{last[1] if last else '空响应'}"
-        if last and isinstance(last[0], dict) and last[0]:
-            # 有响应 → 保住能用的，只把 leak 的那几条标为不合格
-            raise BatchPartial(msg, last[0], leak)
-        # 区分「完全没响应」和「响应不是 JSON」——后者通常是 batch 太大被
-        # num_predict 截断，前者才是后端/网络问题，排查方向完全不同。
+            elif isinstance(got, dict):
+                # 键不齐：能用的先留着，缺的记成"不合格"（交给免费后端补这几条）
+                leak = sorted(set(keys) - {str(k) for k in got})
+            last_err = err
+
+            if isinstance(got, dict) and got:
+                score = len(set(keys) & {str(k) for k in got}) - len(leak)
+                if best is None or score > best[0]:
+                    best = (score, got, leak)
+
+            # 末轮换成干净提示词重来（不累加报错），其余轮次才反馈错误
+            if step == steps - 2:
+                user = base_user + "\n\n" + RETRY_PROMPT
+            elif step < steps - 1:
+                user = user + "\n\n" + FIX_PROMPT.format(err=err, n=len(texts))
+
+        if best is not None and best[1]:
+            partial = {str(k): str(v).strip() for k, v in best[1].items()}
+            raise BatchPartial(f"批量翻译校验失败：{last_err or '未完全达标'}",
+                               partial, set(best[2] or ()))
+        # 区分「完全没响应」和「响应不是 JSON」——排查方向完全不同
         if not (last_raw or "").strip():
             raise RuntimeError("批量翻译失败：模型返回空响应")
-        raise RuntimeError("批量翻译失败：响应不是合法 JSON（可能被 num_predict 截断）"
-                           f"，前 120 字：{(last_raw or '')[:120]!r}")
+        raise RuntimeError("批量翻译失败：多轮都没有返回可用的 JSON"
+                           f"（最后一次响应前 120 字：{str(last_raw)[:120]!r}）")
+
+    # ------------------------------------------------------------ 逐条兜底
+    def _single_translate(self, src: str) -> str:
+        """单条兜底翻译：批量 JSON 模式没救回来的句子再单独试一次。
+
+        批量模式对小模型天然更难——它得同时维持 JSON 结构和逐条译文，短语气词
+        （`ふふ。`）和口语缩略（`あなたの家ってすごくおいしい。`）上容易"摆烂"：
+        原样返回或中英日混杂。单条模式只要吐一句中文，成功率明显更高。
+
+        测出来残留的硬缺陷正是这两类：`ふふ。→ふふ。`、`…おいしい。→你家って真的
+        很香啊。`（夹着日文 `って`）。
+        """
+        src = (src or "").strip()
+        if not src:
+            return ""
+        try:
+            out = str(self._chat(SYSTEM, SINGLE_PROMPT.format(text=src)) or "").strip()
+        except Exception:
+            return ""
+        # 单条模式没有 JSON 结构，模型可能带引号或前后缀，剥掉
+        out = out.strip().strip('"“”「」『』').strip()
+        if not out or self._has_untranslated(src, out) or self._is_degenerate(src, out):
+            return ""
+        return out
 
     # ------------------------------------------------------------ 兜底
     def _get_fallback(self):
-        if self._fallback is None and self.fallback_kind:
-            self._fallback = make_free(self.fallback_kind)
-        return self._fallback
+        with self._lock:
+            if self._fallback is None and self.fallback_kind:
+                self._fallback = make_free(self.fallback_kind)
+            return self._fallback
 
     def _free_translate(self, texts: list) -> list:
         fb = self._get_fallback()
@@ -384,7 +576,27 @@ class Translator:
         return top / len(tr) > 0.6
 
     # ------------------------------------------------------------ 主入口
-    def translate_segments(self, segs: list, lang_key: str) -> None:
+    def translate_segments(self, segs: list, lang_key: str, context: str = "") -> None:
+        """就地写入 seg['translation']；**绝不抛异常**。
+
+        翻译是加分项，ASR 文本才是核心产出。这里一旦往外抛，字幕服务的
+        /transcribe 会变成 HTTP 500，调用方**整块音频连 ASR 结果一起丢**——
+        实测 `@0s` 整块就这么没了（起因只是兜底模块少了一行 import）。
+        所以翻译层必须自己兜住所有异常，最坏情况留空译文照常返回。
+
+        context：上一块的原文/译文参考（可选）。只影响提示词，不影响缓存键。
+        """
+        try:
+            self._translate_inner(segs, lang_key, context)
+        except Exception as e:
+            with self._lock:
+                self.stats["fatal_errors"] += 1
+                self.stats["fatal_error"] = f"{type(e).__name__}: {e}"
+            for s in segs:
+                if not (s.get("translation") or "").strip():
+                    s["error"] = s.get("error") or f"translate_failed:{type(e).__name__}"
+
+    def _translate_inner(self, segs: list, lang_key: str, context: str = "") -> None:
         """就地写入 seg['translation']；失败时留空并记录 seg['error']。"""
         todo = [(i, s) for i, s in enumerate(segs) if (s.get("text") or "").strip()]
         for s in segs:
@@ -407,11 +619,9 @@ class Translator:
             indices = [i for i, _ in batch]
             # 先算 system：它包含命中到的术语表条目，要一起并进缓存键
             system = self._system_with_glossary(lang_key, texts)
-            key = self._key(texts, system)
+            key = self._key(texts, system, lang_key)
             cached = self._cache_get(key, len(texts))
             if cached is not None:
-                with self._lock:
-                    self.stats["cache_hits"] += 1
                 return indices, cached
             try:
                 with self._lock:
@@ -420,7 +630,7 @@ class Translator:
                     with self._lock:
                         self.stats["skipped_batches"] += 1
                     raise RuntimeError(f"LLM 后端已连续 {streak} 批失败，跳过重试")
-                out = self._translate_batch(texts, indices, system)
+                out = self._translate_batch(texts, indices, system, lang_key, context)
                 self._cache_put(key, out)
                 with self._lock:
                     self._fail_streak = 0
@@ -456,6 +666,16 @@ class Translator:
                     filled = self._free_translate([texts[p] for p in missing])
                     for p, v in zip(missing, filled):
                         out[p] = v
+                # 免费后端也没救回来（代理关闭时 Google 不可达）时，宁可保留
+                # "夹着原文"的译文，也不要留空白字幕——空白对观众是零信息，
+                # 夹着一个假名至少能看懂。会在回填阶段标记成 untranslated_leak。
+                for p in missing:
+                    if not out[p]:
+                        v = str(partial.get(str(indices[p]), "") or "").strip()
+                        if v:
+                            out[p] = v
+                            with self._lock:
+                                self.stats["leak_kept"] += 1
                 if any(out):
                     if missing and len(missing) < len(texts):
                         with self._lock:
@@ -491,6 +711,30 @@ class Translator:
                     # 纠错循环没救回来：保留（总比空白强），但标记出来便于排查
                     seg["error"] = "untranslated_leak"
                 seg["translation"] = tr
+
+        # ---- 逐条兜底：批量模式没能救回的（空译文 / 仍夹着原文）单独再试
+        # 上限 20 条，避免异常情况下把整片都重跑一遍（正常一部片只有个位数）
+        need = [s for s in segs
+                if (s.get("text") or "").strip()
+                and (not (s.get("translation") or "").strip()
+                     or self._has_untranslated(s["text"], s.get("translation") or ""))]
+        if need:
+            if len(need) > 20:
+                with self._lock:
+                    self.stats["single_capped"] += 1
+                need = need[:20]
+            # 并发兜底：串行最坏 20 次完整 LLM 调用（本地小模型 +30~60s），
+            # 全部计入该块的 mt_ms；并发 4 条能把最坏延迟压到约 1/4。
+            workers = max(1, min(4, len(need)))
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                results = list(ex.map(lambda s: self._single_translate(
+                    s.get("text") or ""), need))
+            for s, v in zip(need, results):
+                if v:
+                    s["translation"] = v
+                    s.pop("error", None)      # 修好了就把错误标记清掉
+                    with self._lock:
+                        self.stats["single_fallbacks"] += 1
 
     # ------------------------------------------------------------ 诊断
     def describe(self) -> str:

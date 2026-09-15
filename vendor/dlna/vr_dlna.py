@@ -371,6 +371,16 @@ def dlna_pn_for(mime: str) -> str:
     }.get(mime, "")
 
 
+def parent_object_id(key: str) -> str:
+    """DLNA key（不含 "F:"/"V:" 前缀）→ 其上级容器的 ObjectID。
+
+    顶层目录与单根模式的根目录都归 CDS 根 "0"。
+    （本服务器不产生空 key，空 key 按根处理。）
+    """
+    parent_key = key.rsplit("/", 1)[0] if "/" in key else ""
+    return ("F:" + parent_key) if parent_key else "0"
+
+
 def display_title(path: Path) -> str:
     """显示标题：直接用完整文件名（含扩展名），零探测。"""
     return path.name
@@ -1557,7 +1567,38 @@ class DlnaApp:
         """
         key = obj_id[2:] if obj_id.startswith(("F:", "V:")) else obj_id
         parts: list[str] = []
-        if key == "" or obj_id == "0":
+        if flag == "BrowseMetadata" and (obj_id.startswith("F:") or (obj_id != "0" and not obj_id.startswith("V:"))):
+            # 容器自身的元数据：必须返回**该容器自己**，而不是它的子项列表。
+            #
+            # 这是 UPnP CDS 的规范语义（BrowseMetadata = 请求对象自身的属性），
+            # 也是客户端"返回上一级"的唯一信息来源。旧实现把容器的 BrowseMetadata
+            # 落进下面的浏览分支，返回的是**子项列表**；而 `_dir_item_list` 给每个
+            # 子项写的 parentID 正是**当前容器自己**（它描述的是"子项的父亲"）。
+            # 客户端从列表里取 parentID，拿到的就是"容器自己 =
+            # 容器自己的父亲"，过滤掉等于自身的值之后只剩"没有上级"，
+            # 于是 DeoVR/Unity 侧按"返回上一级"会直接跳到根目录。
+            meta_path = self.library.key_to_path(key)
+            if meta_path is None:
+                root = next((r for r in self.library.roots if r.label.casefold() == key.casefold()), None)
+                if root is not None:
+                    # 多根模式下根容器的 ObjectID 就是 root.label，其上级即 CDS 根
+                    parts = [
+                        f'<container id="{html.escape(root.label)}" parentID="0" restricted="1">'
+                        f"<dc:title>{html.escape(root.label)}</dc:title>"
+                        f"<upnp:class>object.container.storageFolder</upnp:class>"
+                        f"</container>"
+                    ]
+            else:
+                # 父 key = 去掉最后一段；顶层目录与单根模式的根目录都归 CDS 根 "0"。
+                parent_id = parent_object_id(key)
+                title = meta_path.name
+                parts = [
+                    f'<container id="{html.escape(obj_id)}" parentID="{html.escape(parent_id)}" restricted="1">'
+                    f"<dc:title>{html.escape(title)}</dc:title>"
+                    f"<upnp:class>object.container.storageFolder</upnp:class>"
+                    f"</container>"
+                ]
+        elif key == "" or obj_id == "0":
             parts = self._dir_item_list(self.library.roots[0].path, "0", "") if len(self.library.roots) == 1 else [
                 f'<container id="{html.escape(r.label)}" parentID="0" restricted="1">'
                 f"<dc:title>{html.escape(r.label)}</dc:title>"
@@ -1576,7 +1617,12 @@ class DlnaApp:
             except OSError:
                 is_file = False
             if is_file and flag == "BrowseMetadata":
-                item = self.library._audio_item(p, key, obj_id) if is_audio(p.name) else self.library._video_item(p, key, obj_id)
+                # 上级是**所在目录**，不是文件自己。旧实现传 obj_id，产出的
+                # parentID 等于自身（"自己是自己的父亲"）——客户端读 parentID 想
+                # 定位文件所在目录时会拿到一个无效值，进而退化成"没有上级"。
+                parent_id = parent_object_id(key)
+                item = (self.library._audio_item(p, key, parent_id) if is_audio(p.name)
+                        else self.library._video_item(p, key, parent_id))
                 parts = [item] if item else []
         else:
             # 多根模式下，根容器的 ObjectID 就是 root.label（DeoVR 会 Browse 根容器）
@@ -1605,6 +1651,11 @@ class DlnaApp:
             log.warning("目录 %s 无法枚举，已加入黑名单（24h 后重试）", dir_path)
             return []
         sibling_names = {e.name for e in entries}
+        # 本层条目的上级就是本层容器；`prefix_key` 为空时是单根模式的根目录，归 "0"。
+        # 旧实现把传进来的 `parent_id`（= 正在浏览的容器自己的 ObjectID）直接转发给
+        # `_video_item/_audio_item`，产出的文件条目 parentID 等于**文件自身**，
+        # 与"容器的 BrowseMetadata 返回子项列表"是同一个根因的两处表现。
+        entry_parent_id = ("F:" + prefix_key) if prefix_key else "0"
         parts: list[str] = []
         for entry in entries:
             name = entry.name
@@ -1630,9 +1681,9 @@ class DlnaApp:
                     f"</container>"
                 )
             elif is_video(name) or is_strm(name):
-                parts.append(self.library._video_item(entry_path, key, parent_id, sibling_names))
+                parts.append(self.library._video_item(entry_path, key, entry_parent_id, sibling_names))
             elif is_audio(name):
-                parts.append(self.library._audio_item(entry_path, key, parent_id))
+                parts.append(self.library._audio_item(entry_path, key, entry_parent_id))
         return parts
 
     def child_count(self, obj_id: str) -> int:
