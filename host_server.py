@@ -175,15 +175,28 @@ def _video_identity(path: str) -> dict:
 
 
 def _config_fingerprint() -> str:
-    """ASR 模型 + 分段/VAD 配置 + 两张术语表的指纹。"""
+    """ASR 模型 + 分段/VAD 配置 + 翻译配置 + 两张术语表 + **管线源码**的指纹。
+
+    源码签名是 2026-09-16 补上的关键洞：此前只指纹配置，判据/策略/引擎的代码
+    修复（如漏译隐藏、比例摊时）都不会改变缓存键——旧管线的差字幕会一直被
+    "当基线加载"，且跨引擎换用的旧译文也不会失效。"""
     parts: list = []
     try:
         cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
         parts.append(json.dumps({"asr": cfg.get("asr"), "vad": cfg.get("vad"),
-                                 "segment": cfg.get("segment")},
+                                 "segment": cfg.get("segment"),
+                                 "translate": cfg.get("translate")},
                                 ensure_ascii=False, sort_keys=True))
     except Exception:
         parts.append("no-config")
+    try:
+        py_files = sorted(SUBTITLE_DIR.glob("*.py"), key=lambda f: f.name)
+        code_sig = hashlib.sha256("|".join(
+            f"{f.name}:{hashlib.sha256(f.read_bytes()).hexdigest()}"
+            for f in py_files).encode("utf-8")).hexdigest()[:16]
+        parts.append(f"code:{code_sig}")
+    except Exception:
+        parts.append("code:missing")
     for lang, fname in GLOSSARY_FILES.items():
         f = SUBTITLE_DIR / fname
         try:
