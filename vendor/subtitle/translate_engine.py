@@ -154,6 +154,13 @@ class Translator:
         self.cache_dir = str(self.cfg.get("cache_dir") or _default_cache_dir())
         self.target = str(self.cfg.get("target_lang", "zh"))
 
+        # 专攻翻译模型（如 Sakura 系）的逐句模式：mt_system 非空即启用。
+        # 这类模型按"单文本 + 专用系统提示词"调优（日中galgame领域微调），
+        # 不服从 JSON 批量指令；逐句直翻 + 术语表修补 + 漏译/退化检查，
+        # 失败句标记 error（头显跳过空行）。
+        self.mt_system = str(self.cfg.get("mt_system", "") or "").strip()
+        self.mt_user_prefix = str(self.cfg.get("mt_user_prefix", "") or "将下面的日文文本翻译成中文：")
+
         # 免费兜底
         fb = self.cfg.get("fallback") or {}
         self.fallback_kind = str(fb.get("backend", "bing")) if fb.get("enabled", True) else ""
@@ -536,6 +543,47 @@ class Translator:
             return ""
         return out
 
+    # ------------------------------------------------------ 逐句专攻 MT
+    def _mt_once(self, text: str, lang_key: str) -> str:
+        """单句调用专攻翻译模型；空/漏译/退化一律判失败返回空串。"""
+        raw = str(self._chat(self.mt_system, self.mt_user_prefix + text) or "").strip()
+        out = raw.strip().strip('"“”「」『』').strip()
+        if not out or self._has_untranslated(text, out) or self._is_degenerate(text, out):
+            return ""
+        return self._repair_with_glossary(lang_key, text, out)
+
+    def _translate_mt(self, todo: list, lang_key: str) -> None:
+        """逐句专攻 MT（Sakura 系翻译特化模型）：单文本 + 专用系统提示词直翻。
+
+        与批量 JSON 模式并行不悖：mt_system 配置非空才启用。带缓存（逐句键）、
+        术语表修补、漏译/退化检查；并发 self.thread_num 路。失败句标记
+        translate_failed:mt_empty（头显跳过空译文行）。上下文承接参数在此模式
+        不适用——Sakura 按单段调优，混入上下文文本有被一并翻译的风险。
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        def work1(s):
+            text = (s.get("text") or "").strip()
+            key = self._key([text], self.mt_system, lang_key)
+            cached = self._cache_get(key, 1)
+            if cached is not None:
+                return cached[0]
+            out = self._mt_once(text, lang_key)
+            if out:
+                self._cache_put(key, [out])
+            return out
+
+        workers = max(1, min(self.thread_num, len(todo)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            results = list(ex.map(work1, [s for _, s in todo]))
+        for (_, s), tr in zip(todo, results):
+            s.pop("error", None)
+            if not tr:
+                s["error"] = "translate_failed:mt_empty"
+            s["translation"] = tr
+        with self._lock:
+            self.stats["segments"] += len(todo)
+
     # ------------------------------------------------------------ 兜底
     def _get_fallback(self):
         with self._lock:
@@ -603,6 +651,12 @@ class Translator:
             if not (s.get("text") or "").strip():
                 s["translation"] = ""
         if not todo:
+            return
+
+        # 逐句专攻 MT 模式：mt_system 配置非空即启用（Sakura 等翻译特化模型）。
+        # 该模式没有"批"的概念，直接逐句直翻后返回。
+        if self.mt_system:
+            self._translate_mt(todo, lang_key)
             return
 
         # 分批

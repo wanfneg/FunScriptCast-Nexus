@@ -58,3 +58,19 @@
      实时模式不可接受；逐句对比多数行持平 → **维持 3b**
 - 风险点：7b 试验时 audiocpp(2.4GB)+ollama 7b(~4.7GB) 同卡 8GB，余量极小
 - 下一步：全片基线 → 联网检索 ja→zh 专用翻译模型（SAKURA 系）→ 试验
+
+## Round 6（05:10–05:25）：联网检索 + Sakura 翻译特化模型接入（逐句 MT 模式）
+
+- 是否联网检索：是（1 次）
+- 搜索关键词：SAKURA 日语翻译模型 ollama galgame 日中 qwen2.5 GGUF
+- 参考开源项目：SakuraLLM/SakuraLLM（https://github.com/SakuraLLM/SakuraLLM）
+  —— 轻小说/Galgame 日中翻译特化模型，Qwen2.5 底座，GGUF + Ollama 支持，
+  官方提示词/采样参数（temp 0.1 / top_p 0.3）取自其 README
+- 借鉴点：领域微调翻译模型 + 逐句纯文本直翻模式（不服从 JSON 批量指令）
+- 代码变更：translate_engine 新增逐句 MT 模式（mt_system/mt_user_prefix 配置非空即启用：
+  单句直翻 + 缓存 + 术语表修补 + 漏译/退化检查 + 并发 thread_num）
+- 实测（180s 切片）：Sakura-1.5B 内容覆盖 0.392 vs 3b 0.267（+47%），速度持平（15.6s），
+  硬缺陷 0/0/0。样例："あなたにだけユアの秘密…" → 3b"只告诉你你一个人的秘密" /
+  sak"我只告诉你我的秘密"（代词正确）
+- 风险点：Sakura 许可 CC BY-NC-SA 4.0（禁商用，个人使用 OK，需标注机翻）；
+  7B（4.1GB iq4xs，8G 显存推荐档）下载中，到位后 A/B
