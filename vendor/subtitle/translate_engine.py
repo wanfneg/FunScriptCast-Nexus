@@ -549,22 +549,25 @@ class Translator:
         return out
 
     # ------------------------------------------------------ 逐句专攻 MT
-    def _mt_once(self, text: str, lang_key: str) -> str:
+    def _mt_once(self, text: str, lang_key: str, context: str = "") -> str:
         """单句调用专攻翻译模型；空/漏译/退化一律判失败返回空串。"""
-        raw = str(self._chat(self.mt_system, self.mt_user_prefix + text) or "").strip()
+        prefix = (context + chr(10)) if context else ""
+        raw = str(self._chat(self.mt_system, prefix + self.mt_user_prefix + text) or "").strip()
         out = raw.strip().strip('"“”「」『』').strip()
         if not out or self._has_untranslated(text, out) or self._is_degenerate(text, out):
             return ""
         return self._repair_with_glossary(lang_key, text, out)
 
-    def _translate_mt(self, todo: list, lang_key: str) -> None:
+    def _translate_mt(self, todo: list, lang_key: str, context: str = "") -> None:
         """逐句专攻 MT（Sakura 系翻译特化模型）：单文本 + 专用系统提示词直翻。
 
         与批量 JSON 模式并行不悖：mt_system 配置非空才启用。带缓存（逐句键）、
         术语表修补、漏译/退化检查；并发 self.thread_num 路。失败句标记
-        translate_failed:mt_empty（头显跳过空译文行）。上下文承接参数在此模式
-        不适用——Sakura 按单段调优，混入上下文文本有被一并翻译的风险。
-        """
+        translate_failed:mt_empty（头显跳过空译文行）。
+
+        context：上一块的译文（人称/语境衔接参考，Sakura v0.9 官方支持多行
+        上下文拼接）。只作为**参考前缀**拼在输入前（换行分隔），不进缓存键、
+        不进 system——实测能显著减少人称错位（她↔我）。"""
         from concurrent.futures import ThreadPoolExecutor
 
         def work1(s):
@@ -573,7 +576,7 @@ class Translator:
             cached = self._cache_get(key, 1)
             if cached is not None:
                 return cached[0]
-            out = self._mt_once(text, lang_key)
+            out = self._mt_once(text, lang_key, context)
             if out:
                 self._cache_put(key, [out])
             return out
@@ -670,7 +673,10 @@ class Translator:
         # 逐句专攻 MT 模式：mt_system 配置非空即启用（Sakura 等翻译特化模型）。
         # 该模式没有"批"的概念，直接逐句直翻后返回。
         if self.mt_system:
-            self._translate_mt(todo, lang_key)
+            ctx_note = ""
+            if context:
+                ctx_note = f"（上一句译文，供人称衔接参考，勿翻译：{context[:60]}）"
+            self._translate_mt(todo, lang_key, ctx_note)
             return
 
         # 分批
