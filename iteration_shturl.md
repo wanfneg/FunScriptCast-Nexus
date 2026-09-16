@@ -367,3 +367,17 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
   （kotoba-tech/kotoba-whisper-v2.0-faster，~810MB）
 - 风险点：whisper 系对喘息有幻觉倾向——已用 vad_filter + no_speech_prob 门控
   + 现有重复/漏译判据三层防护；全片回归未见乱码注入
+
+## Round 28（用户问"阈值是否不合适"的排查结论，11:5x）
+
+- 用户质疑阈值设置 → 三层排查：
+  ① VAD 检出层：978s 窗口默认阈值 0.5 **本来就检出语音段** [977.6,978.6]，
+     降到 0.3 无变化 → 阈值不是问题（且 silero VAD 的 threshold/min_speech_duration_ms/
+     speech_pad_ms 等参数已确认可经 audiocpp 请求选项透传，留作后续调优接口）
+  ② ASR 层：该窗口完整管线实测识别为 "うん。"→"嗯。"——**有字幕在显示**
+  ③ 人工对照：人工转写"尤娅的房间"（人耳+上下文），模型只有咕哝声可听
+- 定性：剩余"缺失"实为**含混气声下模型转写过于简略**（"うん"→"嗯。"），
+  与"漏句"是两回事；0.6B 模型分辨极限，升级路径=更大 ASR 模型或云端
+- silero VAD 参数接口确认（audio.cpp silero_config_from_options）：threshold /
+  min_speech_duration_ms / min_silence_duration_ms / speech_pad_ms /
+  max_speech_duration_s / neg_threshold 均可经请求选项透传——后续调优接口已明确
