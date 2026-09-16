@@ -2,10 +2,10 @@
 #
 #   powershell -ExecutionPolicy Bypass -File build\make_runtime.ps1
 #
-# 产出 dist-app\runtime\（约 40-60 MB）：
+# 产出 dist-app\runtime\（fastapi/uvicorn/numpy/zhconv 约 60-80 MB；
+# faster-whisper 是耳语兜底的可选依赖，连带 ctranslate2/onnxruntime 会再涨数百 MB）：
 #   python.exe + python310.dll   官方 embeddable 发行版
-#   Lib\site-packages\           fastapi / uvicorn / numpy（字幕服务 audiocpp
-#                                模式所需的全部第三方依赖；torch 不需要，
+#   Lib\site-packages\           上述依赖（torch 不装——audiocpp 主路径不需要，
 #                                见 vendor/subtitle/asr_engine 的懒加载说明）
 #
 # 宿主查找解释器的顺序里 runtime\python.exe 排第一（host_server._subtitle_python），
@@ -20,8 +20,17 @@ $root = Split-Path -Parent $PSScriptRoot
 if (-not $OutDir) { $OutDir = Join-Path $root 'dist-app\runtime' }
 $tmp = Join-Path $env:TEMP ("nexus-runtime-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
+# 冒烟表达式：必须覆盖**实际安装**的全部直接依赖。半成品 runtime（pip 中途失败
+# 留下的残目录）只有跑到缺的那个 import 才会现形——"已存在"路径同样要过这一关。
+$smokeExpr = "import fastapi, uvicorn, numpy, zhconv, faster_whisper, sys; print('runtime ok', sys.version.split()[0])"
+
 if (Test-Path $OutDir) {
-    Write-Host "runtime 已存在：$OutDir（如需重建请先删除）" -ForegroundColor Yellow
+    Write-Host "runtime 已存在：$OutDir，先冒烟验证完整性…" -ForegroundColor Yellow
+    $smoke = & (Join-Path $OutDir 'python.exe') -c $smokeExpr
+    if ($LASTEXITCODE -ne 0 -or $smoke -notmatch 'runtime ok') {
+        throw "runtime 已存在但冒烟失败（多半是上次构建中断的半成品）：删除 $OutDir 后重跑本脚本"
+    }
+    Write-Host $smoke
     exit 0
 }
 New-Item -ItemType Directory -Path $tmp, $OutDir -Force | Out-Null
@@ -45,25 +54,30 @@ if ($pthText -notmatch 'Lib\\site-packages') {
 Set-Content -Path $pth.FullName -Value $pthText -Encoding ASCII
 
 # ---- 2/3. 安装字幕服务（audiocpp 模式）的运行依赖 ----
-# 只装轻量依赖（fastapi/uvicorn/numpy）；torch/qwen_asr 在 audiocpp 模式不需要
-# （asr_engine 已懒加载）。runtime 本体不需要 pip，直接 --target 装进 site-packages。
+# fastapi/uvicorn/numpy/zhconv + faster-whisper（耳语二次识别兜底，whisper_fallback.py
+# 懒加载；不装也能跑主链路）。runtime 本体不需要 pip，直接 --target 装进 site-packages。
 # NO_PROXY=*：元凶是 **Windows 系统代理**（注册表 Internet Settings，Clash 类
 # 工具会写入 127.0.0.1:7897），pip 的 urllib 通过 getproxies() 读注册表，与
 # pip.ini 无关（--isolated 也拦不住）。代理软件没开时 pip 全部请求 TLS 失败，
 # 报 "check_hostname requires server_hostname"。NO_PROXY=* 让全部主机直连。
 $venvPy = Join-Path $root '.venv\Scripts\python.exe'
 if (-not (Test-Path $venvPy)) { throw "找不到 venv Python：$venvPy" }
-Write-Host "[2/3] 安装 fastapi / uvicorn / numpy …" -ForegroundColor Cyan
+Write-Host "[2/3] 安装 fastapi / uvicorn / numpy / zhconv / faster-whisper …" -ForegroundColor Cyan
 $sitePkgs = Join-Path $OutDir 'Lib\site-packages'
 New-Item -ItemType Directory -Path $sitePkgs -Force | Out-Null
 $env:NO_PROXY = '*'
 $env:no_proxy = '*'
 & $venvPy -m pip install --target $sitePkgs "fastapi" "uvicorn" "numpy" "zhconv" "faster-whisper"
-if ($LASTEXITCODE -ne 0) { throw "依赖安装失败" }
+if ($LASTEXITCODE -ne 0) {
+    # pip 半途失败会留下残目录——下次直接跑会被当成"已存在"（现已会被冒烟拦住，
+    # 但这里主动删掉更干净）
+    Remove-Item $OutDir -Recurse -Force -ErrorAction SilentlyContinue
+    throw "依赖安装失败"
+}
 
 # ---- 4. 冒烟验证：runtime python 能导入全部依赖 ----
 Write-Host "[3/3] 冒烟验证…" -ForegroundColor Cyan
-$smoke = & (Join-Path $OutDir 'python.exe') -c "import fastapi, uvicorn, numpy, sys; print('runtime ok', sys.version.split()[0])"
+$smoke = & (Join-Path $OutDir 'python.exe') -c $smokeExpr
 if ($LASTEXITCODE -ne 0 -or $smoke -notmatch 'runtime ok') { throw "runtime 冒烟验证失败" }
 Write-Host $smoke
 

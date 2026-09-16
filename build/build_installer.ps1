@@ -27,23 +27,60 @@ if (Test-Path $repoCfg) {
                "  请先清空 translate.openai.api_key（界面填的 key 应只留在 dist-app 的运行配置里），再重新打包。") -f $repoCfg
     }
 }
-# dist-app 的运行配置里通常有你填的 key —— 它会被本脚本第 1 步覆盖掉（不会进包），
-# 但重编/安装后需要在界面里重新填一次，这里先提醒。
-$distCfg = Join-Path $root 'dist-app\vendor\subtitle\config.json'
-if (Test-Path $distCfg) {
-    $kd = ''
-    try { $kd = (Get-Content $distCfg -Raw -Encoding UTF8 | ConvertFrom-Json).translate.openai.api_key } catch { }
-    if ($kd) {
-        Write-Host "  提示：dist-app 运行配置里有云端 key —— 本次会覆盖为仓库配置（不进安装包），" -ForegroundColor Yellow
-        Write-Host "        安装/重编后请在界面「云端 API Key」里重新填一次。" -ForegroundColor Yellow
-    }
-}
+# dist-app 运行配置里的 key：build_exe 现在会原样保留（坑 #12 已关），所以
+# 走「ISCC 前摘除、打包后回填」——安装包里永远没有 key，本机 dist-app 不丢。
+$distOut = Join-Path $root 'dist-app'
+$distCfg = Join-Path $distOut 'vendor\subtitle\config.json'
 
 Write-Host "[1/4] 构建应用与 dist-app…" -ForegroundColor Cyan
 $exeArgs = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'build_exe.ps1'))
 if ($NoBump) { $exeArgs += '-NoBump' }
 & powershell @exeArgs
 if ($LASTEXITCODE -ne 0) { throw "build_exe 失败（exit $LASTEXITCODE）" }
+
+$stashKey = ''
+if (Test-Path $distCfg) {
+    try { $stashKey = [string]((Get-Content $distCfg -Raw -Encoding UTF8 | ConvertFrom-Json).translate.openai.api_key) } catch { }
+}
+if ($stashKey) {
+    try {
+        $cfg = Get-Content $distCfg -Raw -Encoding UTF8 | ConvertFrom-Json
+        $cfg.translate.openai.api_key = ''
+        [IO.File]::WriteAllText($distCfg, ($cfg | ConvertTo-Json -Depth 24),
+            (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "  已暂存 dist-app 的云端 key（打包后回填）" -ForegroundColor DarkGray
+    } catch { $stashKey = '' }
+}
+
+# ---- 哨兵（第 2 道）：打包对象全树扫描 --------------------------------------
+# 上面的主检查只看 vendor\subtitle\config.json 一个文件；但 setup.iss 打的是
+# dist-app\vendor\* 递归——.bak 配置、用户自建的 json、tools 里误放的脚本
+# 都可能带 key。扫一遍整个 dist-app（排除 runtime 的第三方库与运行日志），
+# 任何非空 api_key 都拒绝出包。
+Write-Host "[2/4] 哨兵扫描：dist-app 全树 API Key 检查…" -ForegroundColor Cyan
+$hits = @()
+$distOut = Join-Path $root 'dist-app'
+Get-ChildItem $distOut -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.FullName -notmatch '\\runtime\\' -and $_.FullName -notmatch '\\logs\\' -and
+        $_.FullName -notmatch '__pycache__' -and $_.Extension -in '.json', '.bak-prompt', '.bak'
+    } |
+    ForEach-Object {
+        $m = Select-String -LiteralPath $_.FullName -Pattern '"api[_-]?key"\s*:\s*"([^"]+)"' -AllMatches -ErrorAction SilentlyContinue
+        if ($m) {
+            foreach ($x in $m.Matches) {
+                $v = $x.Groups[1].Value
+                if ($v -and $v -notlike '*`**') {
+                    $rel = $_.FullName.Substring($distOut.Length + 1)
+                    $hits += ("{0} → {1}…" -f $rel, $v.Substring(0, [Math]::Min(6, $v.Length)))
+                }
+            }
+        }
+    }
+if ($hits) {
+    throw ("拒绝打包：以下文件里带 API Key：`n  " + ($hits -join "`n  ") +
+           "`n  请清空后重打包（用户 key 只应存在于本机运行配置，绝不进安装包）。")
+}
 
 Write-Host "[2/4] 构建自带运行时…" -ForegroundColor Cyan
 & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'make_runtime.ps1')
@@ -75,7 +112,23 @@ if (-not (Test-Path $langDst)) {
 
 Write-Host "[4/4] 编译安装包…" -ForegroundColor Cyan
 & $iscc "/DMyAppVersion=$version" (Join-Path $root 'installer\setup.iss')
-if ($LASTEXITCODE -ne 0) { throw "ISCC 失败（exit $LASTEXITCODE）" }
+$isccFailed = ($LASTEXITCODE -ne 0)
+
+# 回填 key（无论打包成败都要做，否则本机 dist-app 丢 key）
+if ($stashKey -and (Test-Path $distCfg)) {
+    try {
+        $cfg = Get-Content $distCfg -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not [string]$cfg.translate.openai.api_key) {
+            $cfg.translate.openai.api_key = $stashKey
+            [IO.File]::WriteAllText($distCfg, ($cfg | ConvertTo-Json -Depth 24),
+                (New-Object System.Text.UTF8Encoding($false)))
+            Write-Host "  已把云端 key 回填到 dist-app 运行配置" -ForegroundColor DarkGray
+        }
+    } catch {
+        Write-Host "  key 回填失败（$($_.Exception.Message)），请在界面重新填一次" -ForegroundColor Yellow
+    }
+}
+if ($isccFailed) { throw "ISCC 失败（exit $LASTEXITCODE）" }
 
 $out = Join-Path $root 'dist-installer'
 Write-Host "[完成] 安装包：" -ForegroundColor Green

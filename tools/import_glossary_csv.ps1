@@ -15,16 +15,17 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function Import-One($lang, $path) {
-    if (-not $path) { return }
+    if (-not $path) { return $true }
     if (-not (Test-Path $path)) { throw "找不到 CSV：$path" }
     $body = @{ path = (Resolve-Path $path).Path; lang = $lang; mode = 'replace' } | ConvertTo-Json
     $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/glossary/import" -Method POST `
         -Body $body -ContentType 'application/json' -TimeoutSec 60
     if ($r.ok) {
         Write-Host ("[{0}] 已替换：{1} 条（跳过 {2}）" -f $lang, $r.count, $r.skipped) -ForegroundColor Green
-    } else {
-        Write-Host ("[{0}] 失败：{1}" -f $lang, $r.error) -ForegroundColor Red
+        return $true
     }
+    Write-Host ("[{0}] 失败：{1}" -f $lang, $r.error) -ForegroundColor Red
+    return $false
 }
 
 if (-not $Ja -and -not $En) { throw '至少要给 -Ja 或 -En 之一' }
@@ -36,5 +37,7 @@ try {
     throw "宿主未运行（127.0.0.1:$Port）。先启动 FunScriptCast-Nexus 或 host_server.py"
 }
 
-Import-One 'ja' $Ja
-Import-One 'en' $En
+$okAll = $true
+$okAll = (Import-One 'ja' $Ja) -and $okAll
+$okAll = (Import-One 'en' $En) -and $okAll
+if (-not $okAll) { exit 1 }   # 失败必须让调用方知道（此前失败也 exit 0）

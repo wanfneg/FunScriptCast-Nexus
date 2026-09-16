@@ -72,6 +72,12 @@ foreach ($n in $files) {
 }
 
 Write-Host "[4/6] 解压到 vendor\llama" -ForegroundColor Cyan
+if ((Test-Path $dst) -and $Force) {
+    # 跨 tag 升级必须先清空：Expand-Archive 只覆盖同名文件，旧版 dll/exe 会
+    # 与新版混存（"升级了但行为诡异"的温床）。
+    Remove-Item $dst -Recurse -Force
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+}
 foreach ($n in $files) {
     Expand-Archive -LiteralPath (Join-Path $tmp $n) -DestinationPath $dst -Force
     Write-Host "      $n"
@@ -83,5 +89,6 @@ $total = (Get-ChildItem $dst -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("      vendor\llama 共 {0:N1} MB" -f ($total / 1MB))
 
 Write-Host "[6/6] 完成" -ForegroundColor Green
+Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue   # ~1.1GB 的两个 zip，不留 %TEMP%
 Write-Host "      翻译后端由字幕服务按需拉起（config.json → translate.backend = local）"
 Write-Host "      手动验证：$exe -m ..\..\models\Sakura-7B-Qwen2.5-v1.0\*.gguf --port 8082"
