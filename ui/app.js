@@ -500,6 +500,15 @@
       $("#mtCloudKey").placeholder = oa.api_key_set
         ? "已保存（尾号 " + (oa.api_key_tail || "****") + "），留空表示不修改"
         : "sk-...（留空则用环境变量 " + (oa.api_key_env || "OPENAI_API_KEY") + "）";
+      syncMtGroups();
+    });
+  }
+  /* 三套后端（本地 llama.cpp / 云端 OpenAI 兼容 / 本地 Ollama）参数完全不同，
+     平铺在一起既乱又容易填错 —— 只显示当前选中的那一组。 */
+  function syncMtGroups() {
+    var sel = $("#mtBackend").value;
+    Array.prototype.forEach.call(document.querySelectorAll("[data-mt-group]"), function (g) {
+      g.style.display = (g.getAttribute("data-mt-group") === sel) ? "" : "none";
     });
   }
   /* 术语表：界面不渲染条目（4000+ 条会撑爆 DOM），只显示每张表的统计 */
@@ -601,6 +610,7 @@
     $("#subStop").addEventListener("click", function () {
       api("/api/subtitle/stop", "POST", {}).then(function () { toast("字幕服务已停止", "显存已释放"); poll(true); });
     });
+    $("#mtBackend").addEventListener("change", syncMtGroups);
     $("#saveMt").addEventListener("click", function () {
       var body = {
         translate: {

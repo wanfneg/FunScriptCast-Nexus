@@ -432,41 +432,61 @@
             <label class="field">
               <span>后端</span>
               <select class="input" id="mtBackend">
-                <option value="local">local（本地 llama.cpp，模型取安装目录 models\）</option>
-                <option value="openai">openai（云端 / OpenAI 兼容）</option>
-                <option value="ollama">ollama（本地 Ollama）</option>
+                <option value="local">本地 · llama.cpp（模型在安装目录 models\）</option>
+                <option value="openai">云端 · OpenAI 兼容 API</option>
+                <option value="ollama">本地 · Ollama</option>
                 <option value="none">关闭翻译</option>
               </select>
             </label>
-            <label class="field">
-              <span>本地模型（相对 vendor\subtitle 的 GGUF 路径）</span>
-              <input class="input mono" id="mtLocalModel" placeholder="../../models/Sakura-7B-Qwen2.5-v1.0/sakura-7b-qwen2.5-v1.0-iq4xs.gguf">
-            </label>
-            <label class="field">
-              <span>云端 base_url（OpenAI 兼容）</span>
-              <input class="input mono" id="mtCloudBase" placeholder="https://api.openai.com/v1">
-            </label>
-            <label class="field">
-              <span>云端模型</span>
-              <input class="input mono" id="mtCloudModel" placeholder="gpt-4o-mini / deepseek-chat / …">
-            </label>
-            <label class="field">
-              <span>云端 API Key</span>
-              <input class="input mono" id="mtCloudKey" type="password" autocomplete="off" placeholder="sk-...（留空则用环境变量）">
-            </label>
-            <label class="field">
-              <span>Ollama 模型</span>
-              <input class="input mono" id="mtModel" placeholder="qwen2.5:3b">
-            </label>
-            <label class="field">
-              <span>Ollama 地址</span>
-              <input class="input mono" id="mtBase" placeholder="http://127.0.0.1:11434">
-            </label>
+
+            <!-- 本地（llama.cpp）：只显示这一组 -->
+            <div class="mt-group" data-mt-group="local">
+              <label class="field">
+                <span>本地模型（相对 vendor\subtitle 的 GGUF 路径）</span>
+                <input class="input mono" id="mtLocalModel" placeholder="../../models/Sakura-7B-Qwen2.5-v1.0/sakura-7b-qwen2.5-v1.0-iq4xs.gguf">
+              </label>
+              <div class="hint">模型放在安装目录的 models\ 下，由字幕服务按需拉起 llama-server：不联网、不花额度，占显存</div>
+            </div>
+
+            <!-- 云端（OpenAI 兼容）：只显示这一组 -->
+            <div class="mt-group" data-mt-group="openai">
+              <label class="field">
+                <span>base_url</span>
+                <input class="input mono" id="mtCloudBase" placeholder="https://api.openai.com/v1">
+              </label>
+              <label class="field">
+                <span>模型</span>
+                <input class="input mono" id="mtCloudModel" placeholder="gpt-4o-mini / deepseek-chat / …">
+              </label>
+              <label class="field">
+                <span>API Key</span>
+                <input class="input mono" id="mtCloudKey" type="password" autocomplete="off" placeholder="sk-...">
+              </label>
+              <div class="hint">标准 OpenAI 格式：POST {base_url}/chat/completions + Bearer，任何兼容服务都能填。Key 只存在本机 config.json，回读接口会打码</div>
+            </div>
+
+            <!-- 本地（Ollama）：只显示这一组 -->
+            <div class="mt-group" data-mt-group="ollama">
+              <label class="field">
+                <span>Ollama 模型</span>
+                <input class="input mono" id="mtModel" placeholder="qwen2.5:3b">
+              </label>
+              <label class="field">
+                <span>Ollama 地址</span>
+                <input class="input mono" id="mtBase" placeholder="http://127.0.0.1:11434">
+              </label>
+              <div class="hint">Ollama 的模型库是全局的（模型不随安装目录走），仅作备用</div>
+            </div>
+
+            <div class="mt-group" data-mt-group="none">
+              <div class="hint">已关闭翻译：字幕只显示识别原文，不做中文翻译</div>
+            </div>
+
             <div class="inline">
               <button class="btn primary" id="saveMt"><svg class="ic"><use href="#i-save"/></svg><span>保存翻译设置</span></button>
               <button class="btn" id="testMt">测试一句</button>
-              <span class="hint">保存后重启字幕服务生效；「测试一句」用已保存的配置真发一句</span>
             </div>
+            <div class="hint top-3">保存后需重启字幕服务；「测试一句」用已保存的配置真发一句，并显示上游原始报错</div>
             <div class="notice top-3" id="mtTestResult" style="display:none"></div>
             <div class="notice warn top-3">
               <svg class="ic"><use href="#i-triangle-alert"/></svg>

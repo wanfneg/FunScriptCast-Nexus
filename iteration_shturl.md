@@ -692,3 +692,9 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
 
 **待用户提供**：真实云端 API Key（我没法替你申请）——填进 UI 的「云端 API Key」即可；
 测试步骤已写进 `README.md`。
+
+**UI 修正（用户指出"本地和云端要分开"）**：原先三套后端的字段（本地 GGUF 路径 / 云端
+base_url+模型+Key / Ollama 模型+地址）**平铺在同一张卡里** ✗ ——又乱又容易填错。现改为
+「按后端分组、只显示当前选中那一组」：`data-mt-group="local|openai|ollama|none"` 四个容器，
+选择变化即切换（`syncMtGroups()`）；每组的字段名也改成通用叫法（BASE_URL / 模型 / API KEY）。
+截图验证两态：`local` 只显示本地组、`openai` 只显示云端三项 ✓（`node tests/ui_shot.js` ✓）。
