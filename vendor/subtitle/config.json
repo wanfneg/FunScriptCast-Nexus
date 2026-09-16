@@ -21,7 +21,8 @@
       "language": "Japanese",
       "min_speech_ms": 250,
       "merge_gap_sec": 0.5,
-      "pad_sec": 0.25
+      "pad_sec": 0.25,
+      "model": "../../models/Qwen3-ASR-0.6B"
     }
   },
   "vad": {

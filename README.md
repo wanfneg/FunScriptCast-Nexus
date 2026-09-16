@@ -164,6 +164,10 @@ Job Object 带走，不留孤儿显存）。配置见 `vendor\subtitle\config.js
 **不要注册成「离线 + 流式」两个**：同一份权重会驻留两遍（audiocpp 内存 737→2507 MB、
 总显存 7745/8188 MiB），把 llama-server 挤到 CPU —— 实测流式中位 0.29→2.34 s、整段 6× 变慢。
 
+ASR 权重同样取自**安装目录的 `models\`**（`asr.audiocpp.model = ../../models/Qwen3-ASR-0.6B`）。
+注意 audio.cpp 是按**它那份配置文件的所在目录**解析相对路径的，而临时配置写在 `%TEMP%` ——
+所以 `audiocpp_backend` 会先解析成绝对路径再写进去（否则上游找不到模型文件）。
+
 ## 打包成 EXE
 
 ```powershell

@@ -567,3 +567,14 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
 
   - 连带修正：`_ref\audiocpp-asr-stream.json`（权威文档指定的启动配置）由双模型改为单 streaming 注册；
     `tests/diag/audiocpp_server_test.py` 的模型 id 同步改为 `qwen3-asr-stream`。
+  - **ASR 权重也归位到安装目录**：`asr.audiocpp` 此前没有 `model` 键 → `AudioCppBackend` 回退到
+    `E:\audiocpp-portable\models\Qwen3-ASR-0.6B`（**安装目录之外**）。补上
+    `"model": "../../models/Qwen3-ASR-0.6B"`（与 `asr.model` 同一约定）后，:8081 注册的路径变为
+    `E:\Development\FunScriptCast-Nexus\models\Qwen3-ASR-0.6B` ✓ —— 至此**翻译模型与 ASR 模型
+    都在安装目录的 models\ 下**。
+  - ⚠️ **踩坑（已修）**：`audio.cpp` 是拿**它那份配置文件的所在目录**解析相对路径的 ——
+    `audiocpp_backend` 的临时配置写在 `%TEMP%`，直接传相对路径会被解析成
+    `%TEMP%\..\..\models\...`（实测：流式 `segments=0`、离线整段空译文，显存掉到 876 MiB）。
+    修法：在 `AudioCppBackend.__init__` 里先按 `vendor/subtitle/` 解析成**绝对路径**再写进临时配置
+    （与 `llama_backend._resolve` 同一套）。复测：流式 90 chunk/57 段/空译文 0/中位 0.28s、
+    离线 45 chunk/26 段/空译文 0/中位 0.4s。

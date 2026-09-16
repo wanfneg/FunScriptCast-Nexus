@@ -34,6 +34,7 @@ import numpy as np
 from text_filters import has_repetition_loop, is_glossary_echo, is_prompt_echo
 
 SR = 16000
+BASE_DIR = Path(__file__).resolve().parent          # vendor/subtitle
 AUDIOCPP_DIR = Path(os.environ.get("AUDIOCPP_DIR", r"E:\audiocpp-portable"))
 
 # 请求的 lang_key → audiocpp 的语言名。此前请求体写死构造时的 self.language，
@@ -59,7 +60,12 @@ class AudioCppBackend:
         self.threads = int(cfg.get("threads", max(1, (os.cpu_count() or 4) - 1)))
         self.port = int(cfg.get("port", 8083))
         self.host = str(cfg.get("host", "127.0.0.1"))
-        self.model = str(cfg.get("model") or (self.dir / "models" / "Qwen3-ASR-0.6B"))
+        # 模型路径：config 里按既有约定写相对路径（../../models/Qwen3-ASR-0.6B = 安装目录
+        # 的 models\），但 audio.cpp 是拿**它自己那份配置文件的所在目录**去解析的 ——
+        # 实测传相对路径时上游注册成 <临时目录>\..\..\models\... 找不到文件：
+        # 流式返回 segments=0、离线整段空译文。所以这里先解析成绝对路径再写进临时配置。
+        _m = Path(str(cfg.get("model") or (self.dir / "models" / "Qwen3-ASR-0.6B")))
+        self.model = str(_m if _m.is_absolute() else (BASE_DIR / _m).resolve())
         self.vad_model = str(cfg.get("vad_model") or
                              (self.dir / "assets" / "framework" / "models" / "silero_vad"))
         self.language = str(cfg.get("language", "Japanese"))
