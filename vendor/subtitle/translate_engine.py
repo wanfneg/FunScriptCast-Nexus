@@ -551,7 +551,7 @@ class Translator:
     # ------------------------------------------------------ 逐句专攻 MT
     def _mt_once(self, text: str, lang_key: str, context: str = "") -> str:
         """单句调用专攻翻译模型；空/漏译/退化一律判失败返回空串。"""
-        prefix = (context + chr(10)) if context else ""
+        prefix = ""   # 上下文前缀实测会泄漏进上屏译文（MT 无 JSON 校验兜底），弃用
         raw = str(self._chat(self.mt_system, prefix + self.mt_user_prefix + text) or "").strip()
         out = raw.strip().strip('"“”「」『』').strip()
         if not out or self._has_untranslated(text, out) or self._is_degenerate(text, out):
