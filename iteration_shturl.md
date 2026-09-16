@@ -651,3 +651,44 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
 3. **维持 0.6B + Sakura-7B** ✓（已恢复并端到端复验：`うん。` → `嗯。`）。
 4. 将来若要用 1.7B，唯一可行路线是 **ASR 转 CPU**（audio.cpp `--backend cpu`；按 rtf 0.16 估
    仍有数倍实时余量），把显存全留给 7B 翻译 —— 未实测，按需再评估。
+
+## Round 39（23:55）：云端翻译接入 —— 只走**标准 OpenAI 格式**，不做厂商专有实现
+
+**用户要求**：要 OpenAI 格式的云端 API 接入，**不要 DashScope（阿里云百炼）**那种专有实现。
+
+**接入契约（只有两条约定，任何 OpenAI 兼容服务都能接）**：
+`POST {base_url}/chat/completions` + `Authorization: Bearer <api_key>`；
+请求体只用 `model / messages / temperature / max_tokens` 四个通用字段。
+
+**改动**：
+
+| 位置 | 改动 |
+|---|---|
+| `translate_engine.py` | ① 后端名归一（UI 旧值 `dashscope` → `openai`）：**此前 UI 选"云端"会静默走 ollama 分支** ✗；② `_chat_openai` 重写为标准 OpenAI 语义：key 支持 config 内联（UI 填）或环境变量兜底、缺 key/模型/base_url 各自给中文提示；③ **错误带上上游响应体**（key 错/余额/模型名错不再只显示 HTTP 400）；④ 兼容服务拒收 `system` 角色时自动折叠重试一次并记住 |
+| `server_app.py` | 新增 `GET /translate/selftest`：**直连**（暴露 key/网络/模型名问题）+ **管线**（真实产出）两段报，含耗时 |
+| `host_server.py` | 新增 `POST /api/subtitle/translate-test` 代理；`GET /api/subtitle/config` **给 api_key 打码**（只回 `api_key_set`/`api_key_tail`）；保存时忽略打码值、`translate` 组改**深一层合并**（否则只回传 openai 三字段会把 api_key_env 等覆盖掉） |
+| `ui/*` | 后端下拉值修正（`openai（云端 / OpenAI 兼容）`、新增 `local`），新增 本地模型 / 云端 base_url / 云端模型 / 云端 API Key 输入框，新增「测试一句」按钮 + 结果区 |
+| `config.json` | `translate.openai` 默认值改为通用：`https://api.openai.com/v1` + `OPENAI_API_KEY`，删掉 DashScope 专有字段 |
+
+**实测（用本地 llama-server 当"OpenAI 兼容端点"，因此不需要真 key 就能验完整条链路）**：
+
+- 引擎层：成功路径译出 `你好，今天天气真好。` ✓；404 时错误里带出上游 body
+  `{"error":{"message":"File Not Found",...}}` ✓；缺 key / 缺模型 / 缺 base_url 各有中文提示 ✓
+- 端到端：宿主自测接口 `ok=true backend=openai ms=188.5`、`raw=你好，今天天气真好。` ✓；
+  字幕服务真块 `うん。→ 嗯。` ✓（ASR 走安装目录 models ✓）；UI 截图确认新面板与
+  「API KEY 已保存（尾号 only），留空表示不修改」的打码显示 ✓
+
+**本轮踩到的四个坑（都已修/已记录）**：
+
+1. **宿主代码在 exe 里**（PyInstaller 打包）——改 `host_server.py` **必须重编 exe** 才生效 ✗；
+   README 说的"改完即生效"只适用于 `ui\` 与外置的 `vendor\` 服务。已重编（宿主版本 1.0.15）。
+2. **`build\build_exe.ps1` 组装 dist-app 时会删掉 `dist-app\models`（目录联接）与 `dist-app\runtime`** ✗
+   ——ASR 随后会找不到模型。已用 `mklink /J` 重建 `models` 与 `.venv`（README 明写允许目录联接）。
+   **以后每次重编 exe 都要检查这两项。**
+3. PowerShell 5.1 读**无 BOM** 的 `.ps1` 会按 GBK 解析 ✗ ——中文脚本必须 UTF-8 **with BOM**
+   （今天又踩一次：解析期就失败，好在没有任何副作用）。
+4. 启动宿主/端点要用**短进程启动后立刻退出** ✗ —— 若把启动与长轮询写在同一进程里，
+   一旦调用超时被掐断，框架会连子进程一起杀掉（实测宿主与端点一起消失）。
+
+**待用户提供**：真实云端 API Key（我没法替你申请）——填进 UI 的「云端 API Key」即可；
+测试步骤已写进 `README.md`。

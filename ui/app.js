@@ -489,6 +489,17 @@
       var ollama = tr.ollama || {};
       $("#mtModel").value = ollama.model || "";
       $("#mtBase").value = ollama.base_url || "";
+      /* 本地 llama.cpp（模型在安装目录 models\ 下） */
+      var loc = tr.local || {};
+      $("#mtLocalModel").value = loc.model || "";
+      /* 云端：标准 OpenAI 兼容（base_url + model + key），key 不回明文，只显示尾号 */
+      var oa = tr.openai || {};
+      $("#mtCloudBase").value = oa.base_url || "";
+      $("#mtCloudModel").value = oa.model || "";
+      $("#mtCloudKey").value = "";
+      $("#mtCloudKey").placeholder = oa.api_key_set
+        ? "已保存（尾号 " + (oa.api_key_tail || "****") + "），留空表示不修改"
+        : "sk-...（留空则用环境变量 " + (oa.api_key_env || "OPENAI_API_KEY") + "）";
     });
   }
   /* 术语表：界面不渲染条目（4000+ 条会撑爆 DOM），只显示每张表的统计 */
@@ -594,11 +605,40 @@
       var body = {
         translate: {
           backend: $("#mtBackend").value,
+          local: { model: $("#mtLocalModel").value },
+          openai: {
+            base_url: $("#mtCloudBase").value,
+            model: $("#mtCloudModel").value
+          },
           ollama: { model: $("#mtModel").value, base_url: $("#mtBase").value }
         }
       };
+      /* key 只在真的填了才提交（留空表示沿用已保存的，避免把掩码写回配置） */
+      var k = $("#mtCloudKey").value.trim();
+      if (k) body.translate.openai.api_key = k;
       api("/api/subtitle/config", "POST", body).then(function (r) {
         toast(r.ok ? "翻译设置已保存" : "保存失败", r.ok ? "重启字幕服务后生效" : (r.error || ""), r.ok ? "ok" : "err");
+      });
+    });
+    $("#testMt").addEventListener("click", function () {
+      var box = $("#mtTestResult");
+      box.style.display = "";
+      box.className = "notice top-3";
+      box.textContent = "测试中…（云端首字可能要十几秒）";
+      api("/api/subtitle/translate-test", "POST", {}).then(function (r) {
+        r = r || {};
+        var lines = [(r.ok ? "✅ 通过" : "❌ 未通过") +
+          "  后端=" + (r.backend || "?") +
+          "  用时=" + (r.ms != null ? r.ms + "ms" : "?")];
+        if (r.describe) lines.push("配置：" + r.describe);
+        if (r.text) lines.push("原文：" + r.text);
+        if (r.raw) lines.push("直连译文：" + r.raw);
+        if (r.raw_error) lines.push("直连错误：" + r.raw_error);
+        if (r.pipeline) lines.push("管线译文：" + r.pipeline);
+        if (r.pipeline_error) lines.push("管线错误：" + r.pipeline_error);
+        if (r.error) lines.push("错误：" + r.error);
+        box.className = "notice top-3" + (r.ok ? "" : " warn");
+        box.innerHTML = lines.map(function (s) { return "<div>" + esc(s) + "</div>"; }).join("");
       });
     });
     $("#saveAsr").addEventListener("click", function () {

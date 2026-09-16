@@ -255,6 +255,42 @@ def translate_stats():
             "stats": dict(t.stats)}
 
 
+@app.get("/translate/selftest")
+def translate_selftest(text: str = "こんにちは、いい天気ですね。"):
+    """用**当前配置**真跑一句，把译文与上游原始报错一起回给调用方（UI 的「测试」按钮）。
+
+    为什么要有这个接口：云端后端（DashScope 等）出错时，翻译层的兜底会把失败吞成
+    "空译文"，用户只看到没字幕，无从判断是 key 错、余额不足还是模型名错。这里分成两段报：
+
+      · raw      —— 直接调 _chat（不经过批量/兜底），失败时把上游响应体带出来
+      · pipeline —— 走完整 translate_segments（含术语表/纠错/兜底），反映真实产出
+    """
+    t = state["translator"]
+    if t is None:
+        return {"ok": False, "error": "翻译器未初始化"}
+
+    out = {"backend": t.backend, "describe": t.describe(), "text": text,
+           "raw": None, "raw_error": "", "pipeline": None, "pipeline_error": ""}
+
+    # ① 直连后端（最能暴露 key/网络/模型名问题）
+    try:
+        out["raw"] = t._chat(t.mt_system, (t.mt_user_prefix or "") + text)
+    except Exception as e:
+        out["raw_error"] = f"{type(e).__name__}: {e}"
+
+    # ② 完整管线（真实产出）
+    segs = [{"start_ms": 0, "end_ms": 2000, "text": text}]
+    t0 = time.perf_counter()
+    try:
+        t.translate_segments(segs, "ja")
+    except Exception as e:
+        out["pipeline_error"] = f"{type(e).__name__}: {e}"
+    out["pipeline"] = segs[0].get("translation") or ""
+    out["ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    out["ok"] = bool((out["raw"] or out["pipeline"])) and not out["raw_error"]
+    return out
+
+
 @app.get("/glossary")
 def glossary_get(lang: str = "ja"):
     """查看当前术语表（PC 端管理程序/调试用）。"""

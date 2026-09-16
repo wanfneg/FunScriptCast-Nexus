@@ -168,6 +168,33 @@ ASR 权重同样取自**安装目录的 `models\`**（`asr.audiocpp.model = ../.
 注意 audio.cpp 是按**它那份配置文件的所在目录**解析相对路径的，而临时配置写在 `%TEMP%` ——
 所以 `audiocpp_backend` 会先解析成绝对路径再写进去（否则上游找不到模型文件）。
 
+### 云端翻译（标准 OpenAI 兼容，可选）
+
+不接任何厂商专有协议，只有两条约定：`POST {base_url}/chat/completions` +
+`Authorization: Bearer <key>`（请求体只用 model / messages / temperature / max_tokens）。
+
+**UI 用法**：AI 字幕 → 翻译后端选 `openai（云端 / OpenAI 兼容）` → 填 base_url / 模型 / API Key
+→ 保存翻译设置 → 重启字幕服务 → 点「测试一句」。测试结果会同时给出**直连译文**、**管线译文**
+与**上游原始报错**（key 错、余额不足、模型名错一眼可辨）。
+
+```jsonc
+"translate": {
+  "backend": "openai",
+  "openai": {
+    "base_url": "https://api.openai.com/v1",   // 任何 OpenAI 兼容端点
+    "model": "gpt-4o-mini",
+    "api_key": "sk-…"                          // 留空则用环境变量 OPENAI_API_KEY
+  }
+}
+```
+
+命令行自测：`curl -X POST http://127.0.0.1:8790/api/subtitle/translate-test`
+（或直接 `curl http://127.0.0.1:8756/translate/selftest`）。
+
+⚠️ **改了 `host_server.py`（宿主本体）必须重编 exe 才生效**：`build\build_exe.ps1`。
+该脚本会重建 `dist-app`，**请检查 `dist-app\models` 与 `dist-app\.venv` 是否还在** ——
+不在了就用 `mklink /J` 重建（否则 ASR 找不到模型）。外置的 `ui\` 与 `vendor\` 改动则无需重打包。
+
 ## 打包成 EXE
 
 ```powershell

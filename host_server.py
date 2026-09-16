@@ -638,6 +638,62 @@ def sub_translate_stats() -> dict:
     return data
 
 
+def sub_translate_selftest(text: str = "") -> dict:
+    """让字幕服务用当前配置真翻一句（UI「测试」按钮）。不缓存：每次都要真结果。
+
+    超时给足（云端首字可能十几秒），但仍是有上限的探测，不会挂死。
+    """
+    q = urllib.parse.urlencode({"text": text}) if text else ""
+    url = f"http://127.0.0.1:{SUBTITLE_PORT}/translate/selftest" + (f"?{q}" if q else "")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            pass
+        return {"ok": False, "error": f"字幕服务 HTTP {e.code}：{body or e.reason}"}
+    except Exception as e:
+        return {"ok": False, "error": f"字幕服务不可达（{type(e).__name__}: {e}）——先点「启动字幕服务」"}
+
+
+def _mask_translate_secrets(cfg: dict) -> dict:
+    """把 translate.*.api_key 打码后再回给前端（key 仍以明文存在本地 config.json）。
+
+    只标记"是否已设置"+末 4 位，前端据此显示占位符；保存时若前端回传的是打码值则忽略，
+    避免把掩码写回配置（见 /api/subtitle/config 的写回逻辑）。
+    """
+    out = json.loads(json.dumps(cfg or {}, ensure_ascii=False))
+    tr = out.get("translate") or {}
+    for sect in ("openai", "ollama", "local"):
+        s = tr.get(sect)
+        if isinstance(s, dict) and s.get("api_key"):
+            k = str(s["api_key"])
+            s["api_key"] = ""
+            s["api_key_set"] = True
+            s["api_key_tail"] = k[-4:] if len(k) >= 4 else "****"
+    return out
+
+
+def _strip_masked_keys(patch: dict) -> dict:
+    """写回配置前，把"打码过的"api_key 字段删掉（前端不清空输入框就不该覆盖真 key）。
+
+    判据：值里带 "*" 或等于回给前端的空串 + api_key_set 标记。
+    """
+    tr = (patch or {}).get("translate")
+    if not isinstance(tr, dict):
+        return patch
+    for sect in ("openai", "ollama", "local"):
+        s = tr.get(sect)
+        if isinstance(s, dict) and "api_key" in s:
+            v = str(s.get("api_key") or "")
+            if not v.strip() or "*" in v:
+                s.pop("api_key", None)
+    return patch
+
+
 def _service_ours(health: dict | None) -> bool:
     """8756 上应答的服务，是不是本程序拉起来的那个。
 
@@ -1174,6 +1230,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(sub_reclaim())
             elif path == "/api/subtitle/config":
                 self._json(save_subtitle_config(body))
+            elif path == "/api/subtitle/translate-test":
+                self._json(sub_translate_selftest((body.get("text") or "").strip()))
             elif path == "/api/glossary/save":
                 self._json(save_glossary(body))
             elif path == "/api/glossary/export":
@@ -1341,16 +1399,29 @@ def subtitle_config() -> dict:
         cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    return {"ok": True, "path": str(cfg_file), "config": cfg}
+    # API Key 不回明文给前端（只回 api_key_set / api_key_tail，前端显示占位符）
+    return {"ok": True, "path": str(cfg_file), "config": _mask_translate_secrets(cfg)}
 
 
 def save_subtitle_config(patch: dict) -> dict:
-    """浅合并写回 config.json（asr/vad/segment/translate/glossary 分组）。"""
+    """写回 config.json（asr/vad/segment/translate/glossary 分组）。
+
+    · translate 组做**一层深合并**：否则前端只回传 openai.{base_url,model,api_key} 时，
+      会把同组的 api_key_env/temperature/max_tokens 一起覆盖掉。
+    · 打码过的 api_key（空串或含 *）不会写回，避免把掩码存进配置。
+    """
     cfg_file = SUBTITLE_DIR / "config.json"
     try:
+        patch = _strip_masked_keys(patch or {})
         cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
         for group, values in patch.items():
-            if isinstance(values, dict) and isinstance(cfg.get(group), dict):
+            if group == "translate" and isinstance(values, dict) and isinstance(cfg.get(group), dict):
+                for k, v in values.items():
+                    if isinstance(v, dict) and isinstance(cfg[group].get(k), dict):
+                        cfg[group][k].update(v)          # 深一层：openai/local/ollama 段
+                    else:
+                        cfg[group][k] = v
+            elif isinstance(values, dict) and isinstance(cfg.get(group), dict):
                 cfg[group].update(values)
             else:
                 cfg[group] = values
@@ -1358,7 +1429,7 @@ def save_subtitle_config(patch: dict) -> dict:
         tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, cfg_file)
         RT.add_log("字幕服务配置已保存（重启服务后生效）", "ok")
-        return {"ok": True, "config": cfg}
+        return {"ok": True, "config": _mask_translate_secrets(cfg)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

@@ -43,10 +43,12 @@
       "model": "sakura-7b"
     },
     "openai": {
-      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "api_key_env": "DASHSCOPE_API_KEY",
-      "model": "qwen-mt-turbo",
-      "target_lang": "Chinese"
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "",
+      "api_key": "",
+      "temperature": 0.2,
+      "max_tokens": 2048
     },
     "batch_size": 10,
     "max_steps": 3,

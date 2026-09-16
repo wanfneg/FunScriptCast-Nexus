@@ -28,6 +28,7 @@ import json
 import os
 import re
 import threading
+import urllib.error
 import urllib.request
 from collections import Counter
 from pathlib import Path
@@ -144,6 +145,16 @@ class BatchPartial(Exception):
 _LOCAL_BE = None                     # 进程内单例：4 个翻译线程共用同一个 llama-server
 _LOCAL_BE_LOCK = threading.Lock()
 
+# 后端别名 → 真实分支名。UI 上"云端"这一项历史值是 dashscope，而分支只认 openai；
+# 不做归一就会静默落到 ollama 分支（配置里 ollama 段还在，于是"看起来在跑"但不通）。
+# 注意：这里只是**名字归一**——云端一律走标准 OpenAI 格式（/chat/completions + Bearer），
+# 没有任何厂商专有实现；dashscope 仅作为旧配置里的别名保留。
+_BACKEND_ALIAS = {
+    "openai": "openai", "cloud": "openai", "dashscope": "openai", "qwen": "openai",
+    "local": "local", "llamacpp": "local", "llama": "local",
+    "ollama": "ollama", "none": "none",
+}
+
 
 def _local_backend(cfg: dict):
     """本地 llama.cpp 后端的进程内单例（首次调用时构造，不加载模型）。"""
@@ -159,7 +170,11 @@ class Translator:
     def __init__(self, cfg: dict, glossary):
         self.cfg = cfg or {}
         self.glossary = glossary
-        self.backend = str(self.cfg.get("backend", "ollama")).lower()
+        # 后端名归一：UI/旧配置里出现过 "dashscope"（云端）这个别名，而分支判断只认
+        # "openai"/"local" —— 不归一的话选"云端"会被静默当成 ollama（走错后端、还不报错）。
+        raw = str(self.cfg.get("backend", "ollama")).lower()
+        self.backend = _BACKEND_ALIAS.get(raw, raw)
+        self._openai_fold_system: bool | None = None   # 见 _chat_openai：qwen-mt 不吃 system 角色
 
         self.batch_size = int(self.cfg.get("batch_size", 10))
         self.max_steps = int(self.cfg.get("max_steps", 3))      # 纠错循环轮数
@@ -319,18 +334,75 @@ class Translator:
         return (data.get("message", {}).get("content", "") or "").strip()
 
     def _chat_openai(self, system: str, user: str) -> str:
+        """**标准 OpenAI 格式**的云端后端（任何 OpenAI 兼容服务都能接）。
+
+        只用两个约定，不做任何厂商专有适配：
+          · POST {base_url}/chat/completions
+          · Authorization: Bearer <api_key>
+        请求体也只有 model / messages / temperature / max_tokens 四个通用字段。
+
+        三个实测坑：
+        1. Key 来源：优先 config 的 `api_key`（UI 里填的），其次环境变量 `api_key_env`。
+           UI 保存的是明文 key（本地应用，config.json 不进库），读回接口会被打码。
+        2. 少数兼容服务不收 `system` 角色（回 400）—— 出错时自动把 system 折进 user 重试一次，
+           并把结论记住，后续请求直接用折叠形式。
+        3. 出错必须把上游响应体带出来 —— 否则"key 错/余额不足/模型名错"在日志里
+           全是一句 HTTP 400，用户没法自查。
+        """
         c = self.cfg.get("openai") or {}
-        key_env = c.get("api_key_env", "")
-        key = os.environ.get(key_env, "") if key_env else ""
+        key = str(c.get("api_key") or "")
         if not key:
-            raise RuntimeError(f"未设置 API Key（环境变量 {key_env or '?'}）")
-        url = str(c.get("base_url", "")).rstrip("/") + "/chat/completions"
-        data = self._post(url, {
-            "model": c.get("model", "qwen-mt-turbo"),
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": user}],
-            "temperature": 0.2,
-        }, {"Authorization": "Bearer " + key})
+            key_env = c.get("api_key_env", "")
+            key = os.environ.get(key_env, "") if key_env else ""
+        if not key:
+            raise RuntimeError(
+                "未设置云端 API Key：请在「翻译后端」里填入（或设环境变量 "
+                f"{c.get('api_key_env') or 'OPENAI_API_KEY'}）")
+
+        model = str(c.get("model", ""))
+        base = str(c.get("base_url", "")).rstrip("/")
+        if not model:
+            raise RuntimeError("未填写云端模型名（如 gpt-4o-mini / deepseek-chat 等）")
+        if not base:
+            raise RuntimeError("未填写云端 base_url（形如 https://api.openai.com/v1）")
+        url = base + "/chat/completions"
+        if self._openai_fold_system is None:
+            self._openai_fold_system = bool(c.get("fold_system", False))
+
+        def _payload(fold: bool) -> dict:
+            msgs = ([{"role": "user", "content": f"{system}\n{user}"}] if fold
+                    else [{"role": "system", "content": system},
+                          {"role": "user", "content": user}])
+            return {"model": model, "messages": msgs,
+                    "temperature": float(c.get("temperature", 0.2)),
+                    "max_tokens": int(c.get("max_tokens", 2048))}
+
+        try:
+            data = self._post(url, _payload(self._openai_fold_system),
+                              {"Authorization": "Bearer " + key})
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                pass
+            # 兼容服务拒绝 system 角色时，折叠重试一次（并记住结论）
+            if (not self._openai_fold_system
+                    and ("system" in body.lower() or e.code in (400, 422))):
+                self._openai_fold_system = True
+                try:
+                    data = self._post(url, _payload(True), {"Authorization": "Bearer " + key})
+                except urllib.error.HTTPError as e2:
+                    body2 = ""
+                    try:
+                        body2 = e2.read().decode("utf-8", "replace")[:300]
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"云端翻译失败 HTTP {e2.code}：{body2 or e2.reason}") from e2
+            else:
+                raise RuntimeError(f"云端翻译失败 HTTP {e.code}：{body or e.reason}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"云端不可达（{url}）：{e.reason}") from e
         return (data["choices"][0]["message"]["content"] or "").strip()
 
     def _chat_local(self, system: str, user: str) -> str:

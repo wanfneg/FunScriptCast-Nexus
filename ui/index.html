@@ -432,10 +432,27 @@
             <label class="field">
               <span>后端</span>
               <select class="input" id="mtBackend">
-                <option value="ollama">ollama（本地）</option>
-                <option value="dashscope">dashscope（云端）</option>
+                <option value="local">local（本地 llama.cpp，模型取安装目录 models\）</option>
+                <option value="openai">openai（云端 / OpenAI 兼容）</option>
+                <option value="ollama">ollama（本地 Ollama）</option>
                 <option value="none">关闭翻译</option>
               </select>
+            </label>
+            <label class="field">
+              <span>本地模型（相对 vendor\subtitle 的 GGUF 路径）</span>
+              <input class="input mono" id="mtLocalModel" placeholder="../../models/Sakura-7B-Qwen2.5-v1.0/sakura-7b-qwen2.5-v1.0-iq4xs.gguf">
+            </label>
+            <label class="field">
+              <span>云端 base_url（OpenAI 兼容）</span>
+              <input class="input mono" id="mtCloudBase" placeholder="https://api.openai.com/v1">
+            </label>
+            <label class="field">
+              <span>云端模型</span>
+              <input class="input mono" id="mtCloudModel" placeholder="gpt-4o-mini / deepseek-chat / …">
+            </label>
+            <label class="field">
+              <span>云端 API Key</span>
+              <input class="input mono" id="mtCloudKey" type="password" autocomplete="off" placeholder="sk-...（留空则用环境变量）">
             </label>
             <label class="field">
               <span>Ollama 模型</span>
@@ -447,11 +464,13 @@
             </label>
             <div class="inline">
               <button class="btn primary" id="saveMt"><svg class="ic"><use href="#i-save"/></svg><span>保存翻译设置</span></button>
-              <span class="hint">重启字幕服务后生效</span>
+              <button class="btn" id="testMt">测试一句</button>
+              <span class="hint">保存后重启字幕服务生效；「测试一句」用已保存的配置真发一句</span>
             </div>
+            <div class="notice top-3" id="mtTestResult" style="display:none"></div>
             <div class="notice warn top-3">
               <svg class="ic"><use href="#i-triangle-alert"/></svg>
-              <div>ASR 与 Ollama 同时驻留会占满 8GB 显存（实测出现 67s 卡顿），建议云端翻译或调小模型</div>
+              <div>本地翻译模型与 ASR 同驻 8GB 显存会吃紧（实测 7.4/8.2 GB）；云端翻译不占显存</div>
             </div>
           </div>
 
