@@ -495,3 +495,50 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
   ② `こんなパンツ履いてるんだ`（无主语单句）两个模型都仍译成"她" —— 单句无上下文时模型无法判断说话者，
      根治需上下文前缀（Round 33 因泄漏回退）或视觉上下文。
   ③ E 盘曾 100% 满，属系统级隐患（工程 / 模型 / 构建产物都在 E 盘）。
+
+## Round 36（21:35–22:10）：去 Ollama —— 模型落到安装目录 models\、翻译改走本地 llama.cpp
+
+- **触发**：用户指出「模型文件要放打包版软件安装目录的模型文件夹下面」。此前 7B 在
+  `E:\Development\_ref\models-sakura\`、Ollama 的 blob 在 `F:\ollama\models`，两处都不是安装目录。
+- **项目自身规范（README + host_server.py，照它做，不另发明）**：
+  - README「打包成 EXE」：`dist-app\models\ ← 同上（8 GB）`，并明写「或建目录联接：`mklink /J`」；
+  - `host_server.py:44 APP_DIR`（打包版=exe 所在目录）、`:47 MODELS_DIR = APP_DIR/"models"`、
+    `:739 env.setdefault("ASR_MODEL", str(MODELS_DIR/"Qwen3-ASR-0.6B"))` ← README 里那句「模型：./models（绝对路径注入）」；
+  - 配置内模型一律相对路径（相对 `vendor/subtitle/`）：`asr.model = ../../models/Qwen3-ASR-0.6B`；
+  - `models/` 在 `.gitignore`（模型不入库），`installer/setup.iss` 不打模型（注释：「用户数据（cache\、models 配置）保留」）。
+- **落地**：
+  1. 模型迁入安装目录：`models\Sakura-7B-Qwen2.5-v1.0\…iq4xs.gguf`（4,053 MB）、
+     `models\Sakura-1.5B-Qwen2.5-v1.0\…q5ks.gguf`（1,201 MB）——同盘移动=改名（瞬时），
+     迁移后核对字节数 + **GGUF 魔数**（不拿"移动成功"当证据）；
+  2. `dist-app\models` = 目录联接 → `models`（README 明写的做法，省 8–16 GB 复制）；
+  3. 新增 `vendor\subtitle\llama_backend.py`：按需拉起并复用 `vendor\llama\llama-server.exe`
+     （`-m <安装目录>\models\…gguf --jinja -c 2048 -ngl 99`），有上限轮询 `/health` 就绪、
+     失败带日志尾巴、随字幕服务回收（与 audiocpp 同一套生命周期）；
+  4. `translate_engine.py` 增加 `local` 后端（与既有 `ollama`/`openai` 并列，复用 `_post`，
+     MT 模式采样参数对齐 Sakura 官方 temp 0.1 / top_p 0.3 / max_tokens 256）；
+  5. `config.json`：`translate.backend = "local"`，模型 `../../models/Sakura-7B-…gguf`（`ollama` 段保留为回退）；
+  6. `vendor\llama\`（llama.cpp **b11000** + CUDA 12.4 运行时，1,114 MB）不入库，改由新增的
+     `tools\fetch_llama.ps1` 下载复现（API 取精确字节数 → ±1% + zip 可开校验 → 解压）；
+     顺手补 `vendor/llama/` 到 `.gitignore`（否则 1.1 GB 二进制进 git 历史）。
+- **验证（前提：隔离 Ollama :11435 已停）**：
+  - 直连：`backend=local`、模型从 `models\` 加载、4.7s 就绪、3 句日译中全对且无提示词泄漏；
+  - 打包版服务（`dist-app\vendor\subtitle`，:8756）：90s 真实音频 = 45 chunk / 26 段 / 空译文 0 / 中位 0.4s；
+  - 全片评测（sivr001 1254s，3s/1s，与 Round 35 同口径同计数逻辑）：
+
+    | 组合 | 含「她」 | 空译文 | 覆盖 | 长度比 | 召回 | 时序 | 硬缺陷 | req 中位/最大 | wall |
+    |---|---|---|---|---|---|---|---|---|---|
+    | 7B + 新提示词（Ollama，R35） | 5 | 0 | 0.472 | 1.33 | 90.3% | −102ms | 0/0/0 | 0.4s / 4.9s | 207.8s |
+    | **7B + 新提示词（llama.cpp，R36）** | **6** | **0** | **0.485** | **1.33** | **90.3%** | **−102ms** | **0/0/0** | 0.4s / 5.8s | 226.6s |
+
+    → **换运行时质量中性**（±1 段属噪声，覆盖率略高，召回/时序完全一致），无回归。
+- **顺带修的既有缺陷（实测证据）**：`audiocpp_backend.py` 的 Job Object 保护里写了
+  `wintypes.ULONGLONG`，而 `ctypes.wintypes` **没有这个属性**（实测 AttributeError: module
+  'ctypes.wintypes' has no attribute 'ULONGLONG'）→ 异常被 `except` 吞掉并打印"保护不可用，跳过"
+  → 父进程退出后后端进程变孤儿、显存不释放（本轮实测到 llama-server PID 29448 占 4,227 MB 不退出）。
+  改成 `ctypes.c_ulonglong` 后**实测**：父进程一退出，子进程随即消失，显存回落（llama 4.2 GB 释放）。
+- **未决**：
+  1. `こんなパンツ履いてるんだ。`（无主语单句）仍译"她"，且 llama.cpp 与 Ollama **完全一致**
+     → 与运行时无关，是模型/上下文问题（根治需上下文前缀或视觉上下文，见 Round 33/35）；
+  2. llama.cpp 用的是 CUDA 版，安装包因此 +1.1 GB；嫌大可换 vulkan 版（压缩包约 30 MB，
+     同一套流程、资产名换一个），代价是解码略慢；
+  3. 终端用户如何获得模型仍无定论：安装包不含模型（16 GB），README 只写了安装时"保留 models 配置"。

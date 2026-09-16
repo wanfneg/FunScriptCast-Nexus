@@ -104,10 +104,12 @@ FunScriptCast-Nexus\
 ├── vendor\subtitle\        AI 字幕服务（原 Subtitle Server，FastAPI）
 │   ├── server_app.py       /health /transcribe /glossary
 │   ├── asr_engine.py       Qwen3-ASR + ForcedAligner
-│   ├── translate_engine.py Ollama / dashscope
+│   ├── translate_engine.py 翻译调度（local / ollama / openai 三种可插拔后端）
+│   ├── llama_backend.py    本地翻译模型：按需拉起并复用 llama-server（直读 GGUF）
 │   ├── glossary.py         术语表（mtime 热加载）
 │   └── config.json         ASR / VAD / 分段 / 翻译配置
-├── models\                 8.0 GB：Qwen3-ASR-0.6B + Qwen3-ASR-1.7B + ForcedAligner-0.6B
+├── vendor\llama\           llama.cpp（llama-server.exe + CUDA 运行时，约 1.1 GB）
+├── models\                 安装目录模型：ASR 约 8 GB + 翻译 Sakura GGUF 约 5 GB
 ├── .venv\                  5.0 GB：torch(cu128) + transformers + fastapi + pywebview
 ├── version.json            版本号（versionName / versionCode / channel）
 ├── tools\make_icon.py      生成托盘 / 窗口图标（icon.ico + png 多尺寸）
@@ -133,6 +135,24 @@ FunScriptCast-Nexus\
 
 - **单入口**：一个启动脚本、一个窗口；DLNA 与 UI 同进程。
 - **字幕服务独立子进程**：崩溃不拖垮主程序；停止后显存立刻回收——这是解决「ASR + Ollama 抢显存导致 67s 卡顿」的关键。
+
+### 翻译后端（本地 llama.cpp，2026-09-16 起为默认）
+
+翻译**不再依赖 Ollama**：模型以 GGUF 形式放在**安装目录的 `models\` 下**，由字幕服务
+按需拉起 `vendor\llama\llama-server.exe`（幂等复用、随字幕服务一起回收，父进程崩溃由
+Job Object 带走，不留孤儿显存）。配置见 `vendor\subtitle\config.json`：
+
+```jsonc
+"translate": {
+  "backend": "local",                                    // local | ollama | openai
+  "local": {
+    "model": "../../models/Sakura-7B-Qwen2.5-v1.0/sakura-7b-qwen2.5-v1.0-iq4xs.gguf",
+    "port": 8082, "ctx": 2048, "ngl": 99
+  }
+}
+```
+
+换模型 = 换 `models\` 下的文件 + 改这一行路径（`ollama` 段保留为可选回退）。
 
 ## 打包成 EXE
 
@@ -207,7 +227,7 @@ dist-app\
 | 静态资源 | `index.html` / `styles.css` / `app.js` 均 200 |
 | DLNA（vendor） | `running=true`，`http://192.168.2.2:8899`，`description.xml` 200，SOAP Browse 200 |
 | 字幕子进程（vendor） | 启动 → `ready`，模型从 `./models` 加载，`cuda:0` |
-| 翻译后端 | Ollama 可达（5 个模型） |
+| 翻译后端 | 本地 llama.cpp（`vendor\llama`，GGUF 取自安装目录 `models\`，**不依赖 Ollama**） |
 | 前端 | 控制台错误 0；溢出 0×0；DOM 545 节点（预算 <1500） |
 | 窗口 | pywebview + WebView2；无原生标题栏 + 可缩放 + 圆角；关闭→隐藏、托盘→恢复 |
 | 设备同步 | 真机 Quest 3（`192.168.2.129:5555`）脚本同步：本地 1 / 设备 2707 / 推送 1 |
@@ -230,7 +250,7 @@ node tests\ui_check.js
 
 ## 显存说明
 
-字幕服务启动后 ASR 模型常驻约 **3.9 GB**（`Qwen3-ASR-0.6B` + `ForcedAligner`），这是实时字幕的必要代价。Ollama 另占约 0.8 GB。8 GB 卡上两者同时驻留接近上限，因此：
+字幕服务启动后 ASR 模型常驻约 **3.9 GB**（`Qwen3-ASR-0.6B` + `ForcedAligner`），这是实时字幕的必要代价。翻译模型（Sakura-7B Q4，约 4 GB）由 llama-server 在**首次翻译时**拉起、随字幕服务一起回收。8 GB 卡上两者同时驻留接近上限，因此：
 
 - 不用字幕时，在界面点「停止字幕服务」即可释放；
 - 或把翻译后端切到云端（`dashscope`），PC 端只留 ASR。

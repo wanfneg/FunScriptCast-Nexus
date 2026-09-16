@@ -141,6 +141,20 @@ class BatchPartial(Exception):
         self.bad = set(bad or ())
 
 
+_LOCAL_BE = None                     # 进程内单例：4 个翻译线程共用同一个 llama-server
+_LOCAL_BE_LOCK = threading.Lock()
+
+
+def _local_backend(cfg: dict):
+    """本地 llama.cpp 后端的进程内单例（首次调用时构造，不加载模型）。"""
+    global _LOCAL_BE
+    with _LOCAL_BE_LOCK:
+        if _LOCAL_BE is None:
+            from llama_backend import LlamaBackend
+            _LOCAL_BE = LlamaBackend(cfg)
+        return _LOCAL_BE
+
+
 class Translator:
     def __init__(self, cfg: dict, glossary):
         self.cfg = cfg or {}
@@ -194,7 +208,10 @@ class Translator:
 
     # ------------------------------------------------------------ 缓存
     def _backend_cfg(self) -> dict:
-        return self.cfg.get("openai" if self.backend == "openai" else "ollama") or {}
+        # 后端名 → 配置段：local = 本地 llama.cpp（模型来自安装目录 models\ 下的 GGUF，
+        # 不经过 Ollama；见 llama_backend.py）
+        key = {"openai": "openai", "local": "local"}.get(self.backend, "ollama")
+        return self.cfg.get(key) or {}
 
     def _model_name(self) -> str:
         return str(self._backend_cfg().get("model", ""))
@@ -276,9 +293,11 @@ class Translator:
             return json.loads(resp.read().decode("utf-8"))
 
     def _chat(self, system: str, user: str) -> str:
-        """一次 LLM 对话（ollama 或 openai 兼容）。"""
+        """一次 LLM 对话（local=本地 llama.cpp / ollama / openai 兼容）。"""
         if self.backend == "openai":
             return self._chat_openai(system, user)
+        if self.backend == "local":
+            return self._chat_local(system, user)
         return self._chat_ollama(system, user)
 
     def _chat_ollama(self, system: str, user: str) -> str:
@@ -312,6 +331,32 @@ class Translator:
                          {"role": "user", "content": user}],
             "temperature": 0.2,
         }, {"Authorization": "Bearer " + key})
+        return (data["choices"][0]["message"]["content"] or "").strip()
+
+    def _chat_local(self, system: str, user: str) -> str:
+        """本地 llama.cpp（OpenAI 兼容 /v1/chat/completions）。
+
+        模型是安装目录 models\\ 下的 GGUF 文件，由 llama_backend 按需拉起常驻
+        llama-server —— 不依赖 Ollama、不需要模型库环境变量。
+        采样参数与 Ollama 路径对齐（Sakura 官方 temp 0.1 / top_p 0.3；
+        MT 模式必须收窄 max_tokens，提示词回显会拖成长循环）。
+        """
+        c = self.cfg.get("local") or {}
+        be = _local_backend(c)
+        be.ensure_server()                      # 幂等：已在跑直接复用
+        if self.mt_system:
+            opts = {"temperature": 0.1, "top_p": 0.3, "max_tokens": 256}
+        else:
+            opts = {"temperature": float(c.get("temperature", 0.2)),
+                    "top_p": float(c.get("top_p", 0.3)),
+                    "max_tokens": int(c.get("max_tokens", 2048))}
+        url = str(c.get("base_url") or be.base_url).rstrip("/") + "/v1/chat/completions"
+        data = self._post(url, {
+            "model": c.get("alias", "sakura"),
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            **opts,
+        })
         return (data["choices"][0]["message"]["content"] or "").strip()
 
     # ------------------------------------------------------------ 解析

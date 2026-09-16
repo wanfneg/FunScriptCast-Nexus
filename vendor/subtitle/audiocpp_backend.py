@@ -197,7 +197,9 @@ class AudioCppBackend:
             from ctypes import wintypes
 
             class IO_COUNTERS(ctypes.Structure):
-                _fields_ = [(n, wintypes.ULONGLONG) for n in (
+                # ctypes.wintypes 没有 ULONGLONG（AttributeError 会让 Job Object
+                # 保护静默失效 → 父进程退出后 audiocpp_server 变孤儿、显存不释放）
+                _fields_ = [(n, ctypes.c_ulonglong) for n in (
                     "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
                     "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
 

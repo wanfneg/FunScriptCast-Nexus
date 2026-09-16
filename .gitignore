@@ -8,6 +8,9 @@ __pycache__/
 models/
 models/hf/
 models/vibevoice/
+# llama.cpp 运行时（llama-server.exe + CUDA 运行时约 1.1 GB）——
+# 由 tools\fetch_llama.ps1 下载复现，不入库
+vendor/llama/
 
 # 运行数据
 *.log

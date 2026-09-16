@@ -1,6 +1,11 @@
 ﻿# 启动 Sakura-7B 专用的隔离 Ollama 实例（模型库放 F 盘）
 #
-# 为什么需要这个脚本
+# ⚠️ 2026-09-16 起**默认翻译后端已不是 Ollama**：改用随应用启动的本地 llama.cpp
+#    （vendor\llama\llama-server.exe，模型直接读安装目录 models\ 下的 GGUF，见
+#    vendor\subtitle\llama_backend.py）。本脚本保留为**可选回退**：
+#    把 config.json 的 translate.backend 改回 "ollama" 时才需要它。
+#
+# 为什么当初需要它
 #   1. 用户的默认 Ollama 模型库在 C 盘（约 8 GB，C 盘长期 90%+ 满），而 Sakura-7B
 #      的 GGUF 有 3.96 GB —— 创建模型时会把 blob 复制进模型库，C 盘放不下。
 #   2. 用独立端口 + 独立模型库，可以**不打扰**用户现有的 Ollama 实例与其模型。
@@ -18,7 +23,8 @@ $ErrorActionPreference = 'Stop'
 
 $Port      = 11435
 $ModelsDir = 'F:\ollama\models'
-$SrcGguf   = 'E:\Development\_ref\models-sakura\sakura-7b-qwen2.5-v1.0-iq4xs.gguf'
+# 模型已按规范放到**安装目录的 models 文件夹**下（此前在 _ref\models-sakura\，2026-09-16 迁移）
+$SrcGguf   = Join-Path (Split-Path -Parent $PSScriptRoot) 'models\Sakura-7B-Qwen2.5-v1.0\sakura-7b-qwen2.5-v1.0-iq4xs.gguf'
 $ModelName = 'sakura-7b'
 $Ollama    = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
 
