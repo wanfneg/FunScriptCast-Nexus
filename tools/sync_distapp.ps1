@@ -53,12 +53,23 @@ if ($ClearCache) {
 
 # ---- 重启字幕服务（先停旧实例；宿主 API 优先，宿主不在则借 .venv python 手动拉起）----
 if ($Restart) {
-    Get-NetTCPConnection -LocalPort 8756 -State Listen -ErrorAction SilentlyContinue | \\
+    # 停旧实例：有上限轮询确认端口真的释放（不写固定 sleep 蒙）
+    Get-NetTCPConnection -LocalPort 8756 -State Listen -ErrorAction SilentlyContinue |
         ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 2
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-NetTCPConnection -LocalPort 8756 -State Listen -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (Get-NetTCPConnection -LocalPort 8756 -State Listen -ErrorAction SilentlyContinue) {
+        throw "[sync] :8756 在 30s 内没能停掉（可能被别的进程占用）"
+    }
+
+    # 优先让宿主拉起。实测宿主 API 在 127.0.0.1:8790；:8791 是 LAN 面，不带令牌会 403。
     $hostOk = $false
     try {
-        Invoke-WebRequest -Uri 'http://127.0.0.1:8791/api/subtitle/start' -Method POST -UseBasicParsing | Out-Null
+        Invoke-WebRequest -Uri 'http://127.0.0.1:8790/api/subtitle/start' -Method POST `
+            -UseBasicParsing -TimeoutSec 10 | Out-Null
         $hostOk = $true
         Write-Host "[sync] 已请求宿主拉起字幕服务" -ForegroundColor Green
     } catch {
@@ -68,11 +79,15 @@ if ($Restart) {
         Start-Process -FilePath (Join-Path $root '.venv\Scripts\python.exe') `
             -ArgumentList @('run_server.py', '--port', '8756') -WorkingDirectory $dst -WindowStyle Hidden
     }
-    Start-Sleep -Seconds 15
-    try {
-        $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8756/health' -TimeoutSec 5
-        Write-Host ("[sync] 字幕服务就绪 pid={0} code_sig={1}" -f $h.pid, $h.code_sig) -ForegroundColor Green
-    } catch {
-        Write-Host "[sync] 服务未就绪（可能仍在冷启动），稍后用 /health 确认" -ForegroundColor Yellow
+
+    # 就绪检测：有上限轮询（不固定 sleep 硬等）
+    $deadline = (Get-Date).AddSeconds(240)
+    $h = $null
+    while ((Get-Date) -lt $deadline) {
+        try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8756/health' -TimeoutSec 3; break }
+        catch { Start-Sleep -Milliseconds 800 }
     }
+    if (-not $h) { throw "[sync] 字幕服务 240s 内未就绪（用 .venv python 前台跑一次看报错）" }
+    Write-Host ("[sync] 字幕服务就绪 pid={0} code_sig={1} 翻译后端={2}" -f `
+        $h.pid, $h.code_sig, $h.translate_backend) -ForegroundColor Green
 }
