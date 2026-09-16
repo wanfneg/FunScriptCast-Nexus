@@ -21,10 +21,15 @@ BASE = Path(__file__).resolve().parent
 _log_dir = BASE / "logs"
 _log_dir.mkdir(exist_ok=True)
 _log_path = _log_dir / "run_server.log"
-if _log_path.exists() and _log_path.stat().st_size > 5 * 1024 * 1024:
-    _old = _log_dir / "run_server.old.log"
-    _old.unlink(missing_ok=True)
-    _log_path.rename(_old)
+try:
+    if _log_path.exists() and _log_path.stat().st_size > 5 * 1024 * 1024:
+        _old = _log_dir / "run_server.old.log"
+        _old.unlink(missing_ok=True)
+        _log_path.rename(_old)
+except OSError as _e:
+    # 轮换失败（典型：残留旧进程还握着日志文件句柄）绝不能拦住服务启动——
+    # 直接降级为继续往原文件追加。
+    print(f"[run] 日志轮换失败（{_e}），继续追加写", flush=True)
 
 
 class _Tee:

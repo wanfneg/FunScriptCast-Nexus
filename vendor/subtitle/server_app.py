@@ -210,6 +210,30 @@ async def lifespan(_app):
 
 app = FastAPI(title="VRFunScriptCast AI Subtitle Server", version="0.1", lifespan=lifespan)
 
+# ---------------------------------------------------------------- 局域网暴露面收紧
+# 8756 绑 0.0.0.0（头显要从局域网直接推音频），但这个进程的 config.json 里可能
+# 带着云端翻译的**明文 API Key**。头显只用到 /transcribe* 与 /health；
+# 其余接口（selftest / stats / glossary 读写 / reload）一律收紧到本机回环——
+# 等于"把翻译额度开放给整个局域网"的口子被焊死，头显侧协议零改动。
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+
+_LAN_OPEN_PREFIXES = ("/transcribe", "/health")
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+class _LoopbackGuard(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if not path.startswith(_LAN_OPEN_PREFIXES):
+            client = request.client.host if request.client else ""
+            if client and client not in _LOOPBACK:
+                return JSONResponse({"error": "该接口仅限本机访问"}, status_code=403)
+        return await call_next(request)
+
+
+app.add_middleware(_LoopbackGuard)
+
 
 def _gpu_used_gb() -> float:
     """当前显存占用（GB）。注意：audiocpp 路径下本进程不加载 torch 模型，

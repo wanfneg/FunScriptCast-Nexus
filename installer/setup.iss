@@ -24,6 +24,9 @@ AppId={{8F3A9D52-6B7E-4C31-9A48-D2E1F0C5B7A3}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+; 运行中升级：宿主启动时会创建这个命名互斥量（host_server._create_app_mutex），
+; 安装器检测到就提示用户先关闭程序，而不是覆写 exe 失败后留一堆裸报错。
+AppMutex=FunScriptCastNexusMutex
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 UsePreviousAppDir=yes
 PrivilegesRequired=lowest

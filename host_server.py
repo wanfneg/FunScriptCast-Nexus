@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import signal
 import socket
@@ -122,10 +123,15 @@ class Runtime:
         self.dlna_ssdp = None
         self.dlna_port = DLNA_PORT_DEFAULT
         self.dlna_starting = False
+        # start/stop 代数：stop 时 +1，start worker 登记结果前核对——不一致说明
+        # 期间用户点了停止，worker 必须撤下刚起的服务，而不是"停了个寂寞"后
+        # 照样把它留下来（DLNA 与字幕子进程同一套机制）。
+        self.dlna_gen = 0
         self.dlna_error = ""
         self.dlna_requests = 0
         self.sub_proc: subprocess.Popen | None = None
         self.sub_starting = False
+        self.sub_gen = 0
         self.sub_error = ""
         self.sub_ready = False
         self.sub_last_probe = 0.0
@@ -375,6 +381,12 @@ def app_version() -> dict:
 # ================================================================ 设置
 SETTINGS_FILE = Path(os.environ.get("APPDATA") or str(Path.home())) / "FunScriptCast-Nexus" / "integrated_settings.json"
 
+# 设置/字幕配置是「读整个文件→改→写整个文件」，HTTP 服务又是多线程的（UI 连续
+# 单字段 POST 很常见），不加锁时后写者会拿旧快照覆盖先写者的字段。
+_SETTINGS_LOCK = threading.RLock()
+# config.json / glossary_*.json 的写锁（同一原因；与设置文件分开，互不阻塞）
+_SUBTITLE_FILE_LOCK = threading.RLock()
+
 DEFAULT_SETTINGS = {
     "dlna_port": DLNA_PORT_DEFAULT,
     "dlna_roots": [],
@@ -477,26 +489,27 @@ def missing_roots(roots) -> list:
 
 
 def save_settings(patch: dict) -> dict:
-    s = load_settings()
-    for k, v in patch.items():
-        if k not in DEFAULT_SETTINGS:
-            continue
-        # 路径类字段统一规整（去引号/去空白）。放在这一层是因为所有入口都会
-        # 经过它：界面输入、托盘、REST 接口——只在前端做的话，别的调用方照样能
-        # 把带引号的路径写进来。
-        if k in PATH_KEYS and isinstance(v, str):
-            v = norm_path(v)
-        elif k == "dlna_roots" and isinstance(v, list):
-            v = [norm_path(x) for x in v if norm_path(x)]
-        s[k] = v
-    try:
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = SETTINGS_FILE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, SETTINGS_FILE)
-    except Exception as e:
-        log.warning("保存设置失败：%s", e)
-    return s
+    with _SETTINGS_LOCK:
+        s = load_settings()
+        for k, v in patch.items():
+            if k not in DEFAULT_SETTINGS:
+                continue
+            # 路径类字段统一规整（去引号/去空白）。放在这一层是因为所有入口都会
+            # 经过它：界面输入、托盘、REST 接口——只在前端做的话，别的调用方照样能
+            # 把带引号的路径写进来。
+            if k in PATH_KEYS and isinstance(v, str):
+                v = norm_path(v)
+            elif k == "dlna_roots" and isinstance(v, list):
+                v = [norm_path(x) for x in v if norm_path(x)]
+            s[k] = v
+        try:
+            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, SETTINGS_FILE)
+        except Exception as e:
+            log.warning("保存设置失败：%s", e)
+        return s
 
 
 # ================================================================ DLNA 服务
@@ -542,11 +555,15 @@ def dlna_start(port: int | None = None, roots: list[str] | None = None) -> dict:
             return {"ok": True, "starting": True}
         RT.dlna_starting = True
         RT.dlna_error = ""
+        RT.dlna_gen += 1
+        gen = RT.dlna_gen
     s = load_settings()
     port = int(port or s.get("dlna_port") or DLNA_PORT_DEFAULT)
     roots = roots if roots is not None else s.get("dlna_roots") or []
 
     def worker() -> None:
+        server = None
+        ssdp = None
         try:
             m = _vrdlna_mod()
             from pathlib import Path as _P
@@ -557,11 +574,35 @@ def dlna_start(port: int | None = None, roots: list[str] | None = None) -> dict:
             app = m.DlnaApp(media_roots, port)
             server = m.DlnaHTTPServer(("0.0.0.0", port), app)
             threading.Thread(target=server.serve_forever, daemon=True).start()
-            ssdp = m.SSDPServer(port, lan_ip())
-            ssdp.start()
+            try:
+                ssdp = m.SSDPServer(port, lan_ip())
+                ssdp.start()
+            except Exception:
+                # SSDP 挂了必须把已监听的 HTTP 服务一起撤下：否则 dlna_running()
+                # 显示停止、8899 却仍在服务，重试启动还会端口冲突。
+                try:
+                    server.shutdown()
+                    server.server_close()
+                except Exception:
+                    pass
+                server = None
+                raise
             with RT.lock:
-                RT.dlna_server, RT.dlna_ssdp, RT.dlna_port = server, ssdp, port
-                RT.dlna_starting = False
+                if gen != RT.dlna_gen:      # 期间用户点了停止 → 撤下，不留"僵尸服务"
+                    cancelled = True
+                else:
+                    cancelled = False
+                    RT.dlna_server, RT.dlna_ssdp, RT.dlna_port = server, ssdp, port
+                    RT.dlna_starting = False
+            if cancelled:
+                try:
+                    ssdp.stop()
+                    server.shutdown()
+                    server.server_close()
+                except Exception:
+                    pass
+                RT.add_log("DLNA 启动完成前收到停止请求，已撤下", "info")
+                return
             RT.add_log(f"DLNA 已启动 · {lan_ip()}:{port} · {len(roots)} 个媒体根", "ok")
             RT.add_dlna_log(f"服务已启动 http://{lan_ip()}:{port}")
         except Exception as e:
@@ -579,6 +620,7 @@ def dlna_stop() -> dict:
     with RT.lock:
         ssdp, server = RT.dlna_ssdp, RT.dlna_server
         RT.dlna_ssdp, RT.dlna_server = None, None
+        RT.dlna_gen += 1      # 正在启动中的 worker 看到代数变了会自行撤下
     if ssdp:
         try:
             ssdp.stop()
@@ -742,6 +784,7 @@ def sub_start() -> dict:
             return {"ok": True, "starting": True}
         RT.sub_starting = True
         RT.sub_error = ""
+        gen = RT.sub_gen
 
     # 端口已被别的进程占着：再拉一个也是徒劳（uvicorn 绑不上端口会立刻退出），
     # 直接复用它并如实标注，别制造一个"刚起来就死"的子进程。
@@ -797,6 +840,15 @@ def sub_start() -> dict:
             # （服务自报的 started_at 若早于这个时刻，说明是上次残留的）。
             with RT.lock:
                 RT.sub_spawn_ts = time.time()
+                if gen != RT.sub_gen:      # 探测依赖期间用户点了停止
+                    cancelled = True
+                else:
+                    cancelled = False
+            if cancelled:
+                with RT.lock:
+                    RT.sub_starting = False
+                RT.add_log("字幕服务启动完成前收到停止请求，已取消", "info")
+                return
             # 用管道接住子进程输出：起来就挂（缺依赖等）时能给出可读原因
             proc = subprocess.Popen(
                 [str(py), "run_server.py", "--port", str(SUBTITLE_PORT)],
@@ -810,8 +862,17 @@ def sub_start() -> dict:
                 creationflags=flags,
             )
             with RT.lock:
-                RT.sub_proc = proc
-                RT.sub_starting = False
+                if gen != RT.sub_gen:      # Popen 期间收到停止 → 立刻带走刚拉起的进程
+                    RT.sub_starting = False
+                    stale = True
+                else:
+                    RT.sub_proc = proc
+                    RT.sub_starting = False
+                    stale = False
+            if stale:
+                _kill_tree(proc.pid)
+                RT.add_log("字幕服务启动完成前收到停止请求，已撤下刚拉起的进程", "info")
+                return
             RT.add_log(f"字幕服务子进程已拉起 · PID {proc.pid}", "ok")
             _watch_subtitle(proc)
         except Exception as e:
@@ -857,6 +918,24 @@ def _watch_subtitle(proc: "subprocess.Popen") -> None:
             RT.sub_error = f"子进程退出（code {proc.returncode}）：{detail}"
             RT.sub_proc = None
         RT.add_log(f"字幕服务启动失败：{RT.sub_error}", "err")
+        return
+    # 撑过启动窗口：继续盯到进程退出为止。正常停止（sub_stop）会使代数 +1 或
+    # 清掉 sub_proc，此时静默收场；否则就是**运行中崩溃**——此前这一段完全无
+    # 监控：无日志、无事件，状态回落成"已停止"，用户无法区分"没启动过"和
+    # "跑到一半崩了"（崩溃输出也拿不到）。
+    with RT.lock:
+        gen = RT.sub_gen
+    rc = proc.wait()
+    with RT.lock:
+        ours = RT.sub_proc is proc
+        if ours:
+            RT.sub_proc = None
+            RT.sub_ready = False
+    if ours and gen == RT.sub_gen and not TRAY.quitting:
+        detail = " / ".join(tail[-3:]) or "无输出"
+        with RT.lock:
+            RT.sub_error = f"字幕服务运行中退出（code {rc}）：{detail}"
+        RT.add_log(f"字幕服务异常退出：{RT.sub_error}", "err")
 
 
 def _port_owner_pids(port: int) -> list:
@@ -946,6 +1025,10 @@ def sub_stop() -> dict:
         proc = RT.sub_proc
         RT.sub_proc = None
         RT.sub_ready = False
+        RT.sub_gen += 1          # 启动中的 worker 看到代数变了会自行撤下
+        starting = RT.sub_starting
+    if proc is None and starting:
+        RT.add_log("字幕服务正在启动，已请求取消本次启动", "info")
     stopped = False
     if proc and proc.poll() is None:
         _kill_tree(proc.pid)          # /T：连它拉起的 audiocpp 子进程一起带走
@@ -1017,11 +1100,10 @@ def sub_reclaim() -> dict:
         return {"ok": True, "nothing": True}
     pid = int(f["pid"])
     try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                           capture_output=True, timeout=12)
-        else:
-            os.kill(pid, 15)
+        # 必须走 _kill_tree（带 /T）：残留服务下面还挂着 audiocpp 孙进程，
+        # 裸 taskkill /F 杀完 python 后 audiocpp 带着 ~3 GB 内存继续常驻，
+        # 而 reap_orphan_audiocpp 只在宿主启动时跑一次，之后无人清理。
+        _kill_tree(pid)
     except Exception as e:
         return {"ok": False, "error": f"结束 PID {pid} 失败：{type(e).__name__}: {e}"}
     RT.add_log(f"已结束残留的字幕服务（PID {pid}）", "warn")
@@ -1130,7 +1212,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _file(self, rel: str) -> None:
         p = (UI_DIR / rel).resolve()
-        if not str(p).startswith(str(UI_DIR.resolve())) or not p.is_file():
+        # is_relative_to 而不是 startswith：后者不带分隔符，`/ui-backup/x` 这类
+        # 兄弟目录前缀会被放行（目录遍历防护必须按路径组件比）。
+        if not p.is_relative_to(UI_DIR.resolve()) or not p.is_file():
             self.send_error(404)
             return
         ctype = {
@@ -1150,10 +1234,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    # 请求体上限：本机 API 的合法请求（设置/配置/字幕缓存回存）都远小于 32MB；
+    # 无上限整读会被人一个请求打爆内存。
+    MAX_BODY_BYTES = 32 * 1024 * 1024
+
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0:
             return {}
+        if n > self.MAX_BODY_BYTES:
+            # 不读体直接返回错误（读掉才是标准做法，但此处直接断开更省事——
+            # 合法客户端永远不会触发这条路）
+            raise ValueError("请求体过大")
         try:
             return json.loads(self.rfile.read(n).decode("utf-8"))
         except Exception:
@@ -1195,7 +1287,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?")[0]
-        body = self._body()
+        try:
+            # CSRF 栅栏：浏览器发起的**跨站** POST 一定带 Origin 头；curl / 头显
+            # (OkHttp) / 本机脚本不带。8790 能退出应用、改设置、删缓存文件，
+            # 不能放任用户浏览器里的任意网页对它发请求（PNA 只救得了新 Chrome）。
+            origin = (self.headers.get("Origin") or "").strip()
+            if origin:
+                host = urllib.parse.urlparse(origin).netloc.lower()
+                if host not in (f"127.0.0.1:{UI_API_PORT}", f"localhost:{UI_API_PORT}"):
+                    self._json({"ok": False, "error": "跨站请求被拒绝"}, 403)
+                    return
+            body = self._body()
+        except ValueError as e:
+            self._json({"ok": False, "error": str(e)}, 413)
+            return
+        except Exception as e:
+            self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+            return
         try:
             if path == "/api/settings":
                 self._json({"ok": True, "settings": save_settings(body)})
@@ -1257,6 +1365,12 @@ class Handler(BaseHTTPRequestHandler):
                 key = (body.get("key") or "").strip()
                 try:
                     if key:
+                        # 缓存键是 24 位十六进制（subtitle_cache_key）。不校验的话
+                        # `..\..\xxx` 或绝对路径可以命中缓存目录之外的任意 .json
+                        # （设置、词库、config）并删除——路径遍历。
+                        if not re.fullmatch(r"[0-9a-f]{24}", key):
+                            self._json({"ok": False, "error": "非法的缓存键"}, 400)
+                            return
                         f = SUBTITLE_CACHE_DIR / f"{key}.json"
                         if f.exists():
                             f.unlink()
@@ -1311,7 +1425,8 @@ class HeadsetHandler(BaseHTTPRequestHandler):
     """
 
     server_version = "FSHost-Headset/1.0"
-    # 头显端 OkHttp 的 Origin 是 null/自定义，DLNA 播放器也可能带跨源请求
+    # 头显端 OkHttp 不需要 CORS（不是浏览器）；去掉 ACAO * 是安全收紧——
+    # 否则任意网页都能跨域读这四个接口的响应（里面含视频路径、服务状态）。
     _ALLOW_HEADERS = ("Content-Type", "Authorization")
 
     # ---- 工具 ----
@@ -1321,9 +1436,6 @@ class HeadsetHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", ", ".join(self._ALLOW_HEADERS))
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1338,6 +1450,8 @@ class HeadsetHandler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0:
             return {}
+        if n > Handler.MAX_BODY_BYTES:
+            raise ValueError("请求体过大")
         try:
             raw = self.rfile.read(n)
             return json.loads(raw.decode("utf-8")) if raw else {}
@@ -1360,12 +1474,20 @@ class HeadsetHandler(BaseHTTPRequestHandler):
                     self._json(subtitle_cache_get(vp, lg))
             else:
                 self._deny(path)
-        except Exception as e:
-            self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        except Exception:
+            # 局域网接口不回内部细节（路径/配置文件名都在异常文本里），只给通用文案
+            self._json({"ok": False, "error": "服务器内部错误"}, 500)
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?")[0]
-        body = self._drain()
+        try:
+            body = self._drain()
+        except ValueError as e:
+            self._json({"ok": False, "error": str(e)}, 413)
+            return
+        except Exception:
+            self._json({"ok": False, "error": "请求体解析失败"}, 400)
+            return
         try:
             if path == "/api/subtitle/start":
                 RT.add_log(f"头显（{self.client_address[0]}）请求启动字幕服务", "info")
@@ -1382,8 +1504,8 @@ class HeadsetHandler(BaseHTTPRequestHandler):
                 self._json(r)
             else:
                 self._deny(path)
-        except Exception as e:
-            self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        except Exception:
+            self._json({"ok": False, "error": "服务器内部错误"}, 500)
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self._json({"ok": True})
@@ -1413,21 +1535,22 @@ def save_subtitle_config(patch: dict) -> dict:
     cfg_file = SUBTITLE_DIR / "config.json"
     try:
         patch = _strip_masked_keys(patch or {})
-        cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
-        for group, values in patch.items():
-            if group == "translate" and isinstance(values, dict) and isinstance(cfg.get(group), dict):
-                for k, v in values.items():
-                    if isinstance(v, dict) and isinstance(cfg[group].get(k), dict):
-                        cfg[group][k].update(v)          # 深一层：openai/local/ollama 段
-                    else:
-                        cfg[group][k] = v
-            elif isinstance(values, dict) and isinstance(cfg.get(group), dict):
-                cfg[group].update(values)
-            else:
-                cfg[group] = values
-        tmp = cfg_file.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, cfg_file)
+        with _SUBTITLE_FILE_LOCK:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
+            for group, values in patch.items():
+                if group == "translate" and isinstance(values, dict) and isinstance(cfg.get(group), dict):
+                    for k, v in values.items():
+                        if isinstance(v, dict) and isinstance(cfg[group].get(k), dict):
+                            cfg[group][k].update(v)          # 深一层：openai/local/ollama 段
+                        else:
+                            cfg[group][k] = v
+                elif isinstance(values, dict) and isinstance(cfg.get(group), dict):
+                    cfg[group].update(values)
+                else:
+                    cfg[group] = values
+            tmp = cfg_file.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, cfg_file)
         RT.add_log("字幕服务配置已保存（重启服务后生效）", "ok")
         return {"ok": True, "config": _mask_translate_secrets(cfg)}
     except Exception as e:
@@ -1459,20 +1582,32 @@ def save_glossary(body: dict) -> dict:
     f = glossary_file(lang)
     if f is None or not isinstance(terms, dict):
         return {"ok": False, "error": "参数错误"}
-    try:
-        tmp = f.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(terms, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, f)
-        # 通知服务端热重载（若在跑）
+    with _SUBTITLE_FILE_LOCK:
+        # 空表覆盖防护：前端在术语表**加载失败/未完成**时内存里就是空 dict，
+        # 此时保存会把几千条词库整表清空且还报成功。真想清空的合法路径必须
+        # 显式带 allow_empty（前端在用户确认后补发）。
+        if not terms and not body.get("allow_empty"):
+            try:
+                existing = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+            except Exception:
+                existing = {}
+            if existing:
+                return {"ok": False, "needs_confirm": "empty",
+                        "error": "新表是空的而现有词表不为空——若确要清空，请二次确认"}
         try:
-            req = urllib.request.Request(f"http://127.0.0.1:{SUBTITLE_PORT}/glossary/reload", method="POST", data=b"")
-            urllib.request.urlopen(req, timeout=2).read()
-        except Exception:
-            pass
-        RT.add_log(f"术语表已保存并热重载（{lang} · {len(terms)} 条）", "ok")
-        return {"ok": True, "count": len(terms)}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+            tmp = f.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(terms, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, f)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    # 通知服务端热重载（若在跑）
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{SUBTITLE_PORT}/glossary/reload", method="POST", data=b"")
+        urllib.request.urlopen(req, timeout=2).read()
+    except Exception:
+        pass
+    RT.add_log(f"术语表已保存并热重载（{lang} · {len(terms)} 条）", "ok")
+    return {"ok": True, "count": len(terms)}
 
 
 # ---------------------------------------------------------------- 术语表 CSV
@@ -1668,8 +1803,10 @@ class SyncService:
     def adb_path_resolved(self) -> str:
         try:
             return self.adb().adb_path
-        except Exception as e:
-            self.slots["script"].error = str(e)
+        except Exception:
+            # 不把异常写进 script 槽的 error：这个方法在**每次状态轮询**都会被
+            # public() 调到，没装 adb 的机器上同步徽章会永远显示失败+报错，
+            # 而用户可能根本没打算同步。连接/同步路径各自会把真实错误记上。
             return ""
 
     def list_devices(self) -> dict:
@@ -1731,20 +1868,23 @@ class SyncService:
         if kind not in SYNC_KINDS:
             return {"ok": False, "error": "未知的同步类型"}
         slot = self.slots[kind]
-        if slot.busy:
-            return {"ok": False, "error": "该类型正在同步中"}
-        s = load_settings()
-        meta = SYNC_KINDS[kind]
-        folder = s.get(meta["local_key"]) or ""
-        if not folder or not os.path.isdir(folder):
-            return {"ok": False, "error": "请先选择有效的本地目录"}
-        if not slot.serial:
-            return {"ok": False, "error": "请先连接设备"}
-        self._apply_settings(kind)
-        slot.busy = True
-        slot.error = ""
-        slot.result = None
-        slot.logs = []
+        # busy 检查与置位必须同锁：两个并发 /api/sync/run 曾能同时通过检查
+        # （间隔里还有模块加载），各自起一条同步线程互相踩。
+        with self.lock:
+            if slot.busy:
+                return {"ok": False, "error": "该类型正在同步中"}
+            s = load_settings()
+            meta = SYNC_KINDS[kind]
+            folder = s.get(meta["local_key"]) or ""
+            if not folder or not os.path.isdir(folder):
+                return {"ok": False, "error": "请先选择有效的本地目录"}
+            if not slot.serial:
+                return {"ok": False, "error": "请先连接设备"}
+            self._apply_settings(kind)
+            slot.busy = True
+            slot.error = ""
+            slot.result = None
+            slot.logs = []
         RT.add_log(f"开始同步{meta['label']} → {slot.serial}", "info")
 
         def _run() -> None:
@@ -2058,8 +2198,25 @@ JSAPI = NexusApi()
 
 
 # ================================================================ 启动
+def _create_app_mutex() -> None:
+    """命名互斥量：给 Inno 安装器的 [Setup] AppMutex 用。
+
+    托盘常驻进程在"运行中升级"时，没有这个标记用户只会看到"文件被占用"的
+    裸错误；有了它安装器能识别程序在跑并提示先关闭。句柄有意不关闭——
+    进程存活期间互斥量必须存在，进程退出由 OS 回收。
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.CreateMutexW(None, False, "FunScriptCastNexusMutex")
+    except Exception:
+        pass
+
+
 def run(open_window: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    _create_app_mutex()
     _migrate_settings()          # 先把历史设置里带引号的路径修掉，再读
     s = load_settings()
 
@@ -2155,7 +2312,6 @@ def run(open_window: bool = True) -> None:
 
     import webview  # 延迟导入，便于无窗口调试
 
-    close_to_tray = bool(s.get("close_to_tray", True))
     window = webview.create_window(
         "FunScriptCast-Nexus",
         f"http://127.0.0.1:{UI_API_PORT}/",
@@ -2175,7 +2331,9 @@ def run(open_window: bool = True) -> None:
     def on_closing():
         if TRAY.quitting:
             return True            # 托盘「退出」放行
-        if close_to_tray and TRAY.started:
+        # 必须现读设置：闭包捕获的启动时值是旧的——用户在设置页切换"关闭到托盘"
+        # 之后，Alt+F4 走的仍是老行为（自绘关闭按钮 win_close 是现读的，两者曾不一致）
+        if bool(load_settings().get("close_to_tray", True)) and TRAY.started:
             TRAY.hide_window()
             return False           # 拦截关闭
         return True

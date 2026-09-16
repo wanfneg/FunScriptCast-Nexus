@@ -248,6 +248,7 @@
       Object.keys(sub.health.glossary).forEach(function (k) { termCount += sub.health.glossary[k] || 0; });
     }
     if (termCount) countTo($("#mTerms"), termCount);
+    else countTo($("#mTerms"), 0);   // 服务停止/未就绪时指标也要归零，别留着旧数
     setRing(gpuPct);
     $("#gpuText").textContent = g.total_mb ? (Math.round(g.used_mb) + " / " + Math.round(g.total_mb) + " MB") : "—";
 
@@ -268,7 +269,9 @@
     setBadge($("#dlnaBadge"), d.starting ? "warn" : d.running ? "ok" : (d.error ? "err" : ""),
       d.starting ? "启动中" : d.running ? "运行中" : d.error ? "错误" : "已停止");
     $("#dlnaStatusSub").textContent = d.running ? ("运行中 · " + (d.url || "")) : (d.error || "未启动");
-    if (document.activeElement !== $("#dlnaPort")) $("#dlnaPort").value = d.port || 8899;
+    // 显示**已保存设置**里的端口，而不是运行时状态（未启动时 d.port 恒为默认值，
+    // 会把用户改过的端口刷回 8899，点「启动」就把错值写回设置了）
+    if (document.activeElement !== $("#dlnaPort")) $("#dlnaPort").value = (S.settings && S.settings.dlna_port) || d.port || 8899;
     $("#dlnaUrl").value = d.url || "—";
     setBadge($("#rootsBadge"), "", (d.roots || []).length + " 个");
     renderRoots(d.roots || []);
@@ -355,10 +358,13 @@
     }).join("");
   }
 
-  var lastDlnaLogLen = 0;
+  var lastDlnaLogSig = "";
   function renderDlnaLogs(logs) {
-    if (logs.length === lastDlnaLogLen) return;
-    lastDlnaLogLen = logs.length;
+    // 签名用「长度+最后一条内容」而不是只看长度：服务端日志封顶后长度恒定，
+    // 旧判据会让界面永久冻结在封顶前的那一批旧日志上。
+    var sig = logs.length + "|" + (logs[logs.length - 1] || "");
+    if (sig === lastDlnaLogSig) return;
+    lastDlnaLogSig = sig;
     var inner = $("#dlnaLogInner");
     inner.innerHTML = logs.map(function (l) {
       var cls = /失败|错误|error/i.test(l) ? "err" : /停止|warn/i.test(l) ? "warn" : "ok";
@@ -405,10 +411,12 @@
     var cur = slots[SY.kind] || {};
     renderSyncLogs(cur.logs || []);
   }
-  var lastSyncLogLen = -1;
+  var lastSyncLogSig;
   function renderSyncLogs(logs) {
-    if (logs.length === lastSyncLogLen) return;
-    lastSyncLogLen = logs.length;
+    // 同 renderDlnaLogs：封顶后长度恒定，签名必须带上最后一条内容
+    var sig = logs.length + "|" + (logs[logs.length - 1] || "");
+    if (sig === lastSyncLogSig) return;
+    lastSyncLogSig = sig;
     var inner = $("#syncLogInner");
     if (!logs.length) { inner.innerHTML = '<div class="empty">暂无同步日志</div>'; return; }
     inner.innerHTML = logs.map(function (l) {
@@ -444,7 +452,7 @@
 
   function runSync(kind) {
     SY.kind = kind;
-    lastSyncLogLen = -1;
+    lastSyncLogSig = undefined;   // 强制重绘（类型切换/新一轮同步）
     var btn = $("#syncRun" + (kind === "script" ? "Script" : "Video"));
     if (btn) btn.disabled = true;
     api("/api/sync/run", "POST", { kind: kind }).then(function (r) {
@@ -464,7 +472,9 @@
     $("#setSubAuto").checked = !!s.subtitle_auto_start;
     $("#setCloseTray").checked = !!s.close_to_tray;
     $("#setStartMin").checked = !!s.start_minimized;
-    if (document.activeElement !== $("#mtModel")) $("#mtModel").value = "";
+    // 注意：这里**不能**碰 #mtModel —— 它的值只归 loadSubtitleConfig 填。
+    // 旧代码每秒轮询都把输入框清空，用户点保存（mousedown 已失焦）时读到的
+    // 就是空串，把配置里已保存的模型名覆盖成 ""。
     // 首次拉到设置后应用持久化的主题 / 动画强度
     if (!S.themeApplied) {
       S.themeApplied = true;
@@ -516,6 +526,7 @@
     api("/api/glossary").then(function (r) {
       if (!r.ok) return;
       S.glossary = r.langs || { ja: {}, en: {} };
+      S.glossaryLoaded = true;   // 之后才允许保存：加载失败时内存是空表，保存=清库
       renderGlossStats();
     });
   }
@@ -608,7 +619,12 @@
     /* 字幕服务 */
     $("#subStart").addEventListener("click", startSub);
     $("#subStop").addEventListener("click", function () {
-      api("/api/subtitle/stop", "POST", {}).then(function () { toast("字幕服务已停止", "显存已释放"); poll(true); });
+      api("/api/subtitle/stop", "POST", {}).then(function (r) {
+        r = r || {};
+        if (r.stopped) toast("字幕服务已停止", "模型内存已释放");
+        else toast("字幕服务本来就没在运行", r.error || "", "warn");
+        poll(true);
+      });
     });
     $("#mtBackend").addEventListener("change", syncMtGroups);
     $("#saveMt").addEventListener("click", function () {
@@ -716,13 +732,29 @@
       });
     });
     $("#saveGloss").addEventListener("click", function () {
+      if (!S.glossaryLoaded) {
+        toast("术语表尚未加载完成", "现在保存会把词库清空——请等加载完成或刷新页面", "warn");
+        return;
+      }
+      function saveLang(lang, allowEmpty) {
+        var body = { lang: lang, terms: S.glossary[lang] || {} };
+        if (allowEmpty) body.allow_empty = true;
+        return api("/api/glossary/save", "POST", body);
+      }
       var jobs = ["ja", "en"].map(function (lang) {
-        var terms = S.glossary[lang] || {};
-        return api("/api/glossary/save", "POST", { lang: lang, terms: terms });
+        return saveLang(lang, false).then(function (r) {
+          if (r && r.needs_confirm === "empty" &&
+              window.confirm(lang.toUpperCase() + " 词表确实要清空吗？现有词条将全部删除。")) {
+            return saveLang(lang, true);
+          }
+          return r;
+        });
       });
-      Promise.all(jobs).then(function () {
+      Promise.all(jobs).then(function (rs) {
+        var bad = (rs || []).filter(function (r) { return !r || !r.ok; });
         renderGlossStats();
-        toast("术语表已保存并热重载");
+        if (!bad.length) toast("术语表已保存并热重载");
+        else toast("保存失败", bad.map(function (r) { return r.error || "未知错误"; }).join("；"), "err");
       });
     });
 
@@ -765,7 +797,7 @@
     });
     initSeg("syncLogSeg", "syncLogThumb", function (btn) {
       SY.kind = btn.getAttribute("data-kind");
-      lastSyncLogLen = -1;
+      lastSyncLogSig = undefined;
       poll(true);
     });
     // 目录选择（走 pywebview 原生对话框）
@@ -848,7 +880,12 @@
       });
     });
     $("#qaSubStop").addEventListener("click", function () {
-      api("/api/subtitle/stop", "POST", {}).then(function () { toast("字幕服务已停止", "显存已释放"); poll(true); });
+      api("/api/subtitle/stop", "POST", {}).then(function (r) {
+        r = r || {};
+        if (r.stopped) toast("字幕服务已停止", "模型内存已释放");
+        else toast("字幕服务本来就没在运行", r.error || "", "warn");
+        poll(true);
+      });
     });
 
     /* 按钮波纹 */
@@ -1056,7 +1093,16 @@
     poll(false);
     loadSubtitleConfig();
     loadGlossary();
-    setTimeout(function () { loadSubtitleConfig(); }, 2500);
+    // 2.5s 后补拉一次字幕配置（防首次请求早于服务就绪），但用户已经开始改
+    // 配置输入框时不要覆盖他的输入
+    setTimeout(function () { if (!S.subCfgDirty) loadSubtitleConfig(); }, 2500);
+    // 配置输入一旦被用户动过就标记：之后的自动回填一律让路
+    ["asrModel", "asrDevice", "segMaxSec", "segMaxChars", "segPause", "vadThreshold",
+     "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey"
+    ].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener("input", function () { S.subCfgDirty = true; });
+    });
     // 字体是异步落地的，加载完行高会变，指示块与分段滑块要重新对齐
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(function () {
