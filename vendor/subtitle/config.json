@@ -56,7 +56,7 @@
     "cache": false,
     "target_lang": "zh",
     "fallback": {
-      "enabled": true,
+      "enabled": false,
       "backend": "auto",
       "after_fail_batches": 3
     },

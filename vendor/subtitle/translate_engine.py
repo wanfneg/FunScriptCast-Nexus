@@ -190,9 +190,25 @@ class Translator:
         self.mt_system = str(self.cfg.get("mt_system", "") or "").strip()
         self.mt_user_prefix = str(self.cfg.get("mt_user_prefix", "") or "将下面的日文文本翻译成中文：")
 
-        # 免费兜底
+        # 翻译模式：auto（默认）/ batch / mt。
+        # 逐句 MT 是给 Sakura 这类"单文本 + 专用提示词"的**本地**模型准备的；
+        # 云端大模型每次往返好几秒（实测 deepseek-flash 单句 5.4–6.1s），逐句会把
+        # 队列拖垮 —— 现象正是"延迟高、字幕不全"（3s 一块的节奏追不上）。
+        # 所以 auto 下：云端走批量 JSON（一次 batch_size 句），本地/ollama 保持逐句。
+        # 需要强制时写 translate.mode = "mt" | "batch"。
+        self.use_mt = self._resolve_use_mt()
+        # 少量附加规则（如"正在说话的人用第一人称"）：批量模式下也会带上，
+        # 默认复用 mt_system 的正文，避免为云端再维护一份提示词。
+        self.system_extra = str(self.cfg.get("system_extra", "") or "").strip()
+
+        # 免费兜底：**默认关闭**（用户明确要求"指定用什么就用什么"）。
+        # 失败就如实留空（头显跳过空行），绝不静默换成免费机翻 —— 否则"云端质量反而
+        # 更差"这类问题几乎无法察觉（兜底以前连一行日志都不打）。
+        # 需要时显式写 translate.fallback.enabled = true 才启用。
+        # 关掉它同时切断四处：整批补齐、熔断后接管、漏译条目补齐、后台预热。
         fb = self.cfg.get("fallback") or {}
-        self.fallback_kind = str(fb.get("backend", "bing")) if fb.get("enabled", True) else ""
+        fb_enabled = bool(fb.get("enabled", False))
+        self.fallback_kind = str(fb.get("backend", "bing")) if fb_enabled else ""
         self.fallback_after = max(1, int(fb.get("after_fail_batches", 2)))
         self._fallback = None
         self._fail_streak = 0
@@ -320,7 +336,7 @@ class Translator:
         # MT 逐句模式用 Sakura 官方采样参数（temp 0.1/top_p 0.3）+ 短输出上限：
         # 提示词回显会进入生成长循环（实测一次 13.7s），num_predict 必须收窄
         opts = ({"temperature": 0.1, "top_p": 0.3, "num_predict": 256}
-                if self.mt_system else
+                if self.use_mt else
                 {"temperature": float(c.get("temperature", 0.2)),
                  "num_predict": int(c.get("num_predict", 2048))})
         url = str(c.get("base_url", "http://127.0.0.1:11434")).rstrip("/") + "/api/chat"
@@ -366,44 +382,69 @@ class Translator:
         if not base:
             raise RuntimeError("未填写云端 base_url（形如 https://api.openai.com/v1）")
         url = base + "/chat/completions"
-        if self._openai_fold_system is None:
-            self._openai_fold_system = bool(c.get("fold_system", False))
+        # 兼容阶梯（学到就记住，避免每个请求重学一遍）：
+        #   fold        —— 服务不收 system 角色（少数兼容实现）
+        #   drop_temp   —— 推理类模型只接受默认 temperature
+        #   comp_tokens —— 新接口用 max_completion_tokens 取代 max_tokens
+        compat = getattr(self, "_openai_compat", None)
+        if compat is None:
+            compat = {"fold": bool(c.get("fold_system", False)),
+                      "drop_temp": bool(c.get("drop_temperature", False)),
+                      "comp_tokens": bool(c.get("use_max_completion_tokens", False))}
+            self._openai_compat = compat
 
-        def _payload(fold: bool) -> dict:
-            msgs = ([{"role": "user", "content": f"{system}\n{user}"}] if fold
+        def _payload() -> dict:
+            msgs = ([{"role": "user", "content": f"{system}\n{user}"}] if compat["fold"]
                     else [{"role": "system", "content": system},
                           {"role": "user", "content": user}])
-            return {"model": model, "messages": msgs,
-                    "temperature": float(c.get("temperature", 0.2)),
-                    "max_tokens": int(c.get("max_tokens", 2048))}
+            body = {"model": model, "messages": msgs}
+            if not compat["drop_temp"]:
+                body["temperature"] = float(c.get("temperature", 0.2))
+            body["max_completion_tokens" if compat["comp_tokens"] else "max_tokens"] = \
+                int(c.get("max_tokens", 2048))
+            return body
 
-        try:
-            data = self._post(url, _payload(self._openai_fold_system),
-                              {"Authorization": "Bearer " + key})
-        except urllib.error.HTTPError as e:
-            body = ""
+        data = None
+        for _ in range(4):
             try:
-                body = e.read().decode("utf-8", "replace")[:300]
-            except Exception:
-                pass
-            # 兼容服务拒绝 system 角色时，折叠重试一次（并记住结论）
-            if (not self._openai_fold_system
-                    and ("system" in body.lower() or e.code in (400, 422))):
-                self._openai_fold_system = True
+                # 请求级超时：云端一旦卡住（实测出现过整条流水线被拖 30 分钟），
+                # 必须在有上限的时间内失败 → 该批留空 + 记进 fail_batches，
+                # 而不是让播放端的字幕无限等下去。
+                data = self._post(url, _payload(), {"Authorization": "Bearer " + key},
+                                  timeout=int(c.get("timeout_sec", 60)))
+                break
+            except urllib.error.HTTPError as e:
+                body = ""
                 try:
-                    data = self._post(url, _payload(True), {"Authorization": "Bearer " + key})
-                except urllib.error.HTTPError as e2:
-                    body2 = ""
-                    try:
-                        body2 = e2.read().decode("utf-8", "replace")[:300]
-                    except Exception:
-                        pass
-                    raise RuntimeError(f"云端翻译失败 HTTP {e2.code}：{body2 or e2.reason}") from e2
-            else:
+                    body = e.read().decode("utf-8", "replace")[:300]
+                except Exception:
+                    pass
+                low = body.lower()
+                if e.code in (400, 404, 422):
+                    if not compat["fold"] and ("system" in low or e.code in (400, 422)):
+                        compat["fold"] = True
+                        print("[translate] 云端不接收 system 角色 → 已折叠进 user 消息重试", flush=True)
+                        continue
+                    if not compat["drop_temp"] and "temperature" in low:
+                        compat["drop_temp"] = True
+                        print("[translate] 云端不接受自定义 temperature → 已省略该字段重试", flush=True)
+                        continue
+                    if not compat["comp_tokens"] and "max_completion_tokens" in low:
+                        compat["comp_tokens"] = True
+                        print("[translate] 云端要求 max_completion_tokens → 已改名重试", flush=True)
+                        continue
                 raise RuntimeError(f"云端翻译失败 HTTP {e.code}：{body or e.reason}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"云端不可达（{url}）：{e.reason}") from e
-        return (data["choices"][0]["message"]["content"] or "").strip()
+            except urllib.error.URLError as e:
+                raise RuntimeError(f"云端不可达（{url}）：{e.reason}") from e
+        if data is None:
+            raise RuntimeError("云端翻译失败：兼容重试仍不通过")
+        text = (data["choices"][0]["message"]["content"] or "").strip()
+        if not text:
+            fr = data["choices"][0].get("finish_reason") or "?"
+            raise RuntimeError(
+                f"云端返回空译文（finish_reason={fr}）：推理类模型可能把预算都花在思考上，"
+                "请调大 max_tokens 或换非推理模型")
+        return text
 
     def _chat_local(self, system: str, user: str) -> str:
         """本地 llama.cpp（OpenAI 兼容 /v1/chat/completions）。
@@ -416,7 +457,7 @@ class Translator:
         c = self.cfg.get("local") or {}
         be = _local_backend(c)
         be.ensure_server()                      # 幂等：已在跑直接复用
-        if self.mt_system:
+        if self.use_mt:
             opts = {"temperature": 0.1, "top_p": 0.3, "max_tokens": 256}
         else:
             opts = {"temperature": float(c.get("temperature", 0.2)),
@@ -497,12 +538,32 @@ class Translator:
         return True, ""
 
     # ------------------------------------------------------------ 术语表
+    def _resolve_use_mt(self) -> bool:
+        """逐句 MT 模式开关（见 __init__ 的注释）。
+
+        auto：mt_system 非空**且**后端不是云端 → 逐句；云端一律批量。
+        显式 translate.mode = "mt" / "batch" 时以配置为准。
+        """
+        mode = str(self.cfg.get("mode", "auto") or "auto").strip().lower()
+        if mode == "mt":
+            return bool(self.mt_system)
+        if mode == "batch":
+            return False
+        return bool(self.mt_system) and self.backend != "openai"
+
     def _system_with_glossary(self, lang_key: str, texts: list) -> str:
+        """批量模式的系统提示词 = 基础 SYSTEM + 附加规则 + 命中术语表。"""
+        base = SYSTEM
+        # 附加规则：显式 system_extra 优先；否则在批量模式下沿用 mt_system 的正文
+        # （那里面是"说话人用第一人称/如实翻译"这类领域规则，云端同样适用）。
+        extra = self.system_extra or (self.mt_system if (self.mt_system and not self.use_mt) else "")
+        if extra:
+            base = base + "\n\n" + extra
         joined = " ".join(texts)
         hit = self.glossary.match(lang_key, joined) if self.glossary else {}
         if not hit:
-            return SYSTEM
-        return (SYSTEM + "\n\n术语表（原文→译文，必须严格遵守；未出现的词不要套用）：\n"
+            return base
+        return (base + "\n\n术语表（原文→译文，必须严格遵守；未出现的词不要套用）：\n"
                 + "\n".join(f"{k}→{v}" for k, v in hit.items()))
 
     def _has_untranslated(self, src: str, tr: str) -> bool:
@@ -733,6 +794,11 @@ class Translator:
         try:
             with self._lock:
                 self.stats["fallback_batches"] += 1
+                n = self.stats["fallback_batches"]
+            # 必须喊出来：兜底会把译文静默换成免费机翻，用户只会觉得"云端的反而更差"。
+            if n == 1 or n % 10 == 0:
+                print(f"[translate] ⚠️ 已切换到免费兜底（累计 {n} 批）—— 译文质量会明显下降；"
+                      f"上游失败统计 fail_kinds={self.stats['fail_kinds']}", flush=True)
             out = fb.translate(texts, self.target)
             if not any(out):
                 self._note_fallback_error("兜底返回空译文")
@@ -787,9 +853,8 @@ class Translator:
         if not todo:
             return
 
-        # 逐句专攻 MT 模式：mt_system 配置非空即启用（Sakura 等翻译特化模型）。
-        # 该模式没有"批"的概念，直接逐句直翻后返回。
-        if self.mt_system:
+        # 逐句专攻 MT 模式（Sakura 等翻译特化模型；云端在 auto 下不走这里，见 __init__）。
+        if self.use_mt:
             ctx_note = ""
             if context:
                 ctx_note = f"（上一句译文，供人称衔接参考，勿翻译：{context[:60]}）"
@@ -930,5 +995,12 @@ class Translator:
     # ------------------------------------------------------------ 诊断
     def describe(self) -> str:
         cache = f"cache={'disk+mem' if self.cache_enabled else 'off'}"
+        fb = self.fallback_kind or "off"
+        used = int(self.stats.get("fallback_batches") or 0)
+        if fb != "off" and used:
+            fb = f"{fb}(已兜底{used}批)"          # 让 /health 一眼看出有没有被静默降质
+        fails = int(self.stats.get("fail_batches") or 0)
+        fail_note = f" 失败批次={fails}" if fails else ""   # 无兜底时，失败必须看得见
         return (f"{self.backend}/{self._model_name()} batch={self.batch_size} "
-                f"threads={self.thread_num} {cache} fallback={self.fallback_kind or 'off'}")
+                f"threads={self.thread_num} mode={'mt逐句' if self.use_mt else 'batch批量'} "
+                f"{cache} fallback={fb}{fail_note}")
