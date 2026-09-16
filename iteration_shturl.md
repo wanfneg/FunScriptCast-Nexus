@@ -542,3 +542,28 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
   2. llama.cpp 用的是 CUDA 版，安装包因此 +1.1 GB；嫌大可换 vulkan 版（压缩包约 30 MB，
      同一套流程、资产名换一个），代价是解码略慢；
   3. 终端用户如何获得模型仍无定论：安装包不含模型（16 GB），README 只写了安装时"保留 models 配置"。
+- **Round 36 追加（22:30）—— 头显路径的阻塞性缺陷（实测发现并修复）**：
+  - **现象**：头显实时字幕走 `/transcribe/stream`，实测**每个块都 `upstream 500`**（30s 音频 16 块全 500）。
+  - **根因**：流式要求模型注册成 `mode=streaming`（`stream_bridge.ASR_MODEL = "qwen3-asr-stream"`），
+    而 **:8081 上跑的是谁先拉起谁说了算**：权威文档的运维手册是「先手工起 ASR、再起字幕服务」，
+    但宿主要自己按需拉起字幕服务（用户日常就是这么用的）→ `audiocpp_backend` 写的临时配置
+    **只有 offline 一个模型** → 流式端点整条 500。
+  - **修复**（均在 `vendor/subtitle/audiocpp_backend.py`）：
+    ① 临时配置改为注册**单个 streaming 模型**——实测 streaming 模型**同样能吃不带 `stream=true`
+       的普通请求**（6s 音频 234ms、rtf 0.039），所以一条注册同时服务两条路径；
+    ② 后端自己的离线请求模型 id 同步改为 `qwen3-asr-stream`；
+    ③ 复用到"只注册了 offline 模型"的旧实例时，按 `/v1/models` 核对并打印可执行告警。
+  - **为什么不注册两个模型**（实测，非推理）：同一份权重驻留两遍 →
+    audiocpp 内存 737→2507 MB、总显存 7745/8188 MiB → llama-server 溢出到 CPU →
+    流式中位 **0.29→2.34 s**、整段 wall **37.7→238.8 s（6×）**；
+    改用 `--max-loaded-models 1` 又变成两模式反复装卸：离线 3s 音频要 **17.6 s**、日志 33 次 503。
+  - **单一注册后的实测**（同机同音频）：
+
+    | 路径 | 结果 |
+    |---|---|
+    | `/transcribe/stream`（头显实时） | 90 chunk / 57 段 / 空译文 0 / 中位 **0.27s** / wall **31.9s** |
+    | `/transcribe`（离线回归） | 45 chunk / 26 段 / 空译文 0 / 中位 **0.5s** / wall **18.3s**（改前 25.8s） |
+    | 常驻内存 | audiocpp **945 MB**（双注册时 2507 MB）、llama-server 4,232 MB |
+
+  - 连带修正：`_ref\audiocpp-asr-stream.json`（权威文档指定的启动配置）由双模型改为单 streaming 注册；
+    `tests/diag/audiocpp_server_test.py` 的模型 id 同步改为 `qwen3-asr-stream`。

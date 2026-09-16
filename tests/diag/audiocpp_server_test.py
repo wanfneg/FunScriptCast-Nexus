@@ -28,7 +28,9 @@ def emit(line: str) -> None:
 
 
 def transcribe(audio: Path, language: str = "Japanese") -> dict:
-    body = json.dumps({"model": "qwen3-asr", "audio": str(audio), "language": language}).encode()
+    # 只注册 streaming 模型（见 audiocpp_backend：双注册会双份驻留、挤爆 8GB 显存；
+    # streaming 模型同样能吃不带 stream 的普通请求）
+    body = json.dumps({"model": "qwen3-asr-stream", "audio": str(audio), "language": language}).encode()
     req = urllib.request.Request(URL, data=body, headers={"Content-Type": "application/json"})
     t0 = time.perf_counter()
     with urllib.request.urlopen(req, timeout=300) as r:

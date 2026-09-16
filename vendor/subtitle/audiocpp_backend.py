@@ -41,6 +41,9 @@ AUDIOCPP_DIR = Path(os.environ.get("AUDIOCPP_DIR", r"E:\audiocpp-portable"))
 AUDIOCPP_LANG = {"ja": "Japanese", "en": "English", "zh": "Chinese",
                  "ko": "Korean", "yue": "Cantonese"}
 
+# 流式模型的 id：头显的实时字幕按这个 id 请求，必须与 stream_bridge.ASR_MODEL 一致。
+STREAM_MODEL_ID = "qwen3-asr-stream"
+
 
 class AudioCppError(RuntimeError):
     pass
@@ -145,15 +148,42 @@ class AudioCppBackend:
         except Exception:
             return False
 
+    def _registered_models(self, timeout: float = 3.0) -> list | None:
+        """上游 /v1/models 里已注册的模型 id；查不到返回 None（不阻断主流程）。"""
+        try:
+            with urllib.request.urlopen(self._url("/v1/models"), timeout=timeout) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            return [str(m.get("id")) for m in (data.get("data") or [])]
+        except Exception:
+            return None
+
+    def _warn_if_stream_model_missing(self) -> None:
+        """复用到"只注册了 offline 模型"的旧实例时，喊出可执行的告警。
+
+        这种实例本后端的离线路径完全正常，但头显的 /transcribe/stream 会整条 500，
+        而两边的日志都不明显（上游只回 500）——必须在这里点名并给出处置办法。
+        """
+        ids = self._registered_models()
+        if ids is None or STREAM_MODEL_ID in ids:
+            return
+        print(f"[asr] ⚠️ 端口 {self.port} 上的 audiocpp 没注册流式模型 {STREAM_MODEL_ID}"
+              f"（已注册：{ids}）→ 头显实时字幕会整条 500。"
+              "处置：结束该进程后重启字幕服务（或按 _ref\\audiocpp-asr-stream.json 手工启动）",
+              flush=True)
+
     def ensure_server(self, wait_s: float = 60.0) -> bool:
         """确保常驻服务在跑；已在跑则直接返回。
 
         ⚠️ 复用判定只看 /health 的 status=ok，**不校验加载的模型**——如果
         8083 上残留着一个加载了旧模型的服务，会被静默复用。换过模型/参数
         后请先 stop_server() 或手工结束旧进程再启动。
+
+        复用前额外核对一次模型注册表（见 _check_stream_model）：少了流式模型
+        时，本后端的 offline 路径照样正常，但头显的 /transcribe/stream 会整条 500。
         """
         with self._lock:
             if self.probe():
+                self._warn_if_stream_model_missing()
                 print(f"[asr] audiocpp 端口 {self.port} 已有服务在跑，直接复用"
                       "（注意：不校验其加载的模型是否与本配置一致）", flush=True)
                 return True
@@ -165,8 +195,23 @@ class AudioCppBackend:
                 "host": self.host, "port": self.port,
                 "backend": "cuda" if self.backend != "cpu" else "cpu",
                 "device": 0, "threads": self.threads,
-                "models": [{"id": "qwen3-asr", "family": "qwen3_asr",
-                            "path": self.model, "task": "asr", "mode": "offline"}],
+                # 只注册**一个**模型，且必须是 mode=streaming：
+                #   · 头显的实时字幕走 stream_bridge → 同一个 :8081 上的
+                #     qwen3-asr-stream（offline 模型收到 stream=true 会被上游拒：
+                #     "requires a model configured with mode=streaming"）；
+                #   · 本后端的离线请求用同一个 id 也**照样能跑**（实测 6s 音频
+                #     234ms、rtf 0.039）——所以不需要再注册一个 offline 模型。
+                # 为什么不能两个都注册（2026-09-16 实测）：同一份权重要驻留两遍
+                # （audiocpp 内存 737MB→2507MB、总显存 7745/8188 MiB），把
+                # llama-server 挤到 CPU 上：流式中位 0.29s→2.34s、整段 wall
+                # 37.7s→238.8s；改用 --max-loaded-models 1 又变成两模式反复装卸
+                # （离线 3s 音频要 17.6s、出现 33 次 503）。单注册两个问题都没有。
+                # lazy_load 与 _ref\audiocpp-asr-stream.json 一致：按需加载。
+                "lazy_load": True,
+                "models": [
+                    {"id": STREAM_MODEL_ID, "family": "qwen3_asr",
+                     "path": self.model, "task": "asr", "mode": "streaming"},
+                ],
             }, ensure_ascii=False, indent=2), encoding="utf-8")
             self._proc = subprocess.Popen(
                 [str(exe), "--config", str(cfg_path), "--host", self.host,
@@ -351,7 +396,7 @@ class AudioCppBackend:
         逐字节相同）。语言按请求的 lang_key 传（AUDIOCPP_LANG 映射），映射不到
         时退回构造配置里的 self.language。
         """
-        body = {"model": "qwen3-asr", "audio": str(wav),
+        body = {"model": STREAM_MODEL_ID, "audio": str(wav),
                 "language": AUDIOCPP_LANG.get(lang_key, self.language)}
         if context:
             body["context"] = context

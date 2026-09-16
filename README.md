@@ -154,6 +154,16 @@ Job Object 带走，不留孤儿显存）。配置见 `vendor\subtitle\config.js
 
 换模型 = 换 `models\` 下的文件 + 改这一行路径（`ollama` 段保留为可选回退）。
 
+### ASR 后端（audio.cpp，只注册一个 streaming 模型）
+
+`audiocpp_backend` 拉起 :8081 时写入的配置**只注册一个模型**，且必须是 `mode=streaming`：
+
+- 头显实时字幕走 `/transcribe/stream`，上游要求 `mode=streaming`（否则 500）；
+- 后端的离线请求用同一个 id **照样能跑**（实测 6s 音频 234ms），所以无需第二个注册。
+
+**不要注册成「离线 + 流式」两个**：同一份权重会驻留两遍（audiocpp 内存 737→2507 MB、
+总显存 7745/8188 MiB），把 llama-server 挤到 CPU —— 实测流式中位 0.29→2.34 s、整段 6× 变慢。
+
 ## 打包成 EXE
 
 ```powershell
