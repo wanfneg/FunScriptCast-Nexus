@@ -50,8 +50,8 @@ def main() -> int:
     ap.add_argument("--start", type=int, default=90, help="切片起点（秒）")
     ap.add_argument("--sec", type=int, default=180, help="切片时长（秒）")
     ap.add_argument("--tag", default="r0")
-    ap.add_argument("--chunk-sec", type=float, default=10.0)
-    ap.add_argument("--overlap-sec", type=float, default=2.0)
+    ap.add_argument("--chunk-sec", type=float, default=3.0)   # 与生产一致（v1.6.14 定案 3s/1s）；曾是 10.0
+    ap.add_argument("--overlap-sec", type=float, default=1.0)  # 直接用旧默认会量出旧配置的成绩（实测漏识 14 vs 12）
     ap.add_argument("--transport", choices=["offline", "stream"], default="offline",
                     help="offline=当前生产管线（/transcribe 离线 VAD 端点）；stream=旧流式桥")
     ap.add_argument("--video", choices=["sivr001", "sivr002"], default="sivr001")
@@ -104,14 +104,18 @@ def main() -> int:
         else:
             cmd += ["--chunk-sec", str(int(args.chunk_sec)),
                     "--overlap-sec", str(int(args.overlap_sec))]
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        # ⚠️ 必须显式指定 utf-8：Windows 上 text=True 会用本地编码（GBK）解子进程输出，
+        # 而这两个子进程会打印日文/中文，解不动就在读取线程里抛 UnicodeDecodeError，
+        # 结果 r.stdout / r2.stdout 变成 None，下一行 .splitlines() 直接崩（实测踩过）。
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
         print(r.stdout.strip() or r.stderr.strip())
         wall = time.time() - t0
 
         r2 = subprocess.run(
             [str(PY), str(ROOT / "tests" / "compare_with_reference.py"), str(srt_src),
              str(EVAL_DIR / f"eval_{args.tag}.json")],
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
         # 只保留指标区（前 25 行），去掉样例明细
         out = r2.stdout.splitlines()
         cut = next((i for i, l in enumerate(out) if "内容覆盖率最低" in l or "漏识样例" in l), len(out))
