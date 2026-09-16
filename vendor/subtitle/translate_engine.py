@@ -407,11 +407,12 @@ class Translator:
         data = None
         for _ in range(4):
             try:
-                # 请求级超时：云端一旦卡住（实测出现过整条流水线被拖 30 分钟），
-                # 必须在有上限的时间内失败 → 该批留空 + 记进 fail_batches，
-                # 而不是让播放端的字幕无限等下去。
+                # 请求级超时（**不是 sleep**）：给单次 HTTP 请求一个上限，超了就失败留空，
+                # 避免云端卡住时整条流水线无限等（实测出现过拖满 30 分钟）。
+                # timeout_sec = 0 或负数 = 不设上限（用户要求"指定什么就是什么"时可关掉）。
+                _to = int(c.get("timeout_sec", 60))
                 data = self._post(url, _payload(), {"Authorization": "Bearer " + key},
-                                  timeout=int(c.get("timeout_sec", 60)))
+                                  timeout=(None if _to <= 0 else _to))
                 break
             except urllib.error.HTTPError as e:
                 body = ""
@@ -703,8 +704,12 @@ class Translator:
                            f"（最后一次响应前 120 字：{str(last_raw)[:120]!r}）")
 
     # ------------------------------------------------------------ 逐条兜底
-    def _single_translate(self, src: str) -> str:
+    def _single_translate(self, src: str, system: str | None = None) -> str:
         """单条兜底翻译：批量 JSON 模式没救回来的句子再单独试一次。
+
+        **仍然用同一个后端**（不算换家兜底）：批量失败时逐句重问，实测能救回大部分
+        —— 尤其云端推理型模型把 max_tokens 花在思考上、正片 JSON 被截断
+        （finish_reason=length）的情况：批量 14 句全空，逐句 14/14 全翻出来。
 
         批量模式对小模型天然更难——它得同时维持 JSON 结构和逐条译文，短语气词
         （`ふふ。`）和口语缩略（`あなたの家ってすごくおいしい。`）上容易"摆烂"：
@@ -717,7 +722,7 @@ class Translator:
         if not src:
             return ""
         try:
-            out = str(self._chat(SYSTEM, SINGLE_PROMPT.format(text=src)) or "").strip()
+            out = str(self._chat(system or SYSTEM, SINGLE_PROMPT.format(text=src)) or "").strip()
         except Exception:
             return ""
         # 单条模式没有 JSON 结构，模型可能带引号或前后缀，剥掉
@@ -919,6 +924,17 @@ class Translator:
                     else:
                         missing.append(pos)
                 if missing:
+                    # ① 先在同一后端上**逐句**救（不换家）：批量被截断/返回空时逐句往往能翻，
+                    #    实测 deepseek-flash 批量截断的 14 句，逐句 14/14 全救回。
+                    #    与"指定什么就用什么"一致——仍是同一个模型，只是换了提示词形态。
+                    for p in list(missing):
+                        v = self._single_translate(texts[p], system)
+                        if v:
+                            out[p] = v
+                            missing.remove(p)
+                            with self._lock:
+                                self.stats["single_fallbacks"] += 1
+                if missing and self.fallback_kind:
                     filled = self._free_translate([texts[p] for p in missing])
                     for p, v in zip(missing, filled):
                         out[p] = v

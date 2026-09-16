@@ -40,7 +40,7 @@
     "backend": "local",
     "ollama": {
       "base_url": "http://127.0.0.1:11435",
-      "model": "sakura-7b"
+      "model": ""
     },
     "openai": {
       "base_url": "https://api.openai.com/v1",
@@ -48,7 +48,7 @@
       "model": "",
       "api_key": "",
       "temperature": 0.2,
-      "max_tokens": 2048
+      "max_tokens": 8192
     },
     "batch_size": 10,
     "max_steps": 3,
@@ -77,7 +77,8 @@
       "top_p": 0.3,
       "max_tokens": 2048,
       "start_timeout_sec": 180
-    }
+    },
+    "mode": "auto"
   },
   "glossary": {
     "ja": "glossary_ja_zh.json",
