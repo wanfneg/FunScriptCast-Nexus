@@ -32,6 +32,7 @@ from starlette.concurrency import run_in_threadpool
 
 from asr_engine import AsrEngine
 from glossary import Glossary
+from whisper_fallback import WhisperFallback
 from translate_engine import Translator
 
 BASE = Path(__file__).resolve().parent
@@ -305,6 +306,32 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
         state["asr"].transcribe, pcm, lang, video_start_ms, keep_from_ms,
         CFG.get("vad", {}), CFG.get("segment", {}), asr_extra,
     )
+
+    # 二次识别兜底：主 ASR 零输出、但块里确有语音能量（气声/耳语台词是
+    # 0.6B 模型的盲区，实测 916/978/995s 三处纯净音频也零输出）时，
+    # 用 kotoba-whisper（CPU int8）重试一次。纯静音块直接跳过不浪费算力。
+    if not result.get("segments") and not result.get("skipped"):
+        peak = float(np.abs(pcm).max()) if len(pcm) else 0.0
+        if peak > 0.02:
+            try:
+                state.setdefault("whisper_fb", WhisperFallback(
+                    (CFG.get("asr", {}) or {}).get("whisper_fallback") or {}))
+                fb = state["whisper_fb"]
+                if fb.available():
+                    fb_segs = await run_in_threadpool(
+                        fb.transcribe, pcm, 16000,
+                        "ja" if lang.startswith("ja") else lang)
+                    if fb_segs:
+                        video0 = video_start_ms
+                        for s in fb_segs:
+                            s["start_ms"] += video0
+                            s["end_ms"] += video0
+                        result["segments"] = fb_segs
+                        result["backend"] = "kotoba-whisper"
+                        print(f"[asr] 主引擎零输出 → kotoba-whisper 兜底 {len(fb_segs)} 段",
+                              flush=True)
+            except Exception as e:
+                print(f"[asr] whisper 兜底失败（忽略）: {type(e).__name__}: {e}", flush=True)
     mt_ms = 0.0
     if translate and result["segments"]:
         t1 = time.perf_counter()

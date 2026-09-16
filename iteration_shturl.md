@@ -353,3 +353,17 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
 - 能改善此场景的升级路径：更大 ASR 模型（Qwen3-ASR-1.7B 本地 / qwen3-asr-flash 云端）、
   kotoba-whisper（待 A/B）——均需用户拍板
 - 结论：**管线侧已无可修缺陷**；缺口 = 模型规模边界，量化数据齐备
+
+## Round 27（11:30–11:50）：kotoba-whisper 二次识别兜底上线
+
+- 用户指向开源参考 → 落地：主 ASR（Qwen3-ASR 0.6B）零输出但有语音能量的块，
+  用 kotoba-whisper-v2.0-faster（CPU int8，faster-whisper/CTranslate2）二次识别
+- 新增 vendor/subtitle/whisper_fallback.py（懒加载/线程安全/no_speech_prob>0.6
+  幻觉门控）+ server_app 零输出挂钩 + 能量门控（峰值 RMS>0.02 才兜底）
+- 隔离实验：3 个死窗中 2 个转出内容（ごめん/うん——短但非零）；1 个仍零
+  （耳语级，所有模型极限）
+- 全片回归：召回 89.5%（+0.8pp）、硬缺陷 0/0/0、无幻觉注入 ✓
+- 依赖：faster-whisper 已入 .venv 与 dist-app runtime；模型缓存于 HF cache
+  （kotoba-tech/kotoba-whisper-v2.0-faster，~810MB）
+- 风险点：whisper 系对喘息有幻觉倾向——已用 vad_filter + no_speech_prob 门控
+  + 现有重复/漏译判据三层防护；全片回归未见乱码注入

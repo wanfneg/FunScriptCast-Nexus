@@ -58,7 +58,7 @@ $sitePkgs = Join-Path $OutDir 'Lib\site-packages'
 New-Item -ItemType Directory -Path $sitePkgs -Force | Out-Null
 $env:NO_PROXY = '*'
 $env:no_proxy = '*'
-& $venvPy -m pip install --target $sitePkgs "fastapi" "uvicorn" "numpy"
+& $venvPy -m pip install --target $sitePkgs "fastapi" "uvicorn" "numpy" "zhconv" "faster-whisper"
 if ($LASTEXITCODE -ne 0) { throw "依赖安装失败" }
 
 # ---- 4. 冒烟验证：runtime python 能导入全部依赖 ----
