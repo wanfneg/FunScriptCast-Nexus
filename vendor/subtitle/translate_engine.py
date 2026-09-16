@@ -550,16 +550,11 @@ class Translator:
 
     # ------------------------------------------------------ 逐句专攻 MT
     def _mt_once(self, text: str, lang_key: str) -> str:
-        """单句调用专攻翻译模型；空/漏译/退化/提示词回显一律判失败返回空串。
-
-        提示词回显（实测）：模型偶发把指令前缀复读成"译文"（"将下面的「将下面的…"
-        生成循环拖 13.7s）——纯中文能通过漏译检查，必须显式拦截。"""
+        """单句调用专攻翻译模型；空/漏译/退化一律判失败返回空串。"""
         raw = str(self._chat(self.mt_system, self.mt_user_prefix + text) or "").strip()
         out = raw.strip().strip('"“”「」『』').strip()
         if not out or self._has_untranslated(text, out) or self._is_degenerate(text, out):
             return ""
-        if "将下面的" in out or "翻译成中文" in out or "不要翻译" in out:
-            return ""   # 提示词回显：指令片段混进了"译文"
         return self._repair_with_glossary(lang_key, text, out)
 
     def _translate_mt(self, todo: list, lang_key: str) -> None:

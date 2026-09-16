@@ -58,9 +58,7 @@ class WhisperFallback:
     def transcribe(self, pcm_f32: np.ndarray, sr: int = 16000, lang: str = "ja") -> list:
         """pcm_f32: [-1,1] float32 单声道。返回 [{"start_ms","end_ms","text"}]（可能为空）。
 
-        幻觉防护：whisper 系对喘息/非语音有名的幻觉问题——vad_filter 过滤 +
-        no_speech_prob > 0.6 时整块丢弃（调用方主引擎也是零输出才走到这，
-        误丢的代价只是维持现状）。"""
+        vad_filter 过滤非语音段（faster-whisper 标准行为）。"""
         self._ensure()
         with self._lock:
             segments, info = self._model.transcribe(
@@ -68,8 +66,6 @@ class WhisperFallback:
                 beam_size=5, vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 300},
             )
-            if getattr(info, "no_speech_prob", 0) > 0.6:
-                return []
             out = []
             for s in segments:
                 txt = (s.text or "").strip()
