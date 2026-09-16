@@ -381,3 +381,19 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
 - silero VAD 参数接口确认（audio.cpp silero_config_from_options）：threshold /
   min_speech_duration_ms / min_silence_duration_ms / speech_pad_ms /
   max_speech_duration_s / neg_threshold 均可经请求选项透传——后续调优接口已明确
+
+## Round 28 补（11:20–11:50）：kotoba-whisper 全片转写对比（回答"开源参考"的实际价值）
+
+- 是否联网检索：否（复用 Round 17 结果）
+- 实验：kotoba-whisper-v2.0-faster（CPU int8）全片转写，与 Qwen3-ASR 0.6B 对照
+- 结果：
+  - 召回 87.9%（Qwen 88.7%）——打平
+  - **人名质量优势**：kotoba 转出「三上優愛」（正确官方汉字），Qwen 转出「三上ゆあ/三上です」
+  - Qwen 的三个气声死窗，kotoba 在 925s 转出「いわんのヘラ気持ちいい?」（部分找回），
+    977.5s 仍只有「ああ」（该处实为呢喃）
+  - 缺点：5s 重叠窗产生重复行；时序漂移 −2.46s（切窗赋时伪影）
+- 定性：**识别文本质量相当、人名拼写 kotoba 更准**；但换主引擎 = 新后端 + 时序重调，
+  收益（人名拼写）可通过 Qwen 已有的热词机制部分获得（热词里加「優愛」写法）
+- 风险点：无（纯评测，未改管线）
+- 附：本次 kotoba 时序漂移是我切窗赋时方法的伪影，非模型缺陷（30s 窗 25s 步进，
+  段内 start 相对窗起点，窗内 VAD 修剪会被误计）
