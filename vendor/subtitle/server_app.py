@@ -126,9 +126,9 @@ async def _idle_reaper() -> None:
     必须显式 stop_server() 再退出，不能直接 os._exit：后者跳过 lifespan 收尾，
     audiocpp 会变成孤儿继续占着内存——这正是之前 sub_stop 踩过的坑。
 
-    双重栅栏防误杀在飞请求：idle 时间按"最后一次请求**结束**"算，且
-    _INFLIGHT > 0 时一律跳过（check 与 exit 之间不是原子的，光靠时间戳
-    仍可能在"请求刚到、reaper 用旧值判断"的窗口里开杀）。
+    双重栅栏防误杀在飞请求：idle 时间按"最后一次请求**结束**"算，且 _INFLIGHT > 0 时
+    一律跳过。决定退出后的最终检查与 os._exit **同锁**完成——此前检查与退出之间存在
+    窗口，请求刚好进来就会撞上"模型正在被释放"的半死状态（ASR 500）。
     """
     global _INFLIGHT
     while True:
@@ -143,17 +143,17 @@ async def _idle_reaper() -> None:
         idle = time.time() - _LAST_REQ_TS
         if idle < mins * 60:
             continue
-        with _INFLIGHT_LOCK:      # 复核：决定退出前再确认没有新请求进来
+        with _INFLIGHT_LOCK:      # 复核 + 退出原子化：在飞请求的打点会被这把锁挡住
             if _INFLIGHT > 0:
                 continue
-        print(f"[server] 空闲 {idle / 60:.1f} 分钟 ≥ {mins:.0f} 分钟，"
-              f"释放模型并退出（下次要用会由头显重新拉起）", flush=True)
-        try:
-            if hasattr(state["asr"], "stop_server"):
-                state["asr"].stop_server()
-        except Exception as e:
-            print(f"[server] 释放 audiocpp 失败：{type(e).__name__}: {e}", flush=True)
-        os._exit(0)
+            print(f"[server] 空闲 {idle / 60:.1f} 分钟 ≥ {mins:.0f} 分钟，"
+                  f"释放模型并退出（下次要用会由头显重新拉起）", flush=True)
+            try:
+                if hasattr(state["asr"], "stop_server"):
+                    state["asr"].stop_server()
+            except Exception as e:
+                print(f"[server] 释放 audiocpp 失败：{type(e).__name__}: {e}", flush=True)
+            os._exit(0)
 
 
 def _make_asr(cfg: dict, glossary):
@@ -310,6 +310,11 @@ def glossary_reload():
 async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0,
                      keep_from_ms: int = 0, translate: bool = True):
     global _LAST_REQ_TS, _INFLIGHT
+    # 先看 Content-Length 再读体：超大请求直接拒收，不先把几百 MB 读进内存
+    cl = request.headers.get("content-length", "")
+    if cl.isdigit() and int(cl) > MAX_BODY_BYTES:
+        return {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
+                "skipped": True, "error": f"请求体超过上限 {MAX_BODY_BYTES // (1024*1024)}MB"}
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
         return {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
@@ -378,7 +383,17 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
         await run_in_threadpool(state["translator"].translate_segments,
                                 result["segments"], lang, tr_ctx)
         mt_ms = round((time.perf_counter() - t1) * 1000, 1)
-        # 后处理与流式桥同一套显示策略（判据在 text_filters / stream_bridge，勿重复实现）：
+        # 更新滚动上下文：取时间上最后一条（下一块用它做翻译承接 + ASR 热词）
+        if result["segments"]:
+            last = result["segments"][-1]
+            with _CTX_LOCK:
+                _LAST_CTX.update({"lang": lang,
+                                  "src": (last.get("text") or "")[:80],
+                                  "zh": (last.get("translation") or "")[:80]})
+    if result["segments"]:
+        # 后处理与流式桥同一套显示策略（判据在 text_filters / stream_bridge，勿重复实现）。
+        # 无论走不走翻译都要做：此前清洗挂在 translate 分支里，translate=false 时
+        # 引号/碎片原样下发，与流式路径行为不一致。
         # ① 引号剥离：ASR 会在行首尾带出引号类符号（实测 …想让你看呢。"）
         # ② 块内碎片去重：同一响应里互为子串的段保留更长一条（重叠区前缀碎片，
         #    实测 "今日。"/"今日は。"——头显侧 LCS≥6 判据接不住这种短碎片）
@@ -400,13 +415,6 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
         result["segments"] = sorted(kept, key=lambda x: x.get("start_ms") or 0)
         for s in result["segments"]:
             s["translation"] = _display_zh(s)
-        # 更新滚动上下文：取时间上最后一条（下一块用它做翻译承接 + ASR 热词）
-        if result["segments"]:
-            last = result["segments"][-1]
-            with _CTX_LOCK:
-                _LAST_CTX.update({"lang": lang,
-                                  "src": (last.get("text") or "")[:80],
-                                  "zh": (last.get("translation") or "")[:80]})
     result["mt_ms"] = mt_ms
     result["total_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     preview = " | ".join((s.get("translation") or s["text"])[:18] for s in result["segments"][:3])

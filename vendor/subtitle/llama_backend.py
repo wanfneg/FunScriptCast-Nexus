@@ -75,7 +75,9 @@ class LlamaBackend:
         self._log = Path(tempfile.gettempdir()) / f"llama_server_{self.port}.log"
         self._proc: subprocess.Popen | None = None
         self._job_handle = None      # Windows Job Object 句柄（父进程崩溃时带走子进程）
-        self._lock = threading.Lock()
+        # RLock 而不是 Lock：ensure_server（持锁）超时收尾会调 stop_server（也拿锁），
+        # 非重入锁在这里必然自锁死——线程挂在锁上，字幕请求全部跟着挂死。
+        self._lock = threading.RLock()
 
     # ---------------------------------------------------------------- 服务
     @property
@@ -117,10 +119,14 @@ class LlamaBackend:
                   f"(ctx={self.ctx}, ngl={self.ngl}, port={self.port})", flush=True)
             self._log.parent.mkdir(parents=True, exist_ok=True)
             logf = open(self._log, "wb")
-            self._proc = subprocess.Popen(
-                args, cwd=str(self.dir), stdin=subprocess.DEVNULL,
-                stdout=logf, stderr=subprocess.STDOUT,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            try:
+                self._proc = subprocess.Popen(
+                    args, cwd=str(self.dir), stdin=subprocess.DEVNULL,
+                    stdout=logf, stderr=subprocess.STDOUT,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            finally:
+                # 子进程已继承写句柄，父进程这份用完即关（此前每次启动泄一个句柄）
+                logf.close()
             self._attach_kill_on_close(self._proc)
             # 有上限的轮询就绪检测（不固定硬等；进程提前退出立刻报错并带上日志尾巴）
             t0 = time.time()

@@ -222,7 +222,8 @@ class Translator:
                       "fallback_error": "", "degraded": False, "segments": 0,
                       "leak_kept": 0, "glossary_repaired": 0,
                       "fatal_errors": 0, "fatal_error": "",
-                      "single_fallbacks": 0, "single_capped": 0}
+                      "single_fallbacks": 0, "single_capped": 0,
+                      "single_fallback_errors": 0}
         # 后台预热兜底后端：探测要真发一条请求，代理关闭时单次 30s。放后台做，
         # 真需要兜底时结果（含"全挂"的负缓存）已经就绪，不会在字幕流程中间卡住。
         if self.fallback_kind:
@@ -723,7 +724,15 @@ class Translator:
             return ""
         try:
             out = str(self._chat(system or SYSTEM, SINGLE_PROMPT.format(text=src)) or "").strip()
-        except Exception:
+        except Exception as e:
+            # 失败原因必须可见（限频防刷屏）：此前静默吞掉，"逐句补救也没救回来"
+            # 在线上完全无从判断是网络挂了还是模型摆烂。
+            with self._lock:
+                self.stats["single_fallback_errors"] += 1
+                n = self.stats["single_fallback_errors"]
+            if n <= 3 or n % 20 == 0:
+                print(f"[translate] 逐句补救失败（第 {n} 次）：{type(e).__name__}: {e}",
+                      flush=True)
             return ""
         # 单条模式没有 JSON 结构，模型可能带引号或前后缀，剥掉
         out = out.strip().strip('"“”「」『』').strip()
@@ -759,7 +768,14 @@ class Translator:
             cached = self._cache_get(key, 1)
             if cached is not None:
                 return cached[0]
-            out = self._mt_once(text, lang_key, context)
+            try:
+                out = self._mt_once(text, lang_key, context)
+            except Exception as e:
+                # 单句调用失败只报废这一句。此前异常会从 ex.map 一路炸穿
+                # _translate_mt，把同批其他句子**已经翻好的结果一起丢掉**
+                # （整批标 fatal），一次瞬时网络抖动 = 一整块字幕全没。
+                print(f"[translate] MT 单句失败：{type(e).__name__}: {e}", flush=True)
+                out = ""
             if out:
                 self._cache_put(key, [out])
             return out

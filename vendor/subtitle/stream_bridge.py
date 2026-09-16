@@ -40,6 +40,7 @@ import http.client
 import json
 import re
 import sys
+import threading
 import time
 import urllib.parse
 import struct
@@ -64,24 +65,26 @@ CFG: dict = json.loads(CFG_PATH.read_text(encoding="utf-8")) if CFG_PATH.exists(
 
 _translator = None
 _glossary = None
+_translator_lock = threading.Lock()   # 并发首个请求同时懒加载时只建一份
 
 
 def _get_translator():
     """懒加载翻译器（首次请求才建，避免启动即占资源）。失败则退化为不翻译。"""
     global _translator, _glossary
-    if _translator is not None:
-        return _translator
-    try:
-        from glossary import Glossary          # type: ignore
-        from translate_engine import Translator  # type: ignore
+    with _translator_lock:
+        if _translator is not None:
+            return _translator
+        try:
+            from glossary import Glossary          # type: ignore
+            from translate_engine import Translator  # type: ignore
 
-        _glossary = Glossary(CFG.get("glossary", {}), base_dir=_SUB_DIR)
-        _translator = Translator(CFG.get("translate", {}), _glossary)
-        print("[bridge] translator ready", flush=True)
-    except Exception as exc:  # 翻译不可用时也不能让字幕整段空白
-        print(f"[bridge] translator unavailable: {exc}", flush=True)
-        _translator = False
-    return _translator
+            _glossary = Glossary(CFG.get("glossary", {}), base_dir=_SUB_DIR)
+            _translator = Translator(CFG.get("translate", {}), _glossary)
+            print("[bridge] translator ready", flush=True)
+        except Exception as exc:  # 翻译不可用时也不能让字幕整段空白
+            print(f"[bridge] translator unavailable: {exc}", flush=True)
+            _translator = False
+        return _translator
 
 
 def _batch_size() -> int:
@@ -303,14 +306,22 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
             pending.clear()
             return lines
 
+        conn = None
         try:
             payload, boundary = _multipart(pcm, ASR_MODEL)
-            conn = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=600)
-            conn.request("POST", "/v1/audio/transcriptions", payload, {
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "Accept": "text/event-stream",
-            })
-            resp = conn.getresponse()
+
+            def _open_upstream():
+                c = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=600)
+                c.request("POST", "/v1/audio/transcriptions", payload, {
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    "Accept": "text/event-stream",
+                })
+                return c, c.getresponse()
+
+            # 上游 HTTP 的连接/响应/逐块读取全是阻塞调用，**必须进线程池**：
+            # 直接跑在事件循环里会把 /health 与并发的 /transcribe 一起卡住
+            # （ASR 一跑就是数秒，本桥以 server_app 路由形式运行，共用一个循环）。
+            conn, resp = await run_in_threadpool(_open_upstream)
             if resp.status != 200:
                 yield f"data: {json.dumps({'type': 'error', 'error': f'upstream {resp.status}'})}\n\n"
                 _log_done()
@@ -318,7 +329,8 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
                 return
             buf = b""
             while True:
-                chunk = resp.read(4096) if not hasattr(resp, "read1") else resp.read1(4096)
+                chunk = await run_in_threadpool(
+                    lambda: resp.read1(4096) if hasattr(resp, "read1") else resp.read(4096))
                 if not chunk:
                     break
                 buf += chunk
@@ -377,6 +389,11 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
             for out in await _flush_lines():
                 yield out
         except Exception as exc:
+            try:
+                if conn is not None:
+                    conn.close()      # 异常路径此前不关连接，句柄靠 GC 兜底
+            except Exception:
+                pass
             try:
                 for out in await _flush_lines():   # 断流前攒下的句子尽量翻完下发
                     yield out

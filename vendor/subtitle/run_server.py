@@ -50,10 +50,10 @@ class _Tee:
         return False   # uvicorn 日志格式器探测终端用；非 TTY 输出纯文本
 
 
-if not getattr(sys, "frozen", False) or True:   # 任何启动方式都落文件日志
-    _log_file = open(_log_path, "a", buffering=1, encoding="utf-8", errors="replace")
-    sys.stdout = _Tee(sys.stdout, _log_file)
-    sys.stderr = _Tee(sys.stderr, _log_file)
+# 任何启动方式都落文件日志（打包版 run_server.py 是唯一入口，仓库调试也一样受益）
+_log_file = open(_log_path, "a", buffering=1, encoding="utf-8", errors="replace")
+sys.stdout = _Tee(sys.stdout, _log_file)
+sys.stderr = _Tee(sys.stderr, _log_file)
 # 自包含安装的 embeddable Python 用 ._pth 封闭 sys.path，不含脚本所在目录，
 # 这里显式补上，否则 uvicorn 找不到同目录的 server_app（实测 Not Found）。
 if str(BASE) not in sys.path:

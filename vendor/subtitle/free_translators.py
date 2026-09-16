@@ -310,16 +310,17 @@ _INSTANCES_LOCK = threading.Lock()
 def make_free(kind: str):
     """按名字创建免费后端。kind: auto | google | bing
 
-    实例按 kind 复用：探测/兜底会反复调用本函数，Google 每次新建实例会
-    丢失退避状态，Bing 每次新建会白白重取 token。"""
+    实例按 kind 复用（**含 auto**）：探测/兜底会反复调用本函数，Google 每次新建
+    实例会丢失退避状态，Bing 每次新建会白白重取 token，auto 每次新建会丢掉
+    探测负缓存与已选后端（"全挂"冷却期形同虚设）。"""
     k = (kind or "").lower()
-    if k in ("auto", ""):
-        return AutoTranslator()
-    if k in ("bing", "edge", "google"):
-        with _INSTANCES_LOCK:
-            inst = _INSTANCES.get(k)
-            if inst is None:
-                inst = BingTranslator() if k in ("bing", "edge") else GoogleTranslator()
-                _INSTANCES[k] = inst
-            return inst
-    return None
+    if k not in ("", "auto", "google", "bing", "edge"):
+        return None
+    k = {"": "auto", "edge": "bing"}.get(k, k)
+    with _INSTANCES_LOCK:
+        inst = _INSTANCES.get(k)
+        if inst is None:
+            inst = AutoTranslator() if k == "auto" else (
+                BingTranslator() if k == "bing" else GoogleTranslator())
+            _INSTANCES[k] = inst
+        return inst
