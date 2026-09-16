@@ -1,8 +1,21 @@
 # AI 实时字幕 —— 状态与运维手册
 
-> 更新：2026-09-16（流式链路接手日）
+> 更新：2026-09-17（R41 全仓库审查修复日）
 > 范围：AI 字幕一条链路（VR 头显 ↔ PC Nexus ↔ audio.cpp ASR）+ 翻译质量
 > 事实来源：本文所有"实测"均来自真实运行；上游行为均读自 audio.cpp 源码（v0.7.4 二进制 + PR#553 源码克隆）
+> ⚠️ 本文 §0-§2 的翻译栈描述停留在 Ollama 时代（2026-09-16），**最新事实**（Sakura-7B +
+>    llama.cpp + 云端 OpenAI 兼容、R37-R40 实测数据、25 秒档指引）以桌面交接文档 R40 与
+>    `iteration_shturl.md` Round 36-41 为准；2026-09-17 R41 全仓库审查修复记录见 Round 41。
+
+## R41（2026-09-17）全仓库审查修复速览
+
+三个 P0：`#mtModel` 轮询清空导致保存覆盖配置、术语表未加载时可被空表一键清库、
+本机 API 无 Origin 校验 + cache/clear 路径遍历。两个自查 P1：llama_backend 超时收尾
+**死锁**（Lock→RLock）、流式桥阻塞事件循环。打包链路：build_exe 摘 junction 防递归删真身
++ key 保留回填（坑 #12 关闭）、哨兵升级全树扫描、sync_distapp 重写（覆盖 ui/dlna、
+config.json 默认排除、-Check exit 码）。**8756 加回环门卫**：非 `/transcribe*`/`/health`
+接口仅限本机（持明文 key 的服务不再向局域网开放管理面）。全部修复经单元测试（新增
+`tests/test_pipeline_unit.py`）与打包端到端实测验证，详见 Round 41。
 
 ## ⚠️ 先读这个：运行形态决定一切
 
@@ -130,11 +143,12 @@ POST http://<PC-IP>:8756/transcribe/stream?lang=ja&translate=true&video_start_ms
 ```
 
 ```powershell
-# ASR 流式实例（8081）
+# ASR 实例（8081，GPU；由字幕服务 lifespan 按 config 自起，一般不用手动）
 Start-Process 'E:\audiocpp-portable\gpu\audiocpp_server.exe' -ArgumentList @('--config','E:\Development\_ref\audiocpp-asr-stream.json','--host','127.0.0.1','--port','8081','--device','0') -WorkingDirectory 'E:\audiocpp-portable\gpu' -WindowStyle Hidden
-# Ollama（11434，qwen2.5:3b）——手动起字幕服务时必须手动一起起，否则翻译熔断全变日文
-Start-Process "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" -ArgumentList 'serve' -WindowStyle Hidden
-# 字幕服务（8756；lifespan 还会按 config 自起一个 8083 的 CPU audiocpp 离线实例，与 8081 互不干扰）
+# 字幕服务（8756）。翻译不再需要 Ollama：
+#   本地 = llama-server（:8082，服务按需拉起/随服务回收，模型在安装目录 models\）
+#   云端 = OpenAI 兼容（config → translate.openai，UI 可填 key 与测试）
+# 8756 上非 /transcribe*、/health 的接口已收回环门卫（R41），局域网设备只能推音频。
 cd E:\Development\FunScriptCast-Nexus\vendor\subtitle
 E:\Development\FunScriptCast-Nexus\.venv\Scripts\python.exe -m uvicorn server_app:app --host 0.0.0.0 --port 8756
 ```
@@ -245,30 +259,47 @@ adb -s 192.168.2.129:5555 logcat -d | Select-String 'AiSubtitle\] \+|跳过空�
 7. **桥/引擎职责边界**：漏译判定、重试、兜底全在 `translate_engine.py`，桥只做「封 WAV、切句、时间、转发、攒批」。不要在新代码里重复实现判据。
 8. **判据只写一份**：PyTorch/audiocpp 两侧共用的文本判据统一放 `vendor/subtitle/text_filters.py`（历史上漂移过两次）。
 9. **头显两 Unity 工程必须逐字节一致**：`unity-prototype`（Pico）与 `unity-prototype-meta`（Meta）各有全套 C#，改一份必须同步另一份，否则 `build_apks.ps1` 第 4 步 parity 门禁直接中止构建（本次实测被拦一次；同步后 OK）。
+10. **PS5.1 `Remove-Item -Recurse` 会跟随 junction 递归删除目标内容**（PowerShell#621）：
+    dist-app 里的 models/.venv 是指向仓库真身的链接，重编不先摘链接 = 删掉 8GB 模型/venv。
+    build_exe.ps1 已脚本化防护（摘链接→删除→自动重建），别把这段防护当冗余删掉（R41）。
+11. **重写/编辑 .ps1 后必须复查 BOM**：R41 用工具重写 sync_distapp.ps1 就丢过一次 BOM
+    （PS5.1 按 GBK 读中文 → 语法/字符串全错）。`head -c 3 | od` 查 `ef bb bf`。
+12. **"启动中点停止"必须做代数校验**：start 是后台线程，stop 只杀"已登记"的进程——
+    没有代数（gen）校验时，启动窗口期点停止是空操作，进程随后照常拉起（R41 已修，
+    字幕子进程与 DLNA 同一套 `sub_gen`/`dlna_gen` 机制，新增长任务照抄）。
+13. **持密钥的服务绑 0.0.0.0 时，管理面必须与数据面分开**：8756 头显只用
+    `/transcribe*` 与 `/health`；其余接口已收回环门卫（server_app `_LoopbackGuard`，
+    R41）。新增接口时想清楚"头显要不要用"，不要默认往局域网开。
 
 ## 7. 未决 / 后续
 
 | 项 | 状态 |
 |---|---|
 | 时间轴精确化 | **已解决（v1.6.12）**：改走离线 VAD 端点拿真实时间戳（中位偏差 −0.24s）； ForcedAligner 词级时间仍留作远期选项 |
-| 翻译质量天花板 | 当前 ~0.35-0.42 内容覆盖的瓶颈是 **qwen2.5:3b**；下一个杠杆是换更大翻译模型（qwen2.5:7b 需显存预算评估） |
-| 流式 vs 离线质量 A/B | **已完成有界评测（300s 窗口）**：硬缺陷与译文内容打平，差距全在时间轴；全片评测可复用同一套脚本 |
+| 翻译质量天花板 | **R36-R40 已换代**：本地 Sakura-7B（llama.cpp，覆盖 0.457-0.478）；云端 OpenAI 兼容修完推理预算坑后 0.531（须配 25s 档）。数据见桌面交接文档 R40 §6 |
+| 头显档位与后端联动 | **未做（当前首推）**：切云端时应自动提示/切 25s 档（3s 块在云端结构性追不上） |
+| key 存放迁移 | **未做**：打包已带不走 key（R41），但仍明文在 dist-app 运行配置里，建议迁 `%LOCALAPPDATA%`/环境变量 |
+| 12 句漏识（气声/耳语） | 换大 ASR 无效（R38 已证）⇒ 需音频侧手段（增益/VAD 调参） |
+| ASR 量化评测 | 需**日文参考文本**做 CER（现在只有中文参考，覆盖率天花板 ≈0.5 无法再归因） |
 | 影子播放器 | **已删除（v1.6.9）**：双声音根除、省一整份解码；代价是无提前量、字幕必然滞后。落点 `VideoPlayerBridge.ensurePlayerInstance`（tap 常驻主播放器 AudioSink）+ `AiSubtitleEngine.beginCapture/stopInternal`（消费者注入/摘除） |
-| 头显装机 | 装机命令 `C:\platform-tools\adb.exe -s 192.168.2.129:5555 install -r VRFunScriptCast\dist\VRFunScriptCast-Meta.apk`（**v1.6.9 已于 2026-09-16 装机**，versionCode 111 回读确认） |
+| 头显装机 | 装机命令 `C:\platform-tools\adb.exe -s 192.168.2.129:5555 install -r VRFunScriptCast\dist\VRFunScriptCast-Meta.apk`（**v1.6.14 为当前测试版本**） |
 | 上游新版本 | 关注 release；`/live` 端点进入正式版后再评估（届时桥可改持久推流，省每请求会话重建） |
-| 工作区未提交 | Nexus 与 VRFunScriptCast 两仓都有大量未提交工作（见 git status），建议按功能分批提交 |
+| 工作区未提交 | R41 起已按功能分批提交（cb4026e / d16a540 / 80e0850）；dist-app 已同步并重编 exe |
 
 ## 8. 关键文件
 
 ```
 PC（FunScriptCast-Nexus）
   vendor\subtitle\stream_bridge.py      ★ 流式桥（攒批/切句/时间/WAV 封装/错误透出）
-  vendor\subtitle\server_app.py         末尾 /transcribe/stream 路由 + 空闲回收防误杀
+  vendor\subtitle\server_app.py         末尾 /transcribe/stream 路由 + 空闲回收防误杀 + 回环门卫（R41）
   vendor\subtitle\translate_engine.py   翻译引擎（批量/纠错/最好一轮/逐条兜底/术语修补）
   vendor\subtitle\text_filters.py       两侧共用文本判据（退化复读/热词复读）
   vendor\subtitle\audiocpp_backend.py   离线路径后端（热词 context 转发、Job Object 带走子进程）
-  host_server.py                        按需拉起模型（缓存 :155/:192）
+  vendor\subtitle\llama_backend.py      本地翻译 llama.cpp 生命周期（RLock 防死锁，R41）
+  host_server.py                        按需拉起模型（缓存 :155/:192）；start/stop 代数校验、
+                                        Origin 校验、崩溃监控、AppMutex（R41）
   tests\compare_with_reference.py       与人工字幕的质量对比工具
+  tests\test_pipeline_unit.py           管线单元冒烟（6 项，秒级，R41 新增）
 
 头显（VRFunScriptCast）
   funscriptcore\...\engine\AiSubtitleEngine.kt     流式上传分支（SSE 解析、STREAM_MAX_LAG_MS）

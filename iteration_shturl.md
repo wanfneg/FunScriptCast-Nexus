@@ -753,3 +753,94 @@ base_url+模型+Key / Ollama 模型+地址）**平铺在同一张卡里** ✗ �
   （实测 3s 块跑了 11 分钟才 89 批、每批仅 1 句 ✗）。本地 Sakura 单块 1–2 s ✓，3 秒块没问题 ✓。
 - **注意**：本轮评分里"召回 28.2%"是**假象** ✗ —— `compare_with_reference.py` 的分母是整片
   124 条人工字幕，而窗口只有 300 秒 ✓；同窗口对照才成立（云端与本地都是 35/124 ✓）。
+
+## Round 41（2026-09-17）：全仓库审查 + 三批修复（正确性/安全/打包链路）
+
+**任务**：用户指示"尽可能完善这个软件，先完整审查，再迭代优化，自行决策"。
+
+**审查方式**：核心翻译/ASR 管线逐行自查（约 3900 行）+ 两个并行子代理分别审查
+「宿主 host_server.py + UI」与「打包/工具脚本」。共产出 **3 个 P0、10 个 P1、23 个 P2**，
+本轮修复其中全部 P0/P1 与绝大多数 P2（3 个提交：cb4026e / d16a540 / 80e0850）。
+
+### P0（都会真实丢数据/开安全口子）
+
+1. **`#mtModel` 每秒被轮询清空**（app.js）：`syncSettingsUI` 每次渲染把输入框置空，
+   用户点保存（mousedown 已失焦）时读到空串 → 把配置里已保存的模型名覆盖成 ""。
+   → 删掉该行；2.5s 补拉配置在用户已输入时让路（`S.subCfgDirty`）。
+2. **术语表"一键清库"**（app.js + host）：保存数据源是前端内存；页面刚开/加载失败时
+   是空 dict，点保存 → 两张 4000+ 条词库被 `{}` 整表覆盖还报成功。→ 未加载完成禁止保存；
+   服务端空表覆盖非空词库必须带 `allow_empty`（前端 confirm 后补发）；保存失败如实提示。
+3. **本机 API 完全不设防**（host）：8790 的 POST 无 Origin 校验（任意网页可 CSRF
+   退出应用/改设置），`/api/subtitle/cache/clear` 的 key 无过滤（`..\..` 路径遍历删任意 .json）。
+   → Origin 同源校验（curl/头显不带 Origin 不受影响）；key 限定 24 位十六进制；
+   顺带：静态文件判定改 `is_relative_to`（兄弟目录前缀不再放行）、请求体 32MB 上限、
+   8791 去掉 `ACAO *`、500 只回通用文案、**8756 加回环门卫**（持明文 key 的服务绑着
+   0.0.0.0，非 `/transcribe*`/`/health` 的接口一律限 127.0.0.1——头显协议零改动，
+   实测：本机 /glossary 200、局域网 IP /glossary 403、局域网 /health 200）。
+
+### P1 修复精选（全部核实后动手）
+
+- **llama_backend 死锁**（自查发现）：`ensure_server` 持锁状态下超时收尾调 `stop_server`
+  再抢同一把非重入 Lock → 线程自锁死，所有翻译请求跟着挂。触发条件：模型加载超 180s
+  （慢盘/显存争抢）。→ `Lock`→`RLock`（单测锁死回归：tests/test_pipeline_unit.py）。
+- **流式桥阻塞事件循环**（自查发现）：上游 ASR 的 `http.client` 连接/读取是阻塞调用，
+  直接跑在 server_app 的事件循环里，ASR 期间 /health 与并发请求全部卡住。→
+  连接建立与逐块读取移入线程池；异常路径补关连接；翻译器懒加载加锁。
+- **MT 单句异常炸整批**（自查发现）：`_translate_mt` 的 work1 不接异常，一句后端瞬时
+  抖动 → `ex.map` 炸穿，同批已翻好的句子全部报废。→ 单句 try/except，失败只报废该句。
+- **start/stop 竞态**（子代理发现，核实）：字幕服务与 DLNA"启动中点停止"都是空操作，
+  之后进程照常拉起并显示运行中。→ 引入代数计数（`sub_gen`/`dlna_gen`），stop 递增，
+  start worker 登记前核对，不一致则撤下刚 Popen 的进程/刚监听的服务。
+- **子进程崩溃监控断档**（子代理发现，核实）：`_watch_subtitle` 只盯 3 秒，之后 OOM/
+  崩溃无日志无事件、状态静默回落"已停止"。→ 持续 `proc.wait()`，异常退出把退出码+输出
+  尾巴写进事件与 `sub_error`（正常停止靠代数区分，不打扰）。
+- **sub_reclaim 杀残留不带 /T**（子代理发现，核实）：与 `_kill_tree` 注释直接矛盾，
+  audiocpp 孙进程（~3GB）会存活且无人再清。→ 复用 `_kill_tree`。
+- **同步/DLNA 日志渲染冻结**（子代理发现，核实）：按"数组长度没变就跳过"去重，服务端
+  日志封顶后长度恒定 → 界面永久停在旧日志。→ 签名改"长度+最后一条内容"。
+- **DLNA 端口回显错位**（子代理发现，核实）：输入框显示运行时默认端口而非已保存设置，
+  点启动就把 8899 覆盖回用户配置。→ 显示 `settings.dlna_port`。
+
+### 打包链路（子代理发现，全部核实）
+
+- **junction 递归删除风险**：PS5.1 `Remove-Item -Recurse` 会**跟随 junction 删目标内容**
+  （PowerShell#621）——dist-app 的 models/.venv 指向仓库真身，重编一次 = 删 8GB 模型/venv。
+  → build_exe 删除前先 `cmd /c rmdir` 摘链接点，组装后自动 `mklink /J` 重建（坑 #6 脚本化）。
+- **坑 #12 脚本化关闭**：build_exe 覆盖 vendor 前摘出 dist-app 运行配置里的云端 key，
+  组装后回填（PS5.1 写无 BOM UTF-8——Python 端 `read_text(encoding='utf-8')` 遇 BOM 会炸）。
+  build_installer 走"暂存→ISCC 前摘除→打包后回填"：**安装包永远无 key，本机不丢**。
+- **哨兵升级为全树扫描**：原来只查 vendor\subtitle\config.json 一个文件；.bak 配置/
+  用户自建 json/tools 里的脚本都不在射程。→ 扫 dist-app 全树（排除 runtime/logs），
+  任何非空 api_key 拒绝出包。
+- **sync_distapp 重写**：覆盖面从"subtitle 顶层散文件"扩到 ui/ + vendor/dlna 递归比对
+  （此前改 UI 对打包版完全不生效且无工具可同步）；**config.json 默认排除**（仓库模板
+  覆盖运行配置 = 抹 key，与坑 #12 同族——重写时差点又把 dst 侧漏过滤变成"删除运行配置"，
+  -Check 实测时抓回）；`-Check` 有差异 exit 1 可做门禁；端口读 `FS_SUBTITLE_PORT`/`FS_HOST_PORT`。
+- **make_runtime 半成品防护**："runtime 已存在"路径先冒烟再放行；冒烟覆盖实际安装的
+  全部依赖（+zhconv/faster_whisper）；pip 失败主动删残目录。
+- **杂项**：fetch_llama `-Force` 先清空目标（跨 tag 不再新旧混存）+ 清 %TEMP%；
+  import_glossary_csv 失败 exit 1；setup.iss 声明 `AppMutex` + 宿主启动创建命名互斥量
+  （运行中升级不再裸报文件占用）；DLNA SSDP 失败撤下已监听 HTTP；设置/配置/术语表
+  写文件加锁；on_closing 现读 `close_to_tray`；adb 探测错误不再常驻同步徽章；
+  sync busy 检查收进锁；run_server 日志轮换失败降级追加（不再拦启动）。
+
+### 验证（全部真跑）
+
+- `tests/test_pipeline_unit.py`（新增，6 项）：llama 锁重入回归 / MT 单句隔离 /
+  逐句补救失败计数 / make_free 实例复用 / 中文式 JSON 归一化 / 退化漏译判据 —— 全过。
+- 全部 .py `py_compile` 通过；app.js `node --check` 通过；6 个 .ps1 Parser 零语法错 +
+  BOM 复查（重写文件曾丢 BOM，已补回——坑 #10 再次自证）。
+- **打包端到端**：`build_exe.ps1 -NoBump` 真跑 → junction 摘除/重建、key 回填均在日志可见；
+  打包版 exe `--no-window` 启动 → 宿主 API 拉起字幕服务 → `/health` 正常（backend=local）
+  → 回环门卫三态实测（本机 200 / 局域网管理接口 403 / 局域网 /health 200）→
+  `translate-test` 真翻一句通过（171.8ms，Sakura-7B 正常拉起）→ 停服务退宿主，
+  8756/8790/8081 全部无监听、无孤儿进程。
+- 未跑全片质量评测：本轮全部是**正确性/安全/健壮性**修复，不触碰提示词、判据与
+  翻译路径的语义（唯一语义相关的改动是 MT 单句异常隔离，单元测试覆盖）。
+
+### 遗留（下轮候选）
+
+1. **头显档位与后端联动**（R40 起 P1 建议）：切云端时自动提示/切 25s 档。
+2. **key 迁移** `%LOCALAPPDATA%` 或环境变量（现在虽已"打包带不走"，但仍明文在运行配置里）。
+3. `build_installer` 的版本号递增在构建成功前执行（失败虚涨版本）——低优先级。
+4. DLNA 媒体根改动仍需重启服务生效（界面无"需重启"提示）——体验项。
