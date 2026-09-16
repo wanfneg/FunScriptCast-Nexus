@@ -14,6 +14,31 @@ param([switch]$NoBump)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
+# ---- 哨兵：绝不让云端 API Key 进安装包 --------------------------------------
+# setup.iss 打包的是 dist-app\vendor\*，其中 config.json 可能留着你填的云端 key。
+# 本脚本第 1 步会用它自己的 vendor 覆盖 dist-app（配置来自仓库），所以"会被打包的"
+# 是**仓库那份** —— 只要它带 key 就直接拒绝，不给"手滑打包出去"的机会。
+$repoCfg = Join-Path $root 'vendor\subtitle\config.json'
+if (Test-Path $repoCfg) {
+    $k = ''
+    try { $k = (Get-Content $repoCfg -Raw -Encoding UTF8 | ConvertFrom-Json).translate.openai.api_key } catch { }
+    if ($k) {
+        throw ("拒绝打包：仓库配置里带着 API Key（{0}）。`n" +
+               "  请先清空 translate.openai.api_key（界面填的 key 应只留在 dist-app 的运行配置里），再重新打包。") -f $repoCfg
+    }
+}
+# dist-app 的运行配置里通常有你填的 key —— 它会被本脚本第 1 步覆盖掉（不会进包），
+# 但重编/安装后需要在界面里重新填一次，这里先提醒。
+$distCfg = Join-Path $root 'dist-app\vendor\subtitle\config.json'
+if (Test-Path $distCfg) {
+    $kd = ''
+    try { $kd = (Get-Content $distCfg -Raw -Encoding UTF8 | ConvertFrom-Json).translate.openai.api_key } catch { }
+    if ($kd) {
+        Write-Host "  提示：dist-app 运行配置里有云端 key —— 本次会覆盖为仓库配置（不进安装包），" -ForegroundColor Yellow
+        Write-Host "        安装/重编后请在界面「云端 API Key」里重新填一次。" -ForegroundColor Yellow
+    }
+}
+
 Write-Host "[1/4] 构建应用与 dist-app…" -ForegroundColor Cyan
 $exeArgs = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'build_exe.ps1'))
 if ($NoBump) { $exeArgs += '-NoBump' }
