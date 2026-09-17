@@ -358,7 +358,7 @@
               <h2>媒体根目录 <span class="badge" id="rootsBadge">0 个</span></h2>
             </div>
             <div class="panel-tools">
-              <input class="input mono" id="newRoot" placeholder="也可直接输入 / 粘贴路径">
+              <input class="input mono" id="newRoot">
               <button class="btn ghost" id="pickRoot"><svg class="ic"><use href="#i-folder-open"/></svg><span>选择文件夹</span></button>
               <button class="btn ghost" id="addRoot"><svg class="ic"><use href="#i-plus"/></svg><span>添加</span></button>
             </div>
@@ -461,33 +461,31 @@
             <div class="mt-group" data-mt-group="openai">
               <label class="field">
                 <span>base_url</span>
-                <input class="input mono" id="mtCloudBase" placeholder="https://api.openai.com/v1">
+                <input class="input mono" id="mtCloudBase">
               </label>
               <label class="field">
                 <span>模型</span>
-                <input class="input mono" id="mtCloudModel" placeholder="gpt-4o-mini / deepseek-chat / …">
+                <input class="input mono" id="mtCloudModel">
               </label>
               <label class="field">
                 <span>API Key</span>
-                <input class="input mono" id="mtCloudKey" type="password" autocomplete="off" placeholder="sk-...">
+                <input class="input mono" id="mtCloudKey" type="password" autocomplete="off">
               </label>
-              <div class="hint">Key 只存本机，回读打码</div>
             </div>
 
             <!-- 本地（Ollama）：只显示这一组 -->
             <div class="mt-group" data-mt-group="ollama">
               <label class="field">
                 <span>Ollama 模型</span>
-                <input class="input mono" id="mtModel" placeholder="qwen2.5:3b">
+                <input class="input mono" id="mtModel">
               </label>
               <label class="field">
                 <span>Ollama 地址</span>
-                <input class="input mono" id="mtBase" placeholder="http://127.0.0.1:11434">
+                <input class="input mono" id="mtBase">
               </label>
             </div>
 
             <div class="mt-group" data-mt-group="none">
-              <div class="hint">已关闭翻译：字幕只显示识别原文，不做中文翻译</div>
             </div>
 
             <div class="inline">
@@ -495,10 +493,6 @@
               <button class="btn" id="testMt">测试一句</button>
             </div>
             <div class="notice top-3" id="mtTestResult" style="display:none"></div>
-            <div class="notice warn top-3">
-              <svg class="ic"><use href="#i-triangle-alert"/></svg>
-              <div>本地模型与 ASR 共享显存；云端翻译不占</div>
-            </div>
         </div>
 
         <div class="panel card stack">
@@ -511,7 +505,6 @@
           </div>
           <div class="sub" id="cacheSub">—</div>
           <div class="sub" id="cacheTrSub">—</div>
-          <div class="hint">同一视频看第二遍直接复用字幕；改术语表或模型会自动失效重算</div>
         </div>
       </section>
 
@@ -545,7 +538,7 @@
             </label>
             <label class="field">
               <span>adb 路径</span>
-              <input class="input mono" id="syncAdbPath" placeholder="自动探测（ANDROID_HOME / PATH）">
+              <input class="input mono" id="syncAdbPath">
             </label>
           </div>
           <div class="row flush top-1">
@@ -568,13 +561,13 @@
             <label class="field">
               <span>本地脚本目录</span>
               <div class="inline">
-                <input class="input mono" id="syncScriptLocal" placeholder="E:\Funscript">
+                <input class="input mono" id="syncScriptLocal">
                 <button class="icon-btn" data-pick="syncScriptLocal" title="浏览"><svg class="ic"><use href="#i-folder-open"/></svg></button>
               </div>
             </label>
             <label class="field">
               <span>设备目标目录</span>
-              <input class="input mono" id="syncScriptDevice" placeholder="/sdcard/Funscript">
+              <input class="input mono" id="syncScriptDevice">
             </label>
             <div class="sub" id="syncScriptResult">尚未同步</div>
           </div>
@@ -590,13 +583,13 @@
             <label class="field">
               <span>本地视频目录</span>
               <div class="inline">
-                <input class="input mono" id="syncVideoLocal" placeholder="E:\Media\VR">
+                <input class="input mono" id="syncVideoLocal">
                 <button class="icon-btn" data-pick="syncVideoLocal" title="浏览"><svg class="ic"><use href="#i-folder-open"/></svg></button>
               </div>
             </label>
             <label class="field">
               <span>设备目标目录</span>
-              <input class="input mono" id="syncVideoDevice" placeholder="/sdcard/Movies">
+              <input class="input mono" id="syncVideoDevice">
             </label>
             <div class="sub" id="syncVideoResult">尚未同步</div>
           </div>
@@ -751,7 +744,6 @@
                 <button data-motion-opt="off" aria-selected="false">关闭</button>
               </div>
             </label>
-            <div class="hint">精简/关闭可降低低配机器的 GPU 占用</div>
           </div>
 
           <div class="panel card span-2">
@@ -777,7 +769,6 @@
                 <button class="icon-btn" id="copyLanApi" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
               </div>
             </div>
-            <div class="hint">头显用这个地址连本机；连不上时先确认在同一局域网</div>
             <div class="top-4">
               <button class="btn danger" id="quitApp"><svg class="ic"><use href="#i-power"/></svg><span>退出应用</span></button>
             </div>

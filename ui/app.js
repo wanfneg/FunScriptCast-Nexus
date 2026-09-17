@@ -616,9 +616,6 @@
       $("#mtCloudBase").value = oa.base_url || "";
       $("#mtCloudModel").value = oa.model || "";
       $("#mtCloudKey").value = "";
-      $("#mtCloudKey").placeholder = oa.api_key_set
-        ? "已保存（尾号 " + (oa.api_key_tail || "****") + "），留空表示不修改"
-        : "sk-...（留空则用环境变量 " + (oa.api_key_env || "OPENAI_API_KEY") + "）";
       /* 术语表总开关（glossary.enabled，缺省视为开）。开关状态只在用户正在
          操作它时不回填——由 S.subCfgDirty 拦（checkbox 也触发 input 事件） */
       var gl = c.glossary || {};
