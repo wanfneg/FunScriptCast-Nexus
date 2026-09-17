@@ -1222,3 +1222,24 @@ VAD，没有逐句合并/最短时长那套），所以这两行的绝对数字�
   恰是 qwen+whisper 兜底组合理论上能覆盖的场景——未实测）。
 - 显存：whisper float16 ≈1.6GB + Sakura-7B 4.2GB ≈ 5.8GB / 8GB ✓（且该模式下不再
   起 audiocpp 进程）。
+
+### Round 45 追加（2026-09-18）：识别引擎双选一上线（用户拍板"共存接入，供用户选择"）
+
+**改动**（提交 `89728d2`）：
+
+1. **UI**：「识别与分段」卡新增"识别引擎（二选一）"选择器——Qwen3（漏识最少 98.4%，默认）/
+   Whisper（内容 +12%、时序更准、快 3 倍），与翻译后端选择器同一套交互；保存并入
+   `/api/subtitle/config` 的 asr 深合并。字幕状态页新增 **ASR Engine 实况字段**，显示
+   **实际生效**引擎——选了 Whisper 但模型缺失回落 Qwen3 时，与选择器不一致一眼可见。
+2. **回退链**：`_make_asr` 改 **whisper → audiocpp → pytorch**。此前 whisper 失败直落
+   PyTorch，而轻量运行时没有 torch ⇒ lifespan 炸 = 整场零字幕；现在落在生产验证过的
+   audiocpp，`/health.asr_backend` 如实上报实际引擎（UI 与选择器对照即可发现回落）。
+3. **归一**：`loadSubtitleConfig` 把 faster-whisper/kotoba/cpp/ggml 别名归一到 select
+   两个取值；兜底值与首项一致（防止配置缺 backend 时一次保存静默换引擎）。
+
+**验证**：单测 10/10；`node --check`；`tests/ui_shot.js` 截图回归零 issue（字幕页选择器/
+提示/ASR Engine 字段渲染正常，`tests/_shots/subtitle-dark.png` 亲验）；配置读写闭环
+（GET audiocpp → SET whisper → 读回 → 还原）；dist-app 同步后打包版全链路冒烟绿。
+
+**部署**：`vendor/subtitle` + `ui` 已同步到 `89728d2`；宿主 exe 本轮未动（无需重编），
+运行配置 asr.backend 仍为 audiocpp——切默认由用户在界面操作。
