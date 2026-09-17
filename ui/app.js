@@ -588,6 +588,67 @@
     });
   }
 
+  /* ---------- 模型下载：识别 / 翻译模型缺什么下什么（走 hf-mirror，宿主负责） ---------- */
+  var MODEL_NAMES = {
+    "whisper": "识别模型（Whisper）",
+    "sakura-7b": "翻译模型 · Sakura-7B（推荐）",
+    "sakura-1.5b": "翻译模型 · Sakura-1.5B（轻量）"
+  };
+  var modelPollTimer = 0;
+  function loadModels() {
+    api("/api/models/catalog").then(function (r) {
+      if (!r || !r.ok) return;
+      var box = $("#modelDl");
+      if (!box) return;
+      box.innerHTML = "";
+      var busy = false;
+      (r.items || []).forEach(function (m) {
+        var stTxt, btnTxt = "下载", canDl = false;
+        if (m.state === "downloading") { stTxt = "下载中 " + (m.pct || 0) + "%"; busy = true; }
+        else if (m.state === "error") { stTxt = "下载失败：" + (m.error || "未知错误"); btnTxt = "重试"; canDl = true; }
+        else if (m.installed) { stTxt = "已安装"; }
+        else { stTxt = "未安装 · 约 " + (m.size_gb || "?") + " GB"; canDl = true; }
+
+        var row = document.createElement("div");
+        row.className = "row flush";
+        var ig = document.createElement("div");
+        ig.className = "grow";
+        var nm = document.createElement("div");
+        nm.className = "name";
+        nm.textContent = MODEL_NAMES[m.id] || m.label || m.id;
+        var st = document.createElement("div");
+        st.className = "sub";
+        st.textContent = stTxt;
+        ig.appendChild(nm); ig.appendChild(st);
+        row.appendChild(ig);
+        if (canDl) {
+          var b = document.createElement("button");
+          b.className = "btn ghost";
+          b.textContent = btnTxt;
+          b.addEventListener("click", function () {
+            b.disabled = true;
+            api("/api/models/download", "POST", { id: m.id }).then(function (rr) {
+              if (rr && rr.ok) { loadModels(); }
+              else { b.disabled = false; toast("下载失败", (rr && rr.error) || "", "err"); }
+            });
+          });
+          row.appendChild(b);
+        }
+        box.appendChild(row);
+
+        // 翻译模型下载完成 → 让本地模型下拉重新枚举（新模型立即可选）
+        if (m.state === "done" && m.role === "translate" && !S.modelDoneSeen) S.modelDoneSeen = {};
+        if (m.state === "done" && m.role === "translate" && !S.modelDoneSeen[m.id]) {
+          S.modelDoneSeen[m.id] = true;
+          S.localModels = null;
+          loadSubtitleConfig();
+        }
+      });
+      clearTimeout(modelPollTimer);
+      if (busy) modelPollTimer = setTimeout(loadModels, 1500);
+    });
+  }
+
   function loadSubtitleConfig() {
     api("/api/subtitle/config").then(function (r) {
       if (!r.ok) return;
@@ -1146,6 +1207,7 @@
     poll(false);
     loadSubtitleConfig();
     loadGlossary();
+    loadModels();
     // 2.5s 后补拉一次字幕配置（防首次请求早于服务就绪），但用户已经开始改
     // 配置输入框时不要覆盖他的输入
     setTimeout(function () { if (!S.subCfgDirty) loadSubtitleConfig(); }, 2500);

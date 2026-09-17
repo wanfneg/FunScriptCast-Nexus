@@ -1321,3 +1321,33 @@ tools 清单自动携带 → 安装即开箱可用。实测打包版解析到自
 funscript_sync_ui / video_sync_ui 克隆里的预填引用一并删除，空路径直接报可读错误。
 ⚠️ 教训：删公共函数前必须全仓 grep 引用——*_ui.py 克隆文件看似死代码，实际被
 vr_dlna 按需 import（本次差点埋一个运行时 ImportError）。
+
+## Round 47（2026-09-18）：模型一键下载 —— "新机器开箱 → 界面点两下 → 模型齐了"
+
+**用户要求**：安装包装完即可用正常功能；要用 AI 字幕就界面点下载，或手动放模型（并问
+手动放置会不会自动加载）。
+
+**实现**（提交本轮）：
+1. **宿主下载管理**（不依赖字幕服务活着）：`MODELS_CATALOG` 三项——识别 whisper
+   （5 文件，HF 缓存标准结构 refs/main→snapshots/，faster-whisper 直接认领）、
+   翻译 Sakura-7B（4GB iq4xs）/ Sakura-1.5B（1.2GB q5ks，单文件落 models\<目录>\）。
+   全部走 **hf-mirror**，直连（绕过系统代理，fetch 系教训）。下载器：**断点续传**
+   （.part + Range）+ **原子替换** + 进度回调；重试自动跳过已完成文件。
+2. **接口**：GET /api/models/catalog（状态：installed/absent/downloading/error+pct）、
+   POST /api/models/download {id}。
+3. **UI**：「识别与翻译」卡新增模型区三行——已安装 ✓ / 未安装（大小）+下载按钮 /
+   下载中 xx% 轮询 / 失败原因+重试。翻译模型下载完成自动刷新本地模型下拉。
+4. **识别链不崩**：`_AsrUnavailable` 终态兜底——全新安装没模型时字幕服务照常启动
+   （此前 whisper→audiocpp→pytorch 全失败会 lifespan 崩），/health 增 `asr_ready=false`，
+   头显端不再误报就绪；下载完重启服务即恢复。
+5. **默认引擎改 whisper**（config 模板）：全新安装的可下载路径只有 whisper 是自洽的
+   （audiocpp 需要 portable 二进制+Qwen3 模型，不随包）；dev 机器 dist-app 下次重编后
+   backend 也会翻成 whisper（模型已在缓存，R45 A/B 本就更优）。
+
+**验证**：单测 12 项（+下载器：本地 HTTP 实测进度/Range 206 续传/原子替换）；
+打包版实测 catalog 三项 installed=true、对已装模型发起下载→文件跳过→状态回 installed
+（worker 全链路）、截图模型区正常。
+
+**手动放置的回答**：翻译模型放 `models\<模型名>\`（.gguf）→ 刷新页面即出现在下拉
+（枚举实时）→ 选中保存 → 重启字幕服务生效；识别模型手动放置 = 放 HF 缓存标准结构
+（繁琐，推荐界面下载）。

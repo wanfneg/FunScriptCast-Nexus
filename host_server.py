@@ -1238,7 +1238,8 @@ def headset_status() -> dict:
     cloud = backend in ("openai", "cloud")
     return {
         "ok": True,
-        "ready": status == "ready",
+        # 模型没下载时服务虽在但识别不可用：不能给头显报 ready（否则它白推音频）
+        "ready": status == "ready" and h.get("asr_ready") is not False,
         "status": status,
         "error": st.get("error"),
         "asr": h.get("asr_model"),
@@ -1250,6 +1251,171 @@ def headset_status() -> dict:
         "code_sig": (h or {}).get("code_sig"),
         "host_sig": _HOST_CODE_SIG,
     }
+
+
+# ================================================================ 模型下载
+# 应用自带：adb（tools/adb）与 llama-server 运行时（vendor/llama，构建机 fetch_llama）。
+# 模型不随包（单个 1.2~4GB）：全新安装后在界面一键下载（走 hf-mirror 镜像），
+# 或手动放置——翻译模型放进 models/<目录>/ 后刷新界面即出现在下拉里。
+#
+# whisper 的落盘位置是 HF 缓存标准结构（refs/main -> snapshots/<commit>/），
+# faster-whisper 的 local_files_only 能直接认领，与"用户用别的方式下载"等价。
+_HF_MIRROR = "https://hf-mirror.com"
+_HF_HUB_DIR = Path.home() / ".cache" / "huggingface" / "hub"
+
+MODELS_CATALOG = [
+    {
+        "id": "whisper",
+        "role": "asr",
+        "label": "识别模型（Whisper · 日文特化）",
+        "repo_dirname": "models--kotoba-tech--kotoba-whisper-v2.0-faster",
+        "commit": "local-download",
+        "size_gb": 1.4,
+        "files": [
+            {"rel": fn,
+             "url": _HF_MIRROR + "/kotoba-tech/kotoba-whisper-v2.0-faster/resolve/main/" + fn}
+            for fn in ("config.json", "preprocessor_config.json",
+                       "tokenizer.json", "vocabulary.json", "model.bin")
+        ],
+    },
+    {
+        "id": "sakura-7b",
+        "role": "translate",
+        "label": "翻译模型 · Sakura-7B（推荐）",
+        "dest_dir": MODELS_DIR / "Sakura-7B-Qwen2.5-v1.0",
+        "size_gb": 4.0,
+        "files": [
+            {"rel": "sakura-7b-qwen2.5-v1.0-iq4xs.gguf",
+             "url": _HF_MIRROR + "/SakuraLLM/Sakura-7B-Qwen2.5-v1.0-GGUF/resolve/main/sakura-7b-qwen2.5-v1.0-iq4xs.gguf"},
+        ],
+    },
+    {
+        "id": "sakura-1.5b",
+        "role": "translate",
+        "label": "翻译模型 · Sakura-1.5B（轻量）",
+        "dest_dir": MODELS_DIR / "Sakura-1.5B-Qwen2.5-v1.0",
+        "size_gb": 1.2,
+        "files": [
+            {"rel": "sakura-1.5b-qwen2.5-v1.0-q5ks.gguf",
+             "url": _HF_MIRROR + "/SakuraLLM/Sakura-1.5B-Qwen2.5-v1.0-GGUF/resolve/main/sakura-1.5b-qwen2.5-v1.0-q5ks.gguf"},
+        ],
+    },
+]
+
+_MODEL_DL: dict = {}
+_DL_LOCK = threading.Lock()
+# 直连 hf-mirror（绕过系统代理：代理软件没开时 urllib 读注册表代理会 TLS 失败，
+# 与 fetch_llama / fetch_adb 的 NO_PROXY 教训同源）
+_DL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _download_to_file(url: str, dest: Path, prog=None) -> None:
+    """流式下载到 .part（支持断点续传），完成后原子替换。prog(done, total)。"""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+    done = part.stat().st_size if part.exists() else 0
+    headers = {"User-Agent": "FunScriptCast-Nexus"}
+    if done:
+        headers["Range"] = "bytes=%d-" % done
+    req = urllib.request.Request(url, headers=headers)
+    with _DL_OPENER.open(req, timeout=60) as r, open(part, "ab") as f:
+        total = int(r.headers.get("Content-Length") or 0) + done
+        if total and done >= total:
+            os.replace(part, dest)           # 续传发现已下完（上次在结尾中断）
+            if prog:
+                prog(done, total)
+            return
+        while True:
+            chunk = r.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            if prog:
+                prog(done, total)
+    if done == 0:
+        raise RuntimeError("服务器没有返回数据：" + url)
+    os.replace(part, dest)
+
+
+def _model_installed(e: dict) -> bool:
+    if e.get("repo_dirname"):                # whisper：HF 缓存结构
+        repo = _HF_HUB_DIR / e["repo_dirname"]
+        ref = repo / "refs" / "main"
+        try:
+            commit = ref.read_text(encoding="utf-8").strip()
+        except Exception:
+            commit = e["commit"]
+        snap = repo / "snapshots" / commit
+        return all((snap / f["rel"]).is_file() for f in e["files"])
+    return all((e["dest_dir"] / f["rel"]).is_file() for f in e["files"])
+
+
+def _model_dl_worker(e: dict) -> None:
+    id_ = e["id"]
+    try:
+        if e.get("repo_dirname"):
+            base = _HF_HUB_DIR / e["repo_dirname"] / "snapshots" / e["commit"]
+        else:
+            base = Path(e["dest_dir"])
+        n = max(1, len(e["files"]))
+        for i, f in enumerate(e["files"]):
+            dest = base / f["rel"]
+            if dest.is_file() and dest.stat().st_size > 0:
+                continue                     # 重试/断点：已完成的文件跳过
+
+            def prog(done, total, _i=i):
+                frac = (_i + (done / total if total else 0.0)) / n
+                with _DL_LOCK:
+                    st = _MODEL_DL[id_]
+                    st["pct"] = round(frac * 100)
+                    st["bytes"] = done
+                    st["total"] = total
+
+            _download_to_file(f["url"], dest, prog)
+        if e.get("repo_dirname"):
+            ref = _HF_HUB_DIR / e["repo_dirname"] / "refs" / "main"
+            ref.parent.mkdir(parents=True, exist_ok=True)
+            ref.write_text(e["commit"] + chr(10), encoding="utf-8")
+        with _DL_LOCK:
+            _MODEL_DL[id_].update(state="done", pct=100)
+        RT.add_log("模型下载完成：" + e["label"], "ok")
+    except Exception as exc:
+        with _DL_LOCK:
+            _MODEL_DL[id_].update(state="error", error=type(exc).__name__ + ": " + str(exc))
+        RT.add_log("模型下载失败：" + e["label"] + "（" + str(exc) + "）", "err")
+
+
+def models_catalog_payload() -> dict:
+    items = []
+    for e in MODELS_CATALOG:
+        installed = _model_installed(e)
+        with _DL_LOCK:
+            st = dict(_MODEL_DL.get(e["id"]) or {})
+        state = "downloading" if st.get("state") == "downloading" else (
+            "installed" if installed else (st.get("state") or "absent"))
+        items.append({
+            "id": e["id"], "role": e["role"], "label": e["label"],
+            "size_gb": e["size_gb"], "installed": installed,
+            "state": state, "pct": st.get("pct", 0), "error": st.get("error", ""),
+        })
+    return {"ok": True, "items": items}
+
+
+def model_download_start(body: dict) -> dict:
+    id_ = str(body.get("id") or "")
+    e = next((x for x in MODELS_CATALOG if x["id"] == id_), None)
+    if e is None:
+        return {"ok": False, "error": "未知的模型"}
+    with _DL_LOCK:
+        st = _MODEL_DL.get(id_)
+        if st and st.get("state") == "downloading":
+            return {"ok": True, "state": "downloading"}
+        _MODEL_DL[id_] = {"state": "downloading", "pct": 0, "error": ""}
+    threading.Thread(target=_model_dl_worker, args=(e,), daemon=True,
+                     name="model-dl-" + id_).start()
+    RT.add_log("开始下载模型：" + e["label"], "info")
+    return {"ok": True, "state": "downloading"}
 
 
 # ================================================================ 指标
@@ -1450,6 +1616,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(subtitle_config())
             elif path == "/api/subtitle/models":
                 self._json(subtitle_models())
+            elif path == "/api/models/catalog":
+                self._json(models_catalog_payload())
             elif path in ("/", "/index.html"):
                 self._file("index.html")
             else:
@@ -1510,6 +1678,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(sub_reclaim())
             elif path == "/api/subtitle/config":
                 self._json(save_subtitle_config(body))
+            elif path == "/api/models/download":
+                self._json(model_download_start(body))
             elif path == "/api/subtitle/translate-test":
                 self._json(sub_translate_selftest((body.get("text") or "").strip()))
             elif path == "/api/glossary/save":

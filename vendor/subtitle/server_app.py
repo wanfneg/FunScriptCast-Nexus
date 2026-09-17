@@ -162,6 +162,29 @@ async def _idle_reaper() -> None:
             os._exit(0)
 
 
+class _AsrUnavailable:
+    """识别链终态兜底：三个后端都不可用（典型：全新安装还没下载识别模型）。
+
+    此前最后一级 PyTorch 引擎缺依赖会直接抛异常 → lifespan 崩 → 字幕服务永远起不来，
+    用户连"下载模型"的入口都进不去。现在保证服务能起、/health 能看到原因；
+    /transcribe 返回带 error 的空结果，界面的「模型」区负责引导下载。
+    """
+
+    backend_kind = "unavailable"
+    vad = None
+    use_aligner = False
+    load_s = 0.0
+    model = ""
+    error = "识别模型未安装：请在 PC 端「识别与翻译」卡下载模型（或重启字幕服务）"
+
+    def stop_server(self) -> None:
+        pass
+
+    def transcribe(self, *args, **kwargs) -> dict:
+        return {"language": None, "segments": [], "asr_ms": 0.0, "skipped": True,
+                "error": self.error}
+
+
 def _make_asr(cfg: dict, glossary):
     """按 asr.backend 选引擎。
 
@@ -206,9 +229,14 @@ def _make_asr(cfg: dict, glossary):
             return be
         except Exception as e:
             print(f"[server] audiocpp 不可用（{type(e).__name__}: {e}），回退 PyTorch")
-    engine = AsrEngine(cfg, glossary)
-    print(f"[server] ASR 后端 = pytorch（加载 {engine.load_s:.1f}s）")
-    return engine
+    try:
+        engine = AsrEngine(cfg, glossary)
+        print(f"[server] ASR 后端 = pytorch（加载 {engine.load_s:.1f}s）")
+        return engine
+    except Exception as e:
+        print(f"[server] ⚠️ PyTorch 引擎不可用（{type(e).__name__}: {e}），进入未就绪模式"
+              f"（下载识别模型后重启字幕服务即恢复）")
+        return _AsrUnavailable()
 
 
 @asynccontextmanager
@@ -291,8 +319,10 @@ def health():
         "pid": os.getpid(),
         "started_at": _BOOT_TS,
         "asr_backend": getattr(asr, "backend_kind", None)
-                       or str((CFG.get("asr", {}) or {}).get("backend", "pytorch")),
+                       or str((CFG.get("asr") or {}).get("backend", "pytorch")),
         "asr_model": m,
+        # 识别是否真的可用（模型没下载时服务照常起，但这里为 False，头显端据此不误报就绪）
+        "asr_ready": getattr(asr, "backend_kind", "unavailable") != "unavailable",
         "device": (CFG.get("asr", {}) or {}).get("device"),
         "vad": asr.vad is not None if asr else False,
         "aligner": asr.use_aligner if asr else False,

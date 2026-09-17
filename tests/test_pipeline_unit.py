@@ -239,6 +239,56 @@ def t_glossary_enabled_switch():
     assert g2.enabled is True and g2.match("ja", "悠亜"), "缺省必须视为开启"
 
 
+# 12 ------------------------------ 模型下载器（进度/断点续传/原子替换）
+def t_model_downloader():
+    import tempfile, threading, http.server
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import host_server as hs
+    d = Path(tempfile.mkdtemp())
+    payload = b"A" * 300000 + b"B" * 12345
+    src = d / "src.bin"
+    src.write_bytes(payload)
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            data = src.read_bytes()
+            rng = self.headers.get("Range")
+            if rng:
+                start = int(rng.split("=")[1].split("-")[0])
+                body = data[start:]
+                self.send_response(206)
+                self.send_header("Content-Range",
+                                 "bytes %d-%d/%d" % (start, len(data) - 1, len(data)))
+            else:
+                body = data
+                self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+
+    dest = d / "out" / "model.bin"
+    seen = []
+    hs._download_to_file("http://127.0.0.1:%d/f.bin" % port, dest,
+                         prog=lambda done, total: seen.append((done, total)))
+    assert dest.read_bytes() == payload, "下载内容必须完整"
+    assert not list(dest.parent.glob("*.part")), ".part 必须被原子替换掉"
+    assert seen and seen[-1][0] == len(payload), "进度必须走到收尾"
+
+    # 断点续传：预置半个 .part → 只补剩余（Range 206）
+    part = dest.with_suffix(".bin.part")
+    part.write_bytes(payload[:1000])
+    hs._download_to_file("http://127.0.0.1:%d/f.bin" % port, dest)
+    assert dest.read_bytes() == payload, "续传后内容必须完整"
+    srv.shutdown()
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -252,6 +302,7 @@ if __name__ == "__main__":
     check("whisper 后端过滤与接口（懒加载/铁律）", t_whisper_backend_filters)
     check("keep_segment 跨块去重", t_keep_segment)
     check("术语表总开关（enabled 热更新/数据保留）", t_glossary_enabled_switch)
+    check("模型下载器（进度/断点续传/原子替换）", t_model_downloader)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
