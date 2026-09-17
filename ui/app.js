@@ -559,6 +559,35 @@
   }
 
   /* ---------------------------------------------------------- 字幕配置 / 术语表 */
+  /* 本地翻译模型下拉：列表来自 /api/subtitle/models（安装目录 models\ 下的 GGUF）。
+     进程内缓存一份；当前配置值不在列表里（手动改过 config）时补一个「当前」项，
+     绝不静默改掉用户的配置。 */
+  function renderLocalModelSelect(current) {
+    var sel = $("#mtLocalModel");
+    if (!sel) return;
+    function paint(models) {
+      sel.innerHTML = "";
+      (models || []).forEach(function (m) {
+        var o = document.createElement("option");
+        o.value = m.path;
+        o.textContent = m.name;
+        sel.appendChild(o);
+      });
+      if (current && !(models || []).some(function (m) { return m.path === current; })) {
+        var o = document.createElement("option");
+        o.value = current;
+        o.textContent = "（当前）" + String(current).split("/").pop().replace(/\.gguf$/i, "");
+        sel.appendChild(o);
+      }
+      sel.value = current || (models && models[0] ? models[0].path : "");
+    }
+    if (S.localModels) { paint(S.localModels); return; }
+    api("/api/subtitle/models").then(function (r) {
+      S.localModels = (r && r.ok) ? (r.models || []) : [];
+      paint(S.localModels);
+    });
+  }
+
   function loadSubtitleConfig() {
     api("/api/subtitle/config").then(function (r) {
       if (!r.ok) return;
@@ -582,9 +611,9 @@
       var ollama = tr.ollama || {};
       $("#mtModel").value = ollama.model || "";
       $("#mtBase").value = ollama.base_url || "";
-      /* 本地 llama.cpp（模型在安装目录 models\ 下） */
+      /* 本地 llama.cpp：下拉选模型（数据来自 /api/subtitle/models） */
       var loc = tr.local || {};
-      $("#mtLocalModel").value = loc.model || "";
+      renderLocalModelSelect(loc.model || "");
       /* 云端：标准 OpenAI 兼容（base_url + model + key），key 不回明文，只显示尾号 */
       var oa = tr.openai || {};
       $("#mtCloudBase").value = oa.base_url || "";

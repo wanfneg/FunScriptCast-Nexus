@@ -1448,6 +1448,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(subtitle_cache_list())
             elif path == "/api/subtitle/config":
                 self._json(subtitle_config())
+            elif path == "/api/subtitle/models":
+                self._json(subtitle_models())
             elif path in ("/", "/index.html"):
                 self._file("index.html")
             else:
@@ -1685,6 +1687,31 @@ class HeadsetHandler(BaseHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------- 字幕服务配置 / 术语表
+def subtitle_models() -> dict:
+    """枚举安装目录 models\ 下的 GGUF（UI 本地翻译模型下拉的数据源）。
+
+    展示名优先用模型目录名（如 Sakura-7B-Qwen2.5-v1.0）；同一目录有多个量化
+    或模型裸放在根目录时退回文件名（自带量化后缀，可区分）。path 是相对
+    vendor\subtitle 的路径——与 config 的既有格式一致，translate_engine 按
+    自身目录解析，UI 选什么就存什么，用户不再接触路径。
+    """
+    out = []
+    if MODELS_DIR.exists():
+        seen = set()
+        for p in sorted(MODELS_DIR.rglob("*.gguf")):
+            try:
+                rel = os.path.relpath(p, SUBTITLE_DIR).replace("\\", "/")
+                size_gb = p.stat().st_size / (1024 ** 3)
+            except Exception:
+                continue
+            label = p.parent.name if p.parent != MODELS_DIR else p.stem
+            if label in seen:          # 同目录多个量化版本：用文件名区分
+                label = p.stem
+            seen.add(label)
+            out.append({"name": label, "path": rel, "size_gb": round(size_gb, 1)})
+    return {"ok": True, "dir": str(MODELS_DIR), "models": out}
+
+
 def subtitle_config() -> dict:
     cfg_file = SUBTITLE_DIR / "config.json"
     try:

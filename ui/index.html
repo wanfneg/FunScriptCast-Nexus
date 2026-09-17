@@ -300,7 +300,6 @@
               <button class="btn ghost" id="qaSubStart"><svg class="ic"><use href="#i-play"/></svg><span>启动字幕服务</span></button>
               <button class="btn ghost" id="qaSubStop"><svg class="ic"><use href="#i-square"/></svg><span>停止字幕服务</span></button>
             </div>
-            <div class="hint">停止字幕服务会结束子进程并释放显存（约 3.7 GB）</div>
           </div>
 
           <div class="panel card">
@@ -365,7 +364,6 @@
             </div>
           </div>
           <div id="rootList"><div class="empty">还没有媒体根目录</div></div>
-          <div class="hint">支持云盘/网盘挂载目录；目录浏览零探测，视频再多也秒开</div>
         </div>
 
         <div class="panel card stack">
@@ -444,10 +442,11 @@
             <!-- 本地（llama.cpp）：只显示这一组 -->
             <div class="mt-group" data-mt-group="local">
               <label class="field">
-                <span>本地模型（相对 vendor\subtitle 的 GGUF 路径）</span>
-                <input class="input mono" id="mtLocalModel" placeholder="../../models/Sakura-7B-Qwen2.5-v1.0/sakura-7b-qwen2.5-v1.0-iq4xs.gguf">
+                <span>本地模型</span>
+                <select class="input" id="mtLocalModel">
+                  <option value="">加载中…</option>
+                </select>
               </label>
-              <div class="hint">模型放在安装目录的 models\ 下，由字幕服务按需拉起 llama-server：不联网、不花额度，占显存</div>
             </div>
 
             <!-- 云端（OpenAI 兼容）：只显示这一组 -->
@@ -464,7 +463,7 @@
                 <span>API Key</span>
                 <input class="input mono" id="mtCloudKey" type="password" autocomplete="off" placeholder="sk-...">
               </label>
-              <div class="hint">标准 OpenAI 格式：POST {base_url}/chat/completions + Bearer，任何兼容服务都能填。Key 只存在本机 config.json，回读接口会打码</div>
+              <div class="hint">Key 只存本机，回读打码</div>
             </div>
 
             <!-- 本地（Ollama）：只显示这一组 -->
@@ -477,7 +476,6 @@
                 <span>Ollama 地址</span>
                 <input class="input mono" id="mtBase" placeholder="http://127.0.0.1:11434">
               </label>
-              <div class="hint">Ollama 的模型库是全局的（模型不随安装目录走），仅作备用</div>
             </div>
 
             <div class="mt-group" data-mt-group="none">
@@ -488,12 +486,10 @@
               <button class="btn primary" id="saveMt"><svg class="ic"><use href="#i-save"/></svg><span>保存翻译设置</span></button>
               <button class="btn" id="testMt">测试一句</button>
             </div>
-            <div class="hint top-3">保存后需重启字幕服务；「测试一句」用已保存的配置真发一句，并显示上游原始报错</div>
-            <div class="hint">指定什么就用什么：某句翻译失败时该句留空（头显跳过），不会静默替换成免费机翻</div>
             <div class="notice top-3" id="mtTestResult" style="display:none"></div>
             <div class="notice warn top-3">
               <svg class="ic"><use href="#i-triangle-alert"/></svg>
-              <div>本地翻译模型与 ASR 同驻 8GB 显存会吃紧（实测 7.4/8.2 GB）；云端翻译不占显存</div>
+              <div>本地模型与 ASR 共享显存；云端翻译不占</div>
             </div>
           </div>
 
@@ -505,13 +501,12 @@
               </div>
             </div>
             <label class="field">
-              <span>识别引擎（二选一）</span>
+              <span>识别引擎</span>
               <select class="input" id="asrBackend">
-                <option value="audiocpp">Qwen3 · 漏识最少（98.4%）· 时序准 — 默认</option>
-                <option value="whisper">Whisper · 内容更全（+12%）· 时序更准 · 快 3 倍</option>
+                <option value="audiocpp">Qwen3（默认）</option>
+                <option value="whisper">Whisper</option>
               </select>
             </label>
-            <div class="hint">两者共用同一上传协议，切换只影响 PC 侧识别，头显零改动；保存后需重启字幕服务。Whisper 的模型（约 1.4GB）需已在本机缓存，缺失时会自动回落 Qwen3 并在日志说明</div>
             <div class="grid g2 gap-2">
               <label class="field"><span>模型路径</span><input class="input mono" id="asrModel"></label>
               <label class="field"><span>设备</span><input class="input mono" id="asrDevice"></label>
@@ -534,11 +529,7 @@
           </div>
           <div class="sub" id="cacheSub">—</div>
           <div class="sub" id="cacheTrSub">—</div>
-          <div class="hint">
-            同一视频看过一遍后，字幕会按「视频 + 语言 + 术语表/模型指纹」缓存；
-            下次播放直接读取，不再重跑识别。改术语表或模型会自动失效重算。
-            翻译另有一层按「原文」的缓存，同一句话出现在别的视频里也不会重复请求。
-          </div>
+          <div class="hint">同一视频看第二遍直接复用字幕；改术语表或模型会自动失效重算</div>
         </div>
       </section>
 
@@ -804,11 +795,7 @@
                 <button class="icon-btn" id="copyLanApi" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
               </div>
             </div>
-            <div class="hint">
-              头显（Quest / PICO）用这个地址查字幕缓存、并在需要时请本机把模型拉起来。
-              它只开放「查缓存 / 查状态 / 启动字幕服务」三个接口，设置与术语表等仍只在
-              本机可访问。若头显一直提示「PC 端没响应」，先确认它和电脑在同一局域网。
-            </div>
+            <div class="hint">头显用这个地址连本机；连不上时先确认在同一局域网</div>
             <div class="top-4">
               <button class="btn danger" id="quitApp"><svg class="ic"><use href="#i-power"/></svg><span>退出应用</span></button>
             </div>
