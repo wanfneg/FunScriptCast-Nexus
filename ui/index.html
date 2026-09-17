@@ -248,13 +248,20 @@
               </div>
             </div>
 
-            <!-- 状态驱动的信号波形：服务在跑才有振幅。纯 canvas 绘制，
-                 没有节点开销，也不装第三方图表库。 -->
-            <div class="signal">
-              <canvas id="pulseCanvas"></canvas>
-              <div class="signal-axis">
-                <span class="mono">SIGNAL</span>
-                <span class="signal-line"><i id="pulseState">IDLE</i></span>
+            <!-- 系统负载三环：CPU / GPU 利用率 / 内存。替代旧的 SIGNAL 波形动画
+                 （常驻 60fps canvas 重绘）；圆环只在数值变化时更新，占用近零。 -->
+            <div class="gauge-row">
+              <div class="gauge">
+                <div class="ring" id="cpuRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
+                <div><div class="t">CPU</div><div class="d mono" id="cpuTxt">—</div></div>
+              </div>
+              <div class="gauge">
+                <div class="ring" id="gpuUtilRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
+                <div><div class="t">GPU</div><div class="d mono" id="gpuUtilTxt">—</div></div>
+              </div>
+              <div class="gauge">
+                <div class="ring" id="ramRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
+                <div><div class="t">内存</div><div class="d mono" id="ramTxt">—</div></div>
               </div>
             </div>
           </div>
@@ -653,6 +660,11 @@
             <p>提升专有名词识别与翻译质量 · 保存后自动热重载</p>
           </div>
           <div class="actions">
+            <label class="switch" title="术语表总开关">
+              <input type="checkbox" id="glossEnabled" checked>
+              <span class="track"></span><span class="knob"></span>
+            </label>
+            <span class="hint" id="glossEnabledState">已启用</span>
             <span class="hint">CSV 目标</span>
             <div class="seg" id="glossSeg">
               <span class="seg-thumb" id="glossThumb"></span>

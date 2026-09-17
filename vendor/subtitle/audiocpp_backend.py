@@ -436,6 +436,9 @@ class AudioCppBackend:
                  "--audio", str(wav_in), "--vad-chunks-out", str(out_json)],
                 cwd=str(self.dir), capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=timeout,
+                # 字幕服务被宿主以无窗口方式拉起时，不带这个标志每次 VAD 都会
+                # 闪一个命令行黑窗（识别 3s 一块 = 每秒都在闪）。
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if r.returncode != 0:
                 self._vad_fail("vad_cli_failed",

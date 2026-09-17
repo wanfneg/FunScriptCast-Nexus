@@ -88,8 +88,12 @@ class Glossary:
         # 五种写法，占全部转录错误的 60%；而 2091 条术语表里一个演员名都没有。
         # 走单独通道，既能立刻生效，也不会污染用户维护的词表。
         self._extra: dict = {}
+        # 总开关（config → glossary.enabled，默认开）：关闭后 ASR 热词/翻译注入/
+        # 术语修补全部走空，但**词表文件原样保留**——重新打开即恢复，数据不丢。
+        # 查询侧走引用快照（见各方法），本开关用普通 bool 即可被热更新看到。
+        self.enabled = bool((paths or {}).get("enabled", True))
         for lang, rel in (paths or {}).items():
-            if lang == "extra":        # 同名键是补充词条，不是词表文件路径
+            if lang in ("extra", "enabled"):   # 同名键是补充词条/开关，不是词表文件路径
                 continue
             fp = Path(rel)
             if not fp.is_absolute():
@@ -163,6 +167,11 @@ class Glossary:
         with self._lock:
             return dict(self._maps.get(lang, {}))
 
+    def set_enabled(self, v: bool) -> None:
+        """总开关热更新（/glossary/reload 会从 config.json 重读）。普通 bool，
+        查询侧每请求重新读，无需加锁。"""
+        self.enabled = bool(v)
+
     def asr_context(self, lang: str, max_chars: int = 0) -> str:
         """拼 ASR 热词提示（只返回提示词本身；需要键的用 asr_context_with_keys）。
 
@@ -195,6 +204,10 @@ class Glossary:
         共 19 字符（context_max_chars=0）——判据与提示词完全对不上，正常台词被
         大面积误判成复读丢弃。判据必须只用这里返回的键。
         """
+        # 总开关关闭：不注入任何热词，键列表同步为空 → 复读判据自然无判据可用
+        #（不会误杀），整条"热词"通路与关闭前判然两清。
+        if not self.enabled:
+            return "", []
         self._ensure()
         with self._lock:
             extra_keys = list(self._extra.get(lang, {}).keys())
@@ -227,13 +240,17 @@ class Glossary:
         return "、".join(picked), picked
 
     def keys(self, lang: str) -> list:
+        if not self.enabled:
+            return []
         self._ensure()
         # _maps 里的 dict 只被整体换引用、从不就地改，快照迭代是安全的
         with self._lock:
             return list(self._maps.get(lang, {}).keys())
 
     def match(self, lang: str, text: str) -> dict:
-        """只返回当前文本里真正出现的术语。"""
+        """只返回当前文本里真正出现的术语（开关关闭 ⇒ 永远空，翻译不注入术语）。"""
+        if not self.enabled:
+            return {}
         self._ensure()
         with self._lock:
             snapshot = dict(self._maps.get(lang, {}))

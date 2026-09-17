@@ -358,10 +358,20 @@ def glossary_get(lang: str = "ja"):
 
 @app.post("/glossary/reload")
 def glossary_reload():
-    """强制重新读取术语表文件（正常情况下按 mtime 自动热加载，此接口用于手动触发）。"""
+    """强制重新读取术语表文件（正常情况下按 mtime 自动热加载，此接口用于手动触发）。
+
+    同时把 config.json 里的 `glossary.enabled` 总开关热同步进来——宿主保存
+    字幕配置时只要动了 glossary 段就会调这里，开关**即时生效**，无需重启服务。
+    """
     g = state["glossary"]
+    try:
+        cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+        g.set_enabled(bool((cfg.get("glossary") or {}).get("enabled", True)))
+    except Exception:
+        pass
     changed = g.reload(force=True)
-    return {"changed": changed, "sizes": {k: g.size(k) for k in g.langs()}}
+    return {"changed": changed, "enabled": g.enabled,
+            "sizes": {k: g.size(k) for k in g.langs()}}
 
 
 @app.post("/transcribe")

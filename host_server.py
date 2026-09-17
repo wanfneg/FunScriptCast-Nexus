@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import csv
+import ctypes
 import hashlib
 import json
 import logging
@@ -866,7 +867,8 @@ def sub_start() -> dict:
             # 而它多半没装 uvicorn——不先探一下的话，用户看到的是一句
             # "No module named 'uvicorn'"，完全指不出该做什么（本机实测过）。
             probe = subprocess.run([str(py), "-c", "import uvicorn, fastapi"],
-                                   capture_output=True, text=True, timeout=40)
+                                   capture_output=True, text=True, timeout=40,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if probe.returncode != 0:
                 tail = ""
                 for ln in reversed((probe.stderr or "").strip().splitlines()):
@@ -999,7 +1001,8 @@ def _port_owner_pids(port: int) -> list:
         return []
     try:
         out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
-                             capture_output=True, text=True, timeout=10).stdout
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
     except Exception:
         return []
     pids: list = []
@@ -1021,7 +1024,8 @@ def _proc_name(pid: int) -> str:
         return ""
     try:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
-                             capture_output=True, text=True, timeout=10).stdout
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
         line = out.strip().splitlines()[0] if out.strip() else ""
         return line.split(",")[0].strip().strip('"').lower()
     except Exception:
@@ -1039,7 +1043,8 @@ def _kill_tree(pid: int) -> None:
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, timeout=20)
+                           capture_output=True, timeout=20,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             return
         except Exception as e:
             log.warning("taskkill 失败（PID %s）：%s", pid, e)
@@ -1272,6 +1277,57 @@ def gpu_info() -> dict:
     return data
 
 
+# CPU / 内存指标（纯 ctypes，零新依赖；给仪表盘的圆环用）
+_sys_cache = {"ts": 0.0, "data": {}, "cpu_raw": None}
+
+
+class _MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+
+class _FILETIME(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
+
+
+def sys_info() -> dict:
+    """CPU 占比（GetSystemTimes 差分）+ 内存占用（GlobalMemoryStatusEx）。
+
+    CPU 占比必须两次采样做差，单次调用只能拿到累计值——所以首次调用返回 0，
+    下个轮询周期起有效（轮询 1s 一次，感知不到这个空窗）。缓存 2s。
+    """
+    now = time.time()
+    if now - _sys_cache["ts"] < 2.0:
+        return _sys_cache["data"]
+    data = {"cpu_pct": 0, "ram_used_mb": 0, "ram_total_mb": 0}
+    try:
+        k32 = ctypes.windll.kernel32
+        st = _MEMORYSTATUSEX()
+        st.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        if k32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            data["ram_total_mb"] = int(st.ullTotalPhys // (1024 * 1024))
+            data["ram_used_mb"] = int((st.ullTotalPhys - st.ullAvailPhys) // (1024 * 1024))
+        idle, kernel, user = _FILETIME(), _FILETIME(), _FILETIME()
+        if k32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            def _u64(ft):
+                return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+            cur = (_u64(idle), _u64(kernel), _u64(user))
+            prev = _sys_cache["cpu_raw"]
+            _sys_cache["cpu_raw"] = cur
+            if prev:
+                d_idle = cur[0] - prev[0]
+                d_total = (cur[1] - prev[1]) + (cur[2] - prev[2])
+                if d_total > 0:
+                    data["cpu_pct"] = int(max(0.0, min(100.0, (1 - d_idle / d_total) * 100)))
+    except Exception:
+        pass
+    _sys_cache.update(ts=now, data=data)
+    return data
+
+
 # ================================================================ API
 def state_payload() -> dict:
     s = load_settings()
@@ -1305,6 +1361,7 @@ def state_payload() -> dict:
         "translateCache": translate_cache_summary(),
         "sync": SYNC.public(),
         "gpu": gpu_info(),
+        "sys": sys_info(),
         "settings": s,
         "events": logs,
     }
@@ -1664,6 +1721,16 @@ def save_subtitle_config(patch: dict) -> dict:
             tmp = cfg_file.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(tmp, cfg_file)
+        # 术语表相关字段改动了 → 顺手让运行中的服务热同步（enabled 开关即时生效，
+        # 不用重启；服务没在跑就静默跳过，下次启动自然按新配置初始化）
+        if "glossary" in (patch or {}):
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{SUBTITLE_PORT}/glossary/reload",
+                    method="POST", data=b"")
+                urllib.request.urlopen(req, timeout=2).read()
+            except Exception:
+                pass
         RT.add_log("字幕服务配置已保存（重启服务后生效）", "ok")
         return {"ok": True, "config": _mask_translate_secrets(cfg)}
     except Exception as e:
@@ -2250,6 +2317,16 @@ def tune_frameless_window(window, rounded: bool = True) -> dict:
             out["rounded"] = True
         except Exception as e:
             out["rounded_error"] = repr(e)
+    try:
+        # 34 = DWMWA_BORDER_COLOR，0xFFFFFFFE = DWMWA_COLOR_NONE：去掉 Windows 11
+        # 给顶层窗口画的系统描边（跟随主题/强调色，实测显示为蓝边）。Win10 不支持
+        # 该属性会失败，静默忽略即可。
+        bc = ctypes.c_uint(0xFFFFFFFE)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 34, ctypes.byref(bc), ctypes.sizeof(bc))
+        out["border_none"] = True
+    except Exception as e:
+        out["border_error"] = repr(e)
     out["ok"] = bool(out.get("thickframe"))
     return out
 

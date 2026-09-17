@@ -809,6 +809,7 @@ def ssdp_conflict_warning() -> str:
         r = subprocess.run(
             ["sc", "query", "SSDPSRV"],
             capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if "RUNNING" in r.stdout.upper():
             return (

@@ -119,7 +119,7 @@
     content.scrollTop = 0;
     /* 分段控件与 canvas 在隐藏页里量不到尺寸（getBoundingClientRect 全是 0），
        所以每次页面显示后都要重新摆一次；等一帧让 display 生效。 */
-    requestAnimationFrame(function () { placeAllSegs(); resizeSignal(); });
+    requestAnimationFrame(function () { placeAllSegs(); });
   }
   nav.addEventListener("click", function (e) {
     var btn = e.target.closest("button[data-page]");
@@ -213,12 +213,16 @@
     el.className = "pill " + (cls || "");
     el.innerHTML = '<i class="dot"></i>' + esc(text);
   }
-  function setRing(pct) {
-    var ring = $("#gpuRing"), c = 2 * Math.PI * 24;
-    var fg = $(".fg", ring);
-    fg.style.strokeDashoffset = (c * (1 - pct / 100)).toFixed(1);
-    $(".pct", ring).textContent = Math.round(pct) + "%";
-    ring.classList.toggle("warn", pct >= 85);
+  function setRing(el, pct, txt) {
+    // 通用圆环：pct 0~100；txt 缺省显示百分比。写错元素时静默跳过。
+    if (!el) return;
+    var c = 2 * Math.PI * 24;
+    var p = Math.max(0, Math.min(100, Number(pct) || 0));
+    var fg = $(".fg", el);
+    if (fg) fg.style.strokeDashoffset = (c * (1 - p / 100)).toFixed(1);
+    var lbl = $(".pct", el);
+    if (lbl) lbl.textContent = txt != null ? txt : Math.round(p) + "%";
+    el.classList.toggle("warn", p >= 85);
   }
   function countTo(el, target) {
     if (!el) return;
@@ -281,8 +285,19 @@
     }
     if (termCount) countTo($("#mTerms"), termCount);
     else countTo($("#mTerms"), 0);   // 服务停止/未就绪时指标也要归零，别留着旧数
-    setRing(gpuPct);
+    setRing($("#gpuRing"), gpuPct);
     $("#gpuText").textContent = g.total_mb ? (Math.round(g.used_mb) + " / " + Math.round(g.total_mb) + " MB") : "—";
+
+    /* ---- 系统负载三环（CPU / GPU 利用率 / 内存）——替代旧 SIGNAL 波形动画 ---- */
+    var sy = st.sys || {};
+    setRing($("#cpuRing"), sy.cpu_pct || 0);
+    if ($("#cpuTxt")) $("#cpuTxt").textContent = (sy.cpu_pct || 0) + "%";
+    var ramPct = sy.ram_total_mb ? Math.round(sy.ram_used_mb / sy.ram_total_mb * 100) : 0;
+    setRing($("#ramRing"), ramPct);
+    if ($("#ramTxt")) $("#ramTxt").textContent = sy.ram_total_mb
+      ? (Math.round(sy.ram_used_mb / 1024) + " / " + Math.round(sy.ram_total_mb / 1024) + " GB") : "—";
+    setRing($("#gpuUtilRing"), g.util || 0);
+    if ($("#gpuUtilTxt")) $("#gpuUtilTxt").textContent = (g.util || 0) + "%";
 
     /* ---- 事件时间线 ---- */
     var tl = $("#timeline");
@@ -358,9 +373,6 @@
     $("#aboutLanApi").textContent = (st.host && st.host.lan_api_url) || "—";
     $("#verLine").textContent = "v" + (st.version || "—") + " · WebView2";
     syncSettingsUI();
-
-    /* ---- 信号波形（振幅/频率都来自上面的真实状态） ---- */
-    setSignalFromState(st);
   }
 
   /* ---- 翻译层统计（批量 / 缓存命中 / 纠错 / 兜底） ---- */
@@ -581,6 +593,15 @@
       $("#mtCloudKey").placeholder = oa.api_key_set
         ? "已保存（尾号 " + (oa.api_key_tail || "****") + "），留空表示不修改"
         : "sk-...（留空则用环境变量 " + (oa.api_key_env || "OPENAI_API_KEY") + "）";
+      /* 术语表总开关（glossary.enabled，缺省视为开）。开关状态只在用户正在
+         操作它时不回填——由 S.subCfgDirty 拦（checkbox 也触发 input 事件） */
+      var gl = c.glossary || {};
+      var gsw = $("#glossEnabled");
+      if (gsw) {
+        gsw.checked = gl.enabled !== false;
+        var gls = $("#glossEnabledState");
+        if (gls) gls.textContent = gsw.checked ? "已启用" : "已停用";
+      }
       syncMtGroups();
     });
   }
@@ -748,6 +769,7 @@
           backend: $("#asrBackend").value,
           model: $("#asrModel").value, device: $("#asrDevice").value
         },
+        glossary: { enabled: $("#glossEnabled").checked },
         segment: {
           max_sec: parseFloat($("#segMaxSec").value) || 8,
           max_chars: parseInt($("#segMaxChars").value, 10) || 50,
@@ -816,6 +838,23 @@
         });
       });
     });
+    /* 术语表总开关：关闭后 ASR 不注入热词、翻译不套用术语（词表文件保留）。
+       服务在跑时经 /glossary/reload 热同步，即时生效、无需重启 */
+    $("#glossEnabled").addEventListener("change", function () {
+      var on = this.checked, sw = this;
+      api("/api/subtitle/config", "POST", { glossary: { enabled: on } }).then(function (r) {
+        var st = $("#glossEnabledState");
+        if (st) st.textContent = on ? "已启用" : "已停用";
+        if (r.ok) {
+          toast(on ? "术语表已启用" : "术语表已停用", "即时生效：热词/术语注入已切换", "ok");
+        } else {
+          sw.checked = !on;   // 保存失败：开关弹回，别让界面与配置不一致
+          if (st) st.textContent = on ? "已停用" : "已启用";
+          toast("保存失败", r.error || "", "err");
+        }
+      });
+    });
+
     $("#saveGloss").addEventListener("click", function () {
       if (!S.glossaryLoaded) {
         toast("术语表尚未加载完成", "现在保存会把词库清空——请等加载完成或刷新页面", "warn");
@@ -1046,24 +1085,36 @@
 
   /* ---------------------------------------------------------- 启动 */
   /* ================================================================
-     画布层：指针环境光 + 信号波形
+     画布层：指针环境光（事件驱动，无常驻帧循环）
      ================================================================ */
 
   /* 指针光晕。位置写进 CSS 变量，并做插值跟随——直接把鼠标坐标赋进去的话
-     快速移动时是一格一格跳的，插值后才有"光被拖着走"的手感。 */
-  var ptr = { tx: 0, ty: 0, x: 0, y: 0, on: false };
+     快速移动时是一格一格跳的，插值后才有"光被拖着走"的手感。
+     ⚠️ 事件驱动而不是常驻 RAF：只在 pointermove 后跑一个 ≤350ms 的收尾突发，
+     光追上鼠标就停帧。旧实现挂着 60fps 永动循环（当时还要画 SIGNAL 波形），
+     波形删除后纯空转，白烧 CPU/GPU。 */
+  var ptr = { tx: 0, ty: 0, x: 0, y: 0, on: false, raf: 0, until: 0 };
   function initPointerLight() {
     if (!$("#pointerLight")) return;
     window.addEventListener("pointermove", function (e) {
       ptr.tx = e.clientX; ptr.ty = e.clientY;
       if (!ptr.on) { ptr.on = true; ptr.x = ptr.tx; ptr.y = ptr.ty; document.body.classList.add("ptr"); }
+      ptr.until = performance.now() + 350;
+      if (!ptr.raf) ptr.raf = requestAnimationFrame(lightLoop);
     });
     window.addEventListener("pointerleave", function () {
       ptr.on = false; document.body.classList.remove("ptr");
     });
   }
-  function stepPointerLight() {
+  function lightLoop(now) {
+    ptr.raf = 0;
     if (!ptr.on || motionOff()) return;
+    stepPointerLight();
+    var settled = Math.abs(ptr.tx - ptr.x) < 0.5 && Math.abs(ptr.ty - ptr.y) < 0.5;
+    if (settled && now > ptr.until) return;   // 追上了且过了突发窗口 → 停帧
+    ptr.raf = requestAnimationFrame(lightLoop);
+  }
+  function stepPointerLight() {
     ptr.x += (ptr.tx - ptr.x) * 0.13;
     ptr.y += (ptr.ty - ptr.y) * 0.13;
     var s = document.documentElement.style;
@@ -1071,129 +1122,11 @@
     s.setProperty("--my", ptr.y.toFixed(1) + "px");
   }
 
-  /* 信号波形。振幅来自"有几个服务在跑"，频率来自 GPU 占用——它同时承担
-     "一眼看出系统在不在干活"的职责，不是纯装饰。canvas 每帧只画百来个点。 */
-  var sig = { cv: null, ctx: null, w: 0, h: 0, dpr: 1, t: 0, amp: 0, freq: 0.7,
-              mode: "IDLE", dirty: true, stamp: "" };
-  var sigColors = { accent: "#4cc9f0", accent2: "#7b5cff", line: "rgba(255,255,255,.12)" };
-
-  function initSignal() {
-    sig.cv = $("#pulseCanvas");
-    if (!sig.cv) return;
-    sig.ctx = sig.cv.getContext("2d");
-    resizeSignal();
-    window.addEventListener("resize", resizeSignal);
-  }
-  function resizeSignal() {
-    if (!sig.cv) return;
-    var r = sig.cv.getBoundingClientRect();
-    if (!r.width || !r.height) return;
-    sig.dpr = Math.min(2, window.devicePixelRatio || 1);
-    sig.cv.width = Math.round(r.width * sig.dpr);
-    sig.cv.height = Math.round(r.height * sig.dpr);
-    sig.w = r.width; sig.h = r.height;
-    sig.dirty = true;
-  }
-  function refreshSignalColors() {
-    var cs = getComputedStyle(document.documentElement);
-    function v(n, fb) { var x = cs.getPropertyValue(n).trim(); return x || fb; }
-    sigColors.accent = v("--accent", "#4cc9f0");
-    sigColors.accent2 = v("--accent-2", "#7b5cff");
-    sigColors.line = v("--line-2", "rgba(255,255,255,.12)");
-    sig.stamp = document.documentElement.getAttribute("data-theme") || "dark";
-    sig.dirty = true;
-  }
-
-  /* 由 /api/state 推出波形参数与状态标签 */
-  function setSignalFromState(st) {
-    var d = st.dlna || {}, sub = st.subtitle || {}, g = st.gpu || {};
-    var amp = 0, freq = 0.7, tags = [];
-    if (d.running) { amp += 0.42; tags.push("DLNA"); }
-    if (sub.status === "ready") { amp += 0.46; tags.push("ASR"); }
-    else if (sub.status === "loading") { amp += 0.30; tags.push("LOADING"); }
-    if (d.starting) { freq += 0.5; tags.push("STARTING"); }
-    var gpu = g.total_mb ? (g.used_mb / g.total_mb) : 0;
-    if (gpu > 0.02) { amp += gpu * 0.55; freq += gpu * 1.3; tags.push("GPU " + Math.round(gpu * 100) + "%"); }
-    if (amp === 0) { amp = 0.13; }               // 全停时留一条安静的呼吸线
-    sig.amp = Math.min(1.35, amp);
-    sig.freq = Math.min(3.2, freq);
-    sig.mode = tags.length ? tags.join(" + ") : "IDLE";
-    var lbl = $("#pulseState");
-    if (lbl && lbl.textContent !== sig.mode) lbl.textContent = sig.mode;
-    sig.dirty = true;
-  }
-
-  function drawSignal(dt) {
-    if (!sig.ctx || !sig.w) return;
-    if (sig.stamp !== (document.documentElement.getAttribute("data-theme") || "dark")) refreshSignalColors();
-    if (!motionOff()) sig.t += dt * (document.documentElement.getAttribute("data-motion") === "reduced" ? 0.35 : 1);
-
-    var ctx = sig.ctx, w = sig.w, h = sig.h, mid = h * 0.52;
-    ctx.setTransform(sig.dpr, 0, 0, sig.dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-
-    // 基线
-    ctx.globalAlpha = 0.55;
-    ctx.strokeStyle = sigColors.line;
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
-
-    // 波形：三段不同频率叠加，两端用 sin 包络收束，避免被硬切
-    var grd = ctx.createLinearGradient(0, 0, w, 0);
-    grd.addColorStop(0, "rgba(0,0,0,0)");
-    grd.addColorStop(0.14, sigColors.accent);
-    grd.addColorStop(0.74, sigColors.accent2);
-    grd.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = grd;
-    ctx.lineWidth = 1.7;
-    ctx.lineJoin = "round";
-    ctx.beginPath();
-    var n = Math.max(64, Math.floor(w / 3));
-    for (var i = 0; i <= n; i++) {
-      var p = i / n, env = Math.sin(Math.PI * p);
-      var y = mid
-        + Math.sin(p * 11 * sig.freq + sig.t * 1.7) * 11 * sig.amp * env
-        + Math.sin(p * 29 * sig.freq - sig.t * 2.8) * 4.6 * sig.amp * env
-        + Math.sin(p * 5 * sig.freq + sig.t * 0.85) * 7.5 * sig.amp * env;
-      if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(p * w, y);
-    }
-    ctx.stroke();
-
-    // 一条更淡的镜像线，做出"信号有厚度"的感觉
-    ctx.globalAlpha = 0.18;
-    ctx.beginPath();
-    for (i = 0; i <= n; i++) {
-      p = i / n; env = Math.sin(Math.PI * p);
-      y = mid - (Math.sin(p * 11 * sig.freq + sig.t * 1.7) * 11 * sig.amp * env
-        + Math.sin(p * 29 * sig.freq - sig.t * 2.8) * 4.6 * sig.amp * env);
-      if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(p * w, y);
-    }
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-
-  function frame(now) {
-    var dt = Math.min(0.05, (now - (frame.last || now)) / 1000);
-    frame.last = now;
-    stepPointerLight();
-    if (document.hidden) { requestAnimationFrame(frame); return; }  // 窗口不可见时不做任何绘制
-    if (motionOff()) {
-      if (sig.dirty) { sig.dirty = false; drawSignal(0); }
-    } else {
-      drawSignal(dt);
-    }
-    requestAnimationFrame(frame);
-  }
-
   function boot() {
     bind();
     setTheme("dark", false);
     setMotion("full", false);
     initPointerLight();
-    initSignal();
-    refreshSignalColors();
-    requestAnimationFrame(frame);
     poll(false);
     loadSubtitleConfig();
     loadGlossary();
@@ -1201,7 +1134,7 @@
     // 配置输入框时不要覆盖他的输入
     setTimeout(function () { if (!S.subCfgDirty) loadSubtitleConfig(); }, 2500);
     // 配置输入一旦被用户动过就标记：之后的自动回填一律让路
-    ["asrBackend", "asrModel", "asrDevice", "segMaxSec", "segMaxChars", "segPause", "vadThreshold",
+    ["asrBackend", "asrModel", "asrDevice", "segMaxSec", "segMaxChars", "segPause", "vadThreshold", "glossEnabled",
      "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey"
     ].forEach(function (id) {
       var el = document.getElementById(id);
@@ -1210,7 +1143,7 @@
     // 字体是异步落地的，加载完行高会变，指示块与分段滑块要重新对齐
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(function () {
-        moveIndicator(activeNavBtn()); placeAllSegs(); resizeSignal();
+        moveIndicator(activeNavBtn()); placeAllSegs();
       });
     }
   }

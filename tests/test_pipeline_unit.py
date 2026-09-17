@@ -210,6 +210,35 @@ def t_keep_segment():
     assert not keep_segment(4000, 4700, 4500)   # 整句基本都在重叠区：丢
 
 
+# 11 ------------------------------ 术语表总开关（glossary.enabled）
+def t_glossary_enabled_switch():
+    """关闭后：热词/翻译注入/键查询全部走空，但词表数据保留、重开即恢复。"""
+    import json, tempfile
+    from glossary import Glossary
+    d = Path(tempfile.mkdtemp())
+    f = d / "g.json"
+    f.write_text(json.dumps({"悠亜": "悠亚", "乳首": "乳首"}, ensure_ascii=False), encoding="utf-8")
+
+    def mk(enabled):
+        return Glossary({"ja": str(f), "enabled": enabled}, base_dir=d,
+                        extra={"ja": {"ゆあ": "悠亚"}})
+
+    g = mk(True)
+    assert g.match("ja", "悠亜は…"), "开启时必须命中术语"
+    assert g.asr_context("ja") != "", "开启时热词非空"
+    assert "ゆあ" in g.keys("ja"), "extra 词条在 keys 里"
+    g.set_enabled(False)
+    assert g.match("ja", "悠亜は…") == {}, "关闭后翻译注入必须为空"
+    assert g.asr_context("ja") == "" and g.asr_context_with_keys("ja") == ("", [])
+    assert g.keys("ja") == [], "关闭后键查询为空（复读判据自然无判据可用）"
+    assert g.size("ja") == 3, "关闭只是不注入，数据必须原样保留（2 条词表 + 1 条 extra）"
+    g.set_enabled(True)
+    assert g.match("ja", "悠亜は…"), "重开即恢复"
+    # 缺省 enabled = True：旧配置文件没有这个键也不能变成关
+    g2 = Glossary({"ja": str(f)}, base_dir=d)
+    assert g2.enabled is True and g2.match("ja", "悠亜"), "缺省必须视为开启"
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -222,6 +251,7 @@ if __name__ == "__main__":
     check("拉丁幻觉判据（不误杀正常日语/片假名）", t_latin_hallucination)
     check("whisper 后端过滤与接口（懒加载/铁律）", t_whisper_backend_filters)
     check("keep_segment 跨块去重", t_keep_segment)
+    check("术语表总开关（enabled 热更新/数据保留）", t_glossary_enabled_switch)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

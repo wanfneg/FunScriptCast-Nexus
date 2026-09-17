@@ -602,23 +602,14 @@ select.input{ appearance:none; cursor:pointer; padding-right:30px;
 .rail-node.busy .rail-dot::after{ color:var(--warn); animation-duration:1.2s; }
 @keyframes breath{ 0%{ transform:scale(.6); opacity:.85 } 70%{ transform:scale(1.5); opacity:0 } 100%{ opacity:0 } }
 
-.signal{
-  position:relative; border-radius:var(--r-sm); border:1px solid var(--line);
-  background:radial-gradient(120% 140% at 50% 120%, rgba(76,201,240,.09), transparent 66%), var(--void);
-  overflow:hidden; min-height:132px;
-}
-html[data-theme="light"] .signal{ background:radial-gradient(120% 140% at 50% 120%, rgba(10,143,190,.09), transparent 66%), #f2f5fa; }
-.signal canvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
-.signal-axis{
-  position:absolute; left:14px; right:14px; bottom:11px;
-  display:flex; align-items:center; justify-content:space-between;
-  font:500 9.5px/1 var(--f-mono); letter-spacing:.2em; color:var(--ink-3);
-}
-.signal-axis .signal-line{ display:flex; align-items:center; gap:8px; }
-.signal-axis .signal-line::before{
-  content:""; width:16px; height:1px; background:var(--line-3);
-}
-#pulseState{ font-style:normal; letter-spacing:.2em; color:var(--accent); }
+/* 系统负载三环（CPU / GPU / 内存）：替代旧 SIGNAL 波形动画，零常驻帧循环 */
+.gauge-row{ display:flex; gap:18px; flex-wrap:wrap; }
+.gauge{ display:flex; align-items:center; gap:10px; flex:1; min-width:132px;
+  padding:11px 12px; border-radius:var(--r-sm); border:1px solid var(--line); background:var(--void); }
+html[data-theme="light"] .gauge{ background:#f2f5fa; }
+.gauge > div:last-child{ min-width:0; }
+.gauge .t{ font:500 9.5px/1.4 var(--f-mono); letter-spacing:.2em; color:var(--ink-3); }
+.gauge .d{ font-size:12px; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
 /* ---------------------------------------------------------------- 指标 */
 .metric{ display:flex; flex-direction:column; gap:12px; }
