@@ -382,18 +382,22 @@ class TrayIcon:
             return False
 
     def _cleanup(self) -> None:
-        if self._custom_icon:
-            try:
-                _user32.DestroyIcon(self._custom_icon)
-            except Exception:
-                pass
-            self._custom_icon = None
+        # 顺序：先 NIM_DELETE 摘掉托盘图标，再 DestroyIcon 销毁句柄。
+        # 旧实现反着来（先 DestroyIcon）：托盘仍持有该 HICON 时把它销毁，
+        # Shell 会短暂引用一个已失效的图标句柄——顺序与 Win32 要求相反。
+        # （零成本调换；未实机确认，属静态修正。）
         if self._nid is not None:
             try:
                 _shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self._nid))
             except Exception:
                 pass
             self._nid = None
+        if self._custom_icon:
+            try:
+                _user32.DestroyIcon(self._custom_icon)
+            except Exception:
+                pass
+            self._custom_icon = None
         if self._hwnd:
             try:
                 _user32.DestroyWindow(self._hwnd)
