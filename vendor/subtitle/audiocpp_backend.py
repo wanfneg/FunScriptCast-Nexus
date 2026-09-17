@@ -56,6 +56,9 @@ class AudioCppError(RuntimeError):
 class AudioCppBackend:
     """封装 audiocpp_server 的 ASR + silero_vad。"""
 
+    # /health 的 asr_ready 靠它区分"真引擎"与"未就绪兜底"（缺属性会被误判为未就绪）
+    backend_kind = "audiocpp"
+
     def __init__(self, cfg: dict, glossary=None, use_context: bool = True,
                  context_max_chars: int = 0, drop_latin: bool = True):
         self.dir = Path(cfg.get("dir") or AUDIOCPP_DIR)

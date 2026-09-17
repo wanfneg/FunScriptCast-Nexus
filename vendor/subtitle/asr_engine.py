@@ -42,6 +42,9 @@ LANG_MAP = {"zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean", 
 
 
 class AsrEngine:
+    # /health 的 asr_ready 靠它区分"真引擎"与"未就绪兜底"
+    backend_kind = "pytorch"
+
     def __init__(self, cfg: dict, glossary):
         if not _HEAVY_DEPS_OK:
             raise RuntimeError(

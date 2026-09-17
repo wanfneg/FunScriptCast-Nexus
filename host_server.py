@@ -1261,7 +1261,18 @@ def headset_status() -> dict:
 # whisper 的落盘位置是 HF 缓存标准结构（refs/main -> snapshots/<commit>/），
 # faster-whisper 的 local_files_only 能直接认领，与"用户用别的方式下载"等价。
 _HF_MIRROR = "https://hf-mirror.com"
-_HF_HUB_DIR = Path.home() / ".cache" / "huggingface" / "hub"
+def _hf_hub_dir() -> Path:
+    """HF 缓存根：尊重 HF_HUB_CACHE / HF_HOME，再退 huggingface_hub 常量，
+    最后退默认值——与服务端 faster-whisper 的解析保持同源，避免下载/读取错位。"""
+    env = os.environ.get("HF_HUB_CACHE") or (
+        os.environ.get("HF_HOME") and os.path.join(os.environ["HF_HOME"], "hub"))
+    if env:
+        return Path(env)
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        return Path(HF_HUB_CACHE)
+    except Exception:
+        return Path.home() / ".cache" / "huggingface" / "hub"
 
 MODELS_CATALOG = [
     {
@@ -1310,37 +1321,57 @@ _DL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _download_to_file(url: str, dest: Path, prog=None) -> None:
-    """流式下载到 .part（支持断点续传），完成后原子替换。prog(done, total)。"""
+    """流式下载到 .part（断点续传 + 原子替换）。prog(done, total)。
+
+    两种必须防住的坏例（审查 P0-2 实测复现过）：
+      · 发了 Range 服务器却回 200 全量 → 若继续追加会把文件写成"两份拼接"的
+        静默损坏。判据：带 Range 请求时响应码必须是 206，否则推倒重下。
+      · 416（.part 比服务器内容还长）→ 删 .part 全新重下一次。
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
-    done = part.stat().st_size if part.exists() else 0
-    headers = {"User-Agent": "FunScriptCast-Nexus"}
-    if done:
-        headers["Range"] = "bytes=%d-" % done
-    req = urllib.request.Request(url, headers=headers)
-    with _DL_OPENER.open(req, timeout=60) as r, open(part, "ab") as f:
-        total = int(r.headers.get("Content-Length") or 0) + done
-        if total and done >= total:
-            os.replace(part, dest)           # 续传发现已下完（上次在结尾中断）
-            if prog:
-                prog(done, total)
-            return
-        while True:
-            chunk = r.read(1024 * 1024)
-            if not chunk:
-                break
-            f.write(chunk)
-            done += len(chunk)
-            if prog:
-                prog(done, total)
-    if done == 0:
-        raise RuntimeError("服务器没有返回数据：" + url)
-    os.replace(part, dest)
+    for restart in (0, 1):
+        done = part.stat().st_size if part.exists() else 0
+        headers = {"User-Agent": "FunScriptCast-Nexus"}
+        if done:
+            headers["Range"] = "bytes=%d-" % done
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            r = _DL_OPENER.open(req, timeout=60)
+        except urllib.error.HTTPError as e:
+            if e.code == 416 and part.exists() and restart == 0:
+                part.unlink()                # 坏 .part：推倒重来
+                continue
+            raise
+        with r:
+            ranged = bool(done) and r.status == 206
+            if done and not ranged:
+                done = 0                     # 服务器不支持续传：全量重下
+            total = int(r.headers.get("Content-Length") or 0) + done
+            if total and done >= total:
+                os.replace(part, dest)       # 上次恰好在结尾中断，已完整
+                if prog:
+                    prog(done, total)
+                return
+            with open(part, "ab" if done else "wb") as f:
+                while True:
+                    chunk = r.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if prog:
+                        prog(done, total)
+        if done == 0:
+            raise RuntimeError("服务器没有返回数据：" + url)
+        os.replace(part, dest)
+        return
+    raise RuntimeError("下载重试仍失败：" + url)
 
 
 def _model_installed(e: dict) -> bool:
     if e.get("repo_dirname"):                # whisper：HF 缓存结构
-        repo = _HF_HUB_DIR / e["repo_dirname"]
+        repo = _hf_hub_dir() / e["repo_dirname"]
         ref = repo / "refs" / "main"
         try:
             commit = ref.read_text(encoding="utf-8").strip()
@@ -1355,7 +1386,14 @@ def _model_dl_worker(e: dict) -> None:
     id_ = e["id"]
     try:
         if e.get("repo_dirname"):
-            base = _HF_HUB_DIR / e["repo_dirname"] / "snapshots" / e["commit"]
+            # 修复历史损坏：此前版本给 refs/main 写过带换行的值，faster-whisper
+            # 读 refs 不 strip → 解析出带换行的 snapshot 目录名 → 永远找不到模型
+            ref = _hf_hub_dir() / e["repo_dirname"] / "refs" / "main"
+            if ref.exists():
+                txt = ref.read_text(encoding="utf-8").strip()
+                if txt and txt != ref.read_text(encoding="utf-8"):
+                    ref.write_text(txt, encoding="utf-8")
+            base = _hf_hub_dir() / e["repo_dirname"] / "snapshots" / e["commit"]
         else:
             base = Path(e["dest_dir"])
         n = max(1, len(e["files"]))
@@ -1374,9 +1412,9 @@ def _model_dl_worker(e: dict) -> None:
 
             _download_to_file(f["url"], dest, prog)
         if e.get("repo_dirname"):
-            ref = _HF_HUB_DIR / e["repo_dirname"] / "refs" / "main"
+            ref = _hf_hub_dir() / e["repo_dirname"] / "refs" / "main"
             ref.parent.mkdir(parents=True, exist_ok=True)
-            ref.write_text(e["commit"] + chr(10), encoding="utf-8")
+            ref.write_text(e["commit"], encoding="utf-8")
         with _DL_LOCK:
             _MODEL_DL[id_].update(state="done", pct=100)
         RT.add_log("模型下载完成：" + e["label"], "ok")
@@ -1392,8 +1430,16 @@ def models_catalog_payload() -> dict:
         installed = _model_installed(e)
         with _DL_LOCK:
             st = dict(_MODEL_DL.get(e["id"]) or {})
-        state = "downloading" if st.get("state") == "downloading" else (
-            "installed" if installed else (st.get("state") or "absent"))
+        if st.get("state") == "downloading":
+            state = "downloading"
+        elif st.get("state") == "done":
+            state = "done"
+        elif installed:
+            state = "installed"
+        elif st.get("state") == "error":
+            state = "error"
+        else:
+            state = "absent"
         items.append({
             "id": e["id"], "role": e["role"], "label": e["label"],
             "size_gb": e["size_gb"], "installed": installed,

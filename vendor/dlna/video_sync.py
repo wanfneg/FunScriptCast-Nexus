@@ -397,7 +397,7 @@ class VideoSyncController:
             self.on_log(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
     def get_adb(self) -> AdbClient:
-        # adb 由应用自带（toolsdbdb.exe），宿主总会传入确定路径；
+        # adb 由应用自带（tools/adb/adb.exe），宿主总会传入确定路径；
         # 空路径直接报错，不再探测 ANDROID_HOME/PATH——避免悄悄用上
         # 用户机器上另一个版本的 adb。
         path = self.config.adb_path.strip()

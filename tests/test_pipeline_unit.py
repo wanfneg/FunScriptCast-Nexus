@@ -252,7 +252,7 @@ def t_model_downloader():
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             data = src.read_bytes()
-            rng = self.headers.get("Range")
+            rng = None if self.path.endswith("full") else self.headers.get("Range")
             if rng:
                 start = int(rng.split("=")[1].split("-")[0])
                 body = data[start:]
@@ -286,6 +286,14 @@ def t_model_downloader():
     part.write_bytes(payload[:1000])
     hs._download_to_file("http://127.0.0.1:%d/f.bin" % port, dest)
     assert dest.read_bytes() == payload, "续传后内容必须完整"
+
+    # 坏例（审查 P0-2 实测复现）：已有 .part，但服务器忽略 Range 回 200 全量
+    # ——旧实现会把它追加成"两份拼接"的静默损坏且无任何报错
+    part.write_bytes(payload[:1000])
+    dest.unlink()
+    hs._download_to_file("http://127.0.0.1:%d/full.bin" % port, dest)
+    assert dest.read_bytes() == payload, "服务器回 200 时必须推倒重下而不是追加"
+    assert not list(dest.parent.glob("*.part"))
     srv.shutdown()
 
 

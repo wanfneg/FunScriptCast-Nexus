@@ -36,6 +36,11 @@ from __future__ import annotations
 import os
 import threading
 import time
+from pathlib import Path
+
+# 必须在 faster_whisper（连带 huggingface_hub）import 之前设置：hub 的镜像端点
+# 在 import 时读成常量，运行期改环境变量不再生效（审查 P2-2）。
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from text_filters import (has_repetition_loop, is_latin_hallucination,
                           keep_segment, strip_wrap_quotes)
@@ -82,15 +87,45 @@ class WhisperBackend:
     def ensure_model(self) -> None:
         """加载模型（幂等）。正常在 lifespan 里调用（启动期 +2.5~3.9s，实测）；
         transcribe 里再调一次只是兜底。"""
+        # 锁内做加载：transcribe 是先调本方法再拿推理锁，不构成重入；
+        # 并发首调若无锁会双载 1.4GB 模型（审查 P2-5）
+        with self._lock:
+            self._ensure_locked()
+
+    def _ensure_locked(self) -> None:
         if self._model is not None:
             return
+        # 自愈历史损坏：refs/main 带换行会让 faster-whisper 解析出带换行的
+        # snapshot 目录名而永远找不到模型（审查 P0-1 实测复现）
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+            repo = Path(HF_HUB_CACHE) / ("models--" + self.model_ref.replace("/", "--"))
+            ref = repo / "refs" / "main"
+            if ref.exists():
+                txt = ref.read_text(encoding="utf-8").strip()
+                if txt and txt != ref.read_text(encoding="utf-8"):
+                    ref.write_text(txt, encoding="utf-8")
+        except Exception:
+            pass
         t0 = time.perf_counter()
         from faster_whisper import WhisperModel
         try:
             self._model = WhisperModel(self.model_ref, device=self.device,
                                        compute_type=self.compute_type,
                                        local_files_only=True)
-        except Exception as e:
+        except Exception as cuda_err:
+            # 无 N 卡/驱动不全时自动降级 CPU（kotoba-whisper 本就有 CPU 兜底先例），
+            # 不能让"下了 1.4GB 模型却起不来"成为死胡同（审查 P1-2）
+            if str(self.device).startswith("cuda"):
+                print(f"[asr] CUDA 不可用（{type(cuda_err).__name__}），降级 CPU/int8 重试",
+                      flush=True)
+                self.device, self.compute_type = "cpu", "int8"
+                self._model = WhisperModel(self.model_ref, device=self.device,
+                                           compute_type=self.compute_type,
+                                           local_files_only=True)
+            else:
+                raise
+        if self._model is None:
             if not self.allow_download:
                 raise RuntimeError(
                     f"whisper 模型不在本地 HF 缓存（{self.model_ref}）："
@@ -139,7 +174,9 @@ class WhisperBackend:
         """
         t0 = time.perf_counter()
         self.ensure_model()
-        lang = (lang_key or self.language).strip() or self.language
+        # faster-whisper 只认 2 字母码，"zh-CN" 这类带地区后缀会直接 ValueError
+        lang = ((lang_key or self.language).split("-")[0].strip().lower()
+                or self.language)
         segs: list[dict] = []
         with self._lock:
             # 迭代生成器必须在持锁期间完成（faster-whisper 的 transcribe 返回惰性生成器）
