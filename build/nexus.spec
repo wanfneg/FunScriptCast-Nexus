@@ -25,6 +25,12 @@ import _pyi_patch  # noqa: E402
 
 _pyi_patch.apply()
 
+# 一律相对 **spec 所在目录**（SPECPATH）解析路径：PyInstaller 对 pathex 走
+# os.path.abspath（依赖调用者的 CWD），对 script/icon 又按 spec 目录解析——两套语义
+# 混用，而 build_exe.ps1 从不 Set-Location，于是 pathex=[".."] 会随 CWD 飘，
+# 给 Analysis 多塞一条无关搜索路径（同名模块可能被它遮蔽）。
+ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
+
 block_cipher = None
 
 hiddenimports = [
@@ -39,8 +45,8 @@ hiddenimports = [
 datas = collect_data_files("webview", subdir="lib")
 
 a = Analysis(
-    ["../host_server.py"],
-    pathex=[".."],
+    [os.path.join(ROOT, "host_server.py")],
+    pathex=[ROOT],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
@@ -81,5 +87,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon="../tools/icon.ico",
+    icon=os.path.join(ROOT, "tools", "icon.ico"),
 )

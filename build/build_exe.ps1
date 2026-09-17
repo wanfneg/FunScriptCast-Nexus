@@ -18,12 +18,6 @@ $root = Split-Path -Parent $PSScriptRoot
 $py = Join-Path $root '.venv\Scripts\python.exe'
 if (-not (Test-Path $py)) { throw "找不到 venv Python：$py" }
 
-if (-not $NoBump) {
-    Write-Host "[0/4] 递增版本号…" -ForegroundColor Cyan
-    & powershell -ExecutionPolicy Bypass -File (Join-Path $root 'tools\bump_version.ps1')
-    if ($LASTEXITCODE -ne 0) { throw "版本号递增失败" }
-}
-
 Write-Host "[1/4] PyInstaller 打包…" -ForegroundColor Cyan
 & $py -m PyInstaller (Join-Path $PSScriptRoot 'nexus.spec') --noconfirm --clean --distpath (Join-Path $root 'dist') --workpath (Join-Path $root 'build\work')
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败（exit $LASTEXITCODE）" }
@@ -31,21 +25,66 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败（exit $LASTEXITCODE）" }
 $exe = Join-Path $root 'dist\FunScriptCast-Nexus.exe'
 if (-not (Test-Path $exe)) { throw "没有产出 EXE：$exe" }
 
+# 版本号递增必须排在 EXE 产物校验**之后**：此前它在 PyInstaller 之前跑，打包失败
+# 也白吃一个版本号，还让仓库 version.json 与 dist-app\version.json（安装包版本来源）
+# 偏离、git 工作区平白变脏。version.json 是运行时读取的外置文件，不进 EXE 包。
+if (-not $NoBump) {
+    Write-Host "[1.5/4] 递增版本号（EXE 已产出才消耗版本号）…" -ForegroundColor Cyan
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $root 'tools\bump_version.ps1')
+    if ($LASTEXITCODE -ne 0) { throw "版本号递增失败" }
+}
+
 Write-Host "[2/4] 组装 dist-app…" -ForegroundColor Cyan
 $out = Join-Path $root 'dist-app'
 # 组装前必须停掉字幕服务：它就从 dist-app\vendor\subtitle 运行，
 # 进程不死会导致删除/覆盖不完整，产出残缺目录（2026-09-16 实测踩坑）
-Get-NetTCPConnection -LocalPort 8756 -State Listen -ErrorAction SilentlyContinue |     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+# 端口与宿主/同步工具同源：host_server.py 与 sync_distapp.ps1 都读 FS_SUBTITLE_PORT。
+# 硬编码 8756 时，用户设过该变量就停不到真正的字幕服务，而它整进程持有
+# vendor\subtitle\logs\run_server.log → 删不掉 dist-app → 落到下面的覆盖回退分支。
+$subPort = if ($env:FS_SUBTITLE_PORT) { [int]$env:FS_SUBTITLE_PORT } else { 8756 }
+Get-NetTCPConnection -LocalPort $subPort -State Listen -ErrorAction SilentlyContinue |     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
 # 应用本体也锁 exe：一并停止（构建完成后由安装/用户重新启动）
 Get-Process -Name 'FunScriptCast-Nexus' -ErrorAction SilentlyContinue |     Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
+# 有上限轮询确认真的退出（原来只 sleep 2 秒靠蒙）：进程没死透就删不掉 dist-app，
+# 一旦落到覆盖分支就可能产出残缺目录，所以这里宁可失败也不带病往下走。
+$deadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $deadline) {
+    if (-not (Get-NetTCPConnection -LocalPort $subPort -State Listen -ErrorAction SilentlyContinue) -and
+        -not (Get-Process -Name 'FunScriptCast-Nexus' -ErrorAction SilentlyContinue)) { break }
+    Start-Sleep -Milliseconds 500
+}
+$stillListen = Get-NetTCPConnection -LocalPort $subPort -State Listen -ErrorAction SilentlyContinue
+if ($stillListen) {
+    throw ("端口 {0} 仍有进程监听（PID {1}）——字幕服务没停掉，它占着 dist-app\vendor\subtitle\logs\run_server.log，" +
+           "dist-app 删不干净。先手工结束它再重编。") -f $subPort, (($stillListen.OwningProcess | Select-Object -Unique) -join ',')
+}
+$stillExe = Get-Process -Name 'FunScriptCast-Nexus' -ErrorAction SilentlyContinue
+if ($stillExe) {
+    throw ("FunScriptCast-Nexus 进程仍在（PID {0}），它锁着 dist-app 里的 EXE，先关掉程序再重编。") -f (($stillExe.Id) -join ',')
+}
 # 运行配置里用户在 UI 填的云端 key 存在 dist-app 的 config.json（坑 #12 的根源）。
 # 覆盖 vendor 前先摘出来，组装完再回填——重编不再丢 key。
-$distCfgPath = Join-Path $out 'vendor\subtitle\config.json'
+$subtitleDst = Join-Path $out 'vendor\subtitle'
+$distCfgPath = Join-Path $subtitleDst 'config.json'
 $preservedKey = ''
 if (Test-Path $distCfgPath) {
     try { $preservedKey = [string]((Get-Content $distCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json).translate.openai.api_key) } catch { }
 }
+# 术语表和 key 一样是**运行数据**：host_server.glossary_file() 指向 SUBTITLE_DIR
+# （即 dist-app 侧），UI 保存/CSV 导入写的都是这里。此前只摘 config.json 的 key，
+# vendor 整体删掉再用仓库副本覆盖 → 用户的词库被仓库旧表静默替换，宿主自保备份
+# glossary_*.json.bak 连同目录一起消失（换表期间等于把几个月的成果一次抹掉）。
+$runDataNames = @('glossary_ja_zh.json', 'glossary_en_zh.json')
+$preservedData = @{}
+if (Test-Path $subtitleDst) {
+    Get-ChildItem $subtitleDst -File -Force | Where-Object {
+        ($runDataNames -contains $_.Name) -or ($_.Name -like 'glossary_*.json.bak*')
+    } | ForEach-Object { $preservedData[$_.Name] = [IO.File]::ReadAllBytes($_.FullName) }
+    if ($preservedData.Count) {
+        Write-Host ("  已摘出 dist-app 运行数据 {0} 个：{1}" -f $preservedData.Count, (($preservedData.Keys | Sort-Object) -join ', ')) -ForegroundColor DarkGray
+    }
+}
+$cleanRemoved = -not (Test-Path $out)   # 目录本来就不存在 = 谈不上"清理失败"
 if (Test-Path $out) {
     # 先摘除 junction（只删链接点本身）。PS5.1 的 Remove-Item -Recurse 会**跟随
     # junction 递归删除目标内容**（PowerShell#621）：dist-app 里的 models/.venv
@@ -58,15 +97,34 @@ if (Test-Path $out) {
         }
     try {
         Remove-Item $out -Recurse -Force -ErrorAction Stop
+        $cleanRemoved = $true
     } catch {
         # 目录可能被资源管理器/杀软/上次运行的进程占用，删不掉就原地覆盖
-        Write-Host "  dist-app 无法删除（被占用），改为覆盖写入" -ForegroundColor Yellow
+        Write-Host "  dist-app 无法删除（被占用），改为原地覆盖写入" -ForegroundColor Yellow
     }
 }
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 Copy-Item $exe $out -Force
 foreach ($d in 'ui', 'vendor', 'tools') {
-    Copy-Item (Join-Path $root $d) (Join-Path $out $d) -Recurse -Force
+    $srcDir = Join-Path $root $d
+    $dstDir = Join-Path $out $d
+    if ($cleanRemoved) {
+        Copy-Item $srcDir $dstDir -Recurse -Force
+    } else {
+        # 回退分支**只能复制内容，不能复制目录本身**：目标目录已存在时
+        # `Copy-Item <源目录> <已存在目录> -Recurse` 是"放进容器"语义，会造出
+        # vendor\vendor\subtitle 这种嵌套（PS5.1 已用 -WhatIf 实证），而删了一半的
+        # vendor\subtitle 又缺文件——EXE 跑到旧代码或找不到自己的 vendor。
+        # 用 Get-ChildItem -Force 逐项复制（通配符 '*' 漏隐藏文件）。
+        if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+        Get-ChildItem -LiteralPath $srcDir -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $dstDir -Recurse -Force
+        }
+    }
+}
+# 布局自检：一旦出现嵌套就立刻失败，不要让它走到"完成"并被打进安装包。
+if (Test-Path (Join-Path $out 'vendor\vendor')) {
+    throw "组装异常：$out\vendor\vendor 是嵌套目录（覆盖回退写坏），请手工删掉 dist-app 后重跑本脚本"
 }
 foreach ($f in 'version.json', 'start.bat', 'README.md') {
     Copy-Item (Join-Path $root $f) $out -Force
@@ -88,6 +146,16 @@ foreach ($name in 'models', '.venv') {
         cmd /c mklink "/J" "$dstP" "$srcP" | Out-Null
         if (Test-Path $dstP) { Write-Host "  已重建 junction $name → $srcP" -ForegroundColor DarkGray }
     }
+}
+
+# 回填术语表等运行数据（原样字节写回，不经过 JSON 往返，避免改动用户词库）。
+# 只回填 glossary_*：config.json 仍走下面的"只补 key"，好让仓库模板里的新参数
+# 能生效；config.json 的 .bak/.bak-prompt/.tmp 是宿主自保备份、可再生，且可能带
+# key（会被 build_installer 的哨兵拦下），因此有意不搬。
+foreach ($name in @($preservedData.Keys)) {
+    $dstData = Join-Path $subtitleDst $name
+    [IO.File]::WriteAllBytes($dstData, $preservedData[$name])
+    Write-Host "  已把 dist-app 原有的运行数据回填：$name" -ForegroundColor DarkGray
 }
 
 # 回填用户 key（坑 #12 就此关闭）。注意 PS5.1 的 UTF8 必须无 BOM——
@@ -113,3 +181,13 @@ Remove-Item (Join-Path $root 'dist') -Recurse -Force -ErrorAction SilentlyContin
 Write-Host "[4/4] 完成。" -ForegroundColor Green
 Get-ChildItem $out | Select-Object Name, @{n='Size';e={ if($_.PSIsContainer){''}else{"{0:N1} MB" -f ($_.Length/1MB)} }} | Format-Table -AutoSize
 Write-Host "把 .venv 和 models 复制到 $out 即可独立运行（字幕服务需要）。" -ForegroundColor Yellow
+
+# 回退分支（原地覆盖）**不能宣称成功**：旧代码只打一行黄字然后照旧打印"[4/4] 完成"
+# 并 exit 0，dist-app 里的旧文件残留/半删状态会被 build_installer 当正常产物打包。
+# build_installer 只看退出码，所以这里必须以非零码收尾把它拦下。
+if (-not $cleanRemoved) {
+    Write-Host "[!] 未能清理 dist-app：本次是原地覆盖写入，仓库已删除的旧文件仍残留在产物里，产物可能不完整。" -ForegroundColor Red
+    Write-Host "    已以非零退出码结束（安装包构建会被拦下）。请关掉占用 dist-app 的进程后重跑：" -ForegroundColor Red
+    Write-Host "    llama-server / 资源管理器预览 / 杀软扫描 / 终端的当前目录停在 dist-app 内。" -ForegroundColor Red
+    exit 3
+}

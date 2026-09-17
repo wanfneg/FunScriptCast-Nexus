@@ -47,6 +47,28 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; \
 Name: "autostart"; Description: "开机自动启动 FunScriptCast-Nexus（当前用户）"; \
     GroupDescription: "附加任务："; Flags: unchecked
 
+[InstallDelete]
+; 升级安装必须清掉"上一版有、这一版不再分发"的旧文件（坑 #20 同族：Inno 只覆盖同名文件，
+; 从不删多余文件，于是升级完行为还是旧的）。**只删代码**，且显式避开运行数据：
+;   · {app}\vendor\subtitle 里混着用户在 UI 里攒出来的运行数据 —— config.json（含云端
+;     key）、glossary_*.json（术语表）、*.json.bak*（宿主自保备份）。整目录删除等于把
+;     词库和 key 一起清空（正是 P0-2 那类事故的安装包版本），所以这一层只逐项删代码文件。
+;   · cache\、logs\ 是运行产物，卸载时有意保留，这里同样不动。
+;   · vendor\llama 是 fetch_llama.ps1 下载的运行时二进制（约 1.1 GB，可能未随包分发或被
+;     用户自行升级/替换），不在删除范围——宁可留下旧 dll，也不删用户手里的运行时。
+Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\ui"
+Type: filesandordirs; Name: "{app}\tools"
+Type: filesandordirs; Name: "{app}\vendor\dlna"
+Type: filesandordirs; Name: "{app}\vendor\subtitle\docs"
+Type: filesandordirs; Name: "{app}\vendor\subtitle\tools"
+Type: filesandordirs; Name: "{app}\vendor\subtitle\__pycache__"
+Type: files; Name: "{app}\vendor\subtitle\*.py"
+Type: files; Name: "{app}\vendor\subtitle\*.pyc"
+Type: files; Name: "{app}\vendor\subtitle\*.md"
+Type: files; Name: "{app}\vendor\subtitle\*.txt"
+Type: files; Name: "{app}\vendor\subtitle\*.bat"
+
 [Files]
 Source: "..\dist-app\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist-app\runtime\*"; DestDir: "{app}\runtime"; \
