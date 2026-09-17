@@ -11,6 +11,38 @@
 
   function motionOff() { return document.documentElement.getAttribute("data-motion") === "off"; }
 
+  /* ------------------------------------------------ 轮询回填护栏（新增控件默认受保护）
+     每秒一次的 /api/state 回填会把"用户刚改过"的控件改回服务器旧值。聚焦中的框有
+     activeElement 可挡，但**已失焦、尚未落盘**的编辑挡不住：用户填完直接点旁边的按钮
+     → 按钮 mousedown 让输入框失焦 → 下一次轮询把文本改回旧值，而按钮那一下用的还是
+     旧值。R41 只给 #mtModel 打了个补丁；这里做成统一判据——聚焦中或 dirty 一律不回填，
+     保存成功才清 dirty（保存失败就保持 dirty，宁可不再回填也不丢用户的输入）。 */
+  var DIRTY = Object.create(null);       // 控件 id → 有未落盘的编辑
+  var PENDING = Object.create(null);     // 控件 id → 进行中的保存 Promise
+
+  function busyEditing(el) {
+    return !!el && (document.activeElement === el || DIRTY[el.id] === true);
+  }
+  function markDirty(el) { if (el && el.id) DIRTY[el.id] = true; }
+  function clearDirty(el) { if (el && el.id) delete DIRTY[el.id]; }
+
+  /* 保存单个设置项（6 个同步字段 + 4 个设置开关共用一份实现）。
+     记下 Promise 是为了"点同步前先把路径落盘"——服务端 /api/sync/run 读的是已保存设置。 */
+  function saveSetting(id, key, value, onDone) {
+    var body = {};
+    body[key] = value;
+    var p = api("/api/settings", "POST", body).then(function (r) {
+      if (r && r.ok) clearDirty(document.getElementById(id));
+      if (onDone) onDone(r);
+      return r;
+    });
+    PENDING[id] = p;
+    return p;
+  }
+  function flushSettings(ids) {
+    return Promise.all(ids.map(function (id) { return PENDING[id] || Promise.resolve(); }));
+  }
+
   /* pywebview JS 桥是否就绪（浏览器里直接开页面时没有） */
   function bridgeReady() {
     if (window.pywebview && window.pywebview.api) return true;
@@ -347,14 +379,21 @@
     el.textContent = line;
   }
 
+  var lastRootsSig;
   function renderRoots(roots) {
+    // 与日志面板同一套签名去重：每秒无条件重建 innerHTML 会清掉用户正在做的
+    // 框选/复制；删除按钮此前按下标定位，与渲染快照强耦合（这 1s 内列表一变，
+    // 删掉的可能不是用户看到的那条）——改成携带路径值，去列表里现找。
+    var sig = roots.join("\u0001");
+    if (sig === lastRootsSig) return;
+    lastRootsSig = sig;
     var box = $("#rootList");
     if (!roots.length) { box.innerHTML = '<div class="empty">还没有媒体根目录</div>'; return; }
-    box.innerHTML = roots.map(function (p, i) {
+    box.innerHTML = roots.map(function (p) {
       return '<div class="row"><svg class="ic muted"><use href="#i-folder"/></svg>' +
         '<div class="grow"><div class="name mono" style="font-size:12px">' + esc(p) + "</div></div>" +
         '<span class="badge acc">已启用</span>' +
-        '<button class="icon-btn del" data-del-root="' + i + '" title="移除"><svg class="ic"><use href="#i-trash-2"/></svg></button></div>';
+        '<button class="icon-btn del" data-del-root="' + esc(p) + '" title="移除"><svg class="ic"><use href="#i-trash-2"/></svg></button></div>';
     }).join("");
   }
 
@@ -383,9 +422,9 @@
       ? ("已连接 · " + (sy.serial || ""))
       : "未连接 · 请先扫描并连接 Quest";
 
-    if (document.activeElement !== $("#syncAdbPath")) $("#syncAdbPath").value = sy.adb_path || "";
-    if (document.activeElement !== $("#syncForce")) $("#syncForce").checked = !!sy.force_full;
-    if (document.activeElement !== $("#syncDelete")) $("#syncDelete").checked = !!sy.delete_extra;
+    if (!busyEditing($("#syncAdbPath"))) $("#syncAdbPath").value = sy.adb_path || "";
+    if (!busyEditing($("#syncForce"))) $("#syncForce").checked = !!sy.force_full;
+    if (!busyEditing($("#syncDelete"))) $("#syncDelete").checked = !!sy.delete_extra;
 
     var slots = sy.slots || {};
     ["script", "video"].forEach(function (kind) {
@@ -395,8 +434,8 @@
       setBadge(badge, s.busy ? "warn" : s.result ? "ok" : s.error ? "err" : "",
         s.busy ? "同步中" : s.result ? "已完成" : s.error ? "失败" : "待命");
       var local = $("#sync" + cap + "Local"), dev = $("#sync" + cap + "Device");
-      if (local && document.activeElement !== local) local.value = s.local_folder || "";
-      if (dev && document.activeElement !== dev) dev.value = s.device_folder || "";
+      if (local && !busyEditing(local)) local.value = s.local_folder || "";
+      if (dev && !busyEditing(dev)) dev.value = s.device_folder || "";
       var res = $("#sync" + cap + "Result");
       if (res) {
         if (s.busy) res.textContent = "正在同步…";
@@ -453,25 +492,42 @@
   function runSync(kind) {
     SY.kind = kind;
     lastSyncLogSig = undefined;   // 强制重绘（类型切换/新一轮同步）
-    var btn = $("#syncRun" + (kind === "script" ? "Script" : "Video"));
+    var cap = kind === "script" ? "Script" : "Video";
+    var btn = $("#syncRun" + cap);
     if (btn) btn.disabled = true;
-    api("/api/sync/run", "POST", { kind: kind }).then(function (r) {
-      if (!r.ok) {
+    // 先把这一类别的路径/开关落盘，再发起同步：服务端是按**已保存设置**取的目录，
+    // 不等待就 /api/sync/run 会用上一次的旧路径去同步（用户看着新路径、实际同步旧目录）。
+    var ids = ["sync" + cap + "Local", "sync" + cap + "Device", "syncAdbPath",
+               "syncForce", "syncDelete"];
+    flushSettings(ids).then(function () {
+      // 有保存失败的项就别开工：此时屏幕上的值和真正会执行的目录不一致，
+      // 硬跑下去等于"按用户没确认过的路径"同步（甚至删除多余文件）。
+      var stuck = ids.filter(function (id) { return DIRTY[id] === true; });
+      if (stuck.length) {
         if (btn) btn.disabled = false;
-        toast("无法开始同步", r.error || "", "err");
+        toast("设置未保存成功", "路径可能无效，请确认后再同步", "err");
         return;
       }
-      toast("开始同步", kind === "script" ? "脚本" : "视频");
-      poll(true);
+      api("/api/sync/run", "POST", { kind: kind }).then(function (r) {
+        if (!r.ok) {
+          if (btn) btn.disabled = false;
+          toast("无法开始同步", r.error || "", "err");
+          return;
+        }
+        toast("开始同步", kind === "script" ? "脚本" : "视频");
+        poll(true);
+      });
     });
   }
 
   function syncSettingsUI() {
     var s = S.settings;
-    $("#setDlnaAuto").checked = !!s.dlna_auto_start;
-    $("#setSubAuto").checked = !!s.subtitle_auto_start;
-    $("#setCloseTray").checked = !!s.close_to_tray;
-    $("#setStartMin").checked = !!s.start_minimized;
+    // 开关也要过护栏：点一下 → change 发 POST → 在它返回之前，本轮 /api/state
+    // 带回来的还是旧值，无护栏回填会让开关"自己弹回去"再跳回来。
+    if (!busyEditing($("#setDlnaAuto"))) $("#setDlnaAuto").checked = !!s.dlna_auto_start;
+    if (!busyEditing($("#setSubAuto"))) $("#setSubAuto").checked = !!s.subtitle_auto_start;
+    if (!busyEditing($("#setCloseTray"))) $("#setCloseTray").checked = !!s.close_to_tray;
+    if (!busyEditing($("#setStartMin"))) $("#setStartMin").checked = !!s.start_minimized;
     // 注意：这里**不能**碰 #mtModel —— 它的值只归 loadSubtitleConfig 填。
     // 旧代码每秒轮询都把输入框清空，用户点保存（mousedown 已失焦）时读到的
     // 就是空串，把配置里已保存的模型名覆盖成 ""。
@@ -495,7 +551,10 @@
       $("#segMaxChars").value = seg.max_chars != null ? seg.max_chars : "";
       $("#segPause").value = seg.pause_sec != null ? seg.pause_sec : "";
       $("#vadThreshold").value = vad.threshold != null ? vad.threshold : "";
-      $("#mtBackend").value = tr.backend || "ollama";
+      // 兜底必须与 index.html 里 <select> 的首项一致（local）。写成 "ollama" 的话，
+      // 配置里 backend 为空时会把选择器指向 Ollama，用户一保存就把后端切成
+      // 本地根本没在跑的 Ollama（翻译整条挂掉）。
+      $("#mtBackend").value = tr.backend || "local";
       var ollama = tr.ollama || {};
       $("#mtModel").value = ollama.model || "";
       $("#mtBase").value = ollama.base_url || "";
@@ -597,8 +656,12 @@
     $("#rootList").addEventListener("click", function (e) {
       var b = e.target.closest("[data-del-root]");
       if (!b) return;
-      var i = parseInt(b.getAttribute("data-del-root"), 10);
+      // 按**路径值**删除，不再按下标：下标只在"渲染那一刻"与列表对齐，
+      // 列表一旦在两次轮询之间变化，就会删错条目。
+      var p = b.getAttribute("data-del-root");
       var roots = (S.settings.dlna_roots || []).slice();
+      var i = roots.indexOf(p);
+      if (i < 0) { toast("该目录已不在列表中", p || "", "warn"); poll(true); return; }
       var removed = roots.splice(i, 1);
       api("/api/settings", "POST", { dlna_roots: roots }).then(function () {
         toast("已移除", removed[0] || "");
@@ -707,6 +770,13 @@
     });
     $("#glossImport").addEventListener("click", function () {
       if (!bridgeReady()) return;
+      // 与「保存术语表」同一道闸门，且必须在**导入前**挡：词库还没加载完时
+      // S.glossary 还是初始空表，"合并导入"只把新词并进空表，等 /api/glossary
+      // 回来又被整表覆盖——用户刚导入的词静默消失，界面却催他去保存。
+      if (!S.glossaryLoaded) {
+        toast("术语表尚未加载完成", "请等词库加载完再导入（否则本次导入会被覆盖）", "warn");
+        return;
+      }
       var lang = S.glossLang || "ja";
       var replace = !!$("#glossReplace").checked;
       window.pywebview.api.pick_file("open", "", ["CSV 文件 (*.csv)", "所有文件 (*.*)"]).then(function (r) {
@@ -774,26 +844,33 @@
     $("#syncRunScript").addEventListener("click", function () { runSync("script"); });
     $("#syncRunVideo").addEventListener("click", function () { runSync("video"); });
     $("#syncAdbPath").addEventListener("change", function () {
-      api("/api/settings", "POST", { adb_path: this.value.trim() });
+      markDirty(this);
+      saveSetting("syncAdbPath", "adb_path", this.value.trim());
     });
     $("#syncForce").addEventListener("change", function () {
-      api("/api/settings", "POST", { sync_force_full: this.checked });
+      markDirty(this);
+      saveSetting("syncForce", "sync_force_full", this.checked);
     });
     $("#syncDelete").addEventListener("change", function () {
-      api("/api/settings", "POST", { sync_delete_extra: this.checked });
+      markDirty(this);
+      saveSetting("syncDelete", "sync_delete_extra", this.checked);
       if (this.checked) toast("将删除设备上多余文件", "请确认设备目录正确", "warn");
     });
     $("#syncScriptLocal").addEventListener("change", function () {
-      api("/api/settings", "POST", { script_folder: this.value.trim() });
+      markDirty(this);
+      saveSetting("syncScriptLocal", "script_folder", this.value.trim());
     });
     $("#syncVideoLocal").addEventListener("change", function () {
-      api("/api/settings", "POST", { video_folder: this.value.trim() });
+      markDirty(this);
+      saveSetting("syncVideoLocal", "video_folder", this.value.trim());
     });
     $("#syncScriptDevice").addEventListener("change", function () {
-      api("/api/settings", "POST", { device_folder_script: this.value.trim() });
+      markDirty(this);
+      saveSetting("syncScriptDevice", "device_folder_script", this.value.trim());
     });
     $("#syncVideoDevice").addEventListener("change", function () {
-      api("/api/settings", "POST", { device_folder_video: this.value.trim() });
+      markDirty(this);
+      saveSetting("syncVideoDevice", "device_folder_video", this.value.trim());
     });
     initSeg("syncLogSeg", "syncLogThumb", function (btn) {
       SY.kind = btn.getAttribute("data-kind");
@@ -831,18 +908,22 @@
       el.addEventListener("mousedown", function (e) { e.stopPropagation(); });
     });
 
-    /* 设置 */
+    /* 设置：change 时先标 dirty（落盘成功才清），避免"点了又弹回去" */
     $("#setDlnaAuto").addEventListener("change", function () {
-      api("/api/settings", "POST", { dlna_auto_start: this.checked });
+      markDirty(this);
+      saveSetting("setDlnaAuto", "dlna_auto_start", this.checked);
     });
     $("#setSubAuto").addEventListener("change", function () {
-      api("/api/settings", "POST", { subtitle_auto_start: this.checked });
+      markDirty(this);
+      saveSetting("setSubAuto", "subtitle_auto_start", this.checked);
     });
     $("#setCloseTray").addEventListener("change", function () {
-      api("/api/settings", "POST", { close_to_tray: this.checked });
+      markDirty(this);
+      saveSetting("setCloseTray", "close_to_tray", this.checked);
     });
     $("#setStartMin").addEventListener("change", function () {
-      api("/api/settings", "POST", { start_minimized: this.checked });
+      markDirty(this);
+      saveSetting("setStartMin", "start_minimized", this.checked);
       toast(this.checked ? "下次启动将直接隐藏到托盘" : "下次启动将显示主窗口");
     });
     $("#copyIp").addEventListener("click", function () {
@@ -931,7 +1012,15 @@
   /* ---------------------------------------------------------- 轮询 */
   function poll(once) {
     api("/api/state").then(function (st) {
-      if (st && st.ok) render(st);
+      if (st && st.ok) {
+        // 渲染异常绝不能吃掉后面的重排定时器：此前 render 抛一次异常，整条轮询链
+        // 就永久停摆（数值冻结在最后一帧，只有切标签页或点按钮才能救回来）。
+        try {
+          render(st);
+        } catch (e) {
+          console.error("render 失败（已跳过本帧，轮询继续）", e);
+        }
+      }
     });
     if (once) return;
     clearTimeout(S.pollTimer);

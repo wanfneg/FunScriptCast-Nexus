@@ -156,8 +156,8 @@ E:\Development\FunScriptCast-Nexus\.venv\Scripts\python.exe -m uvicorn server_ap
 ## 4. 验证命令
 
 ```powershell
-# 三服务健康（Ollama 无 /health，404=活着）
-foreach ($p in 8081,8756,11434) { try { Invoke-RestMethod "http://127.0.0.1:$p/health" -TimeoutSec 3 } catch { "port $p down" } }
+# 三服务健康（翻译后端 = 本地 llama-server :8082；Ollama 已退役，若临时用回 Ollama 则查 11435）
+foreach ($p in 8081,8756,8082) { try { Invoke-RestMethod "http://127.0.0.1:$p/health" -TimeoutSec 3 } catch { "port $p down" } }
 
 # 流式全链路：期望 delta 全部 zh 非空、无假名、start_ms 单调
 curl.exe -N -sS --max-time 240 -X POST 'http://127.0.0.1:8756/transcribe/stream?lang=ja&translate=true&video_start_ms=45000' -H 'Content-Type: application/octet-stream' --data-binary '@E:\Development\_ref\ja60.pcm'
@@ -282,7 +282,7 @@ adb -s 192.168.2.129:5555 logcat -d | Select-String 'AiSubtitle\] \+|跳过空�
 | 12 句漏识（气声/耳语） | 换大 ASR 无效（R38 已证）⇒ 需音频侧手段（增益/VAD 调参） |
 | ASR 量化评测 | 需**日文参考文本**做 CER（现在只有中文参考，覆盖率天花板 ≈0.5 无法再归因） |
 | 影子播放器 | **已删除（v1.6.9）**：双声音根除、省一整份解码；代价是无提前量、字幕必然滞后。落点 `VideoPlayerBridge.ensurePlayerInstance`（tap 常驻主播放器 AudioSink）+ `AiSubtitleEngine.beginCapture/stopInternal`（消费者注入/摘除） |
-| 头显装机 | 装机命令 `C:\platform-tools\adb.exe -s 192.168.2.129:5555 install -r VRFunScriptCast\dist\VRFunScriptCast-Meta.apk`（**v1.6.14 为当前测试版本**） |
+| 头显装机 | 装机命令 `C:\platform-tools\adb.exe -s 192.168.2.129:5555 install -r VRFunScriptCast\dist\VRFunScriptCast-Meta.apk`（**v1.6.16 为当前版本**；头显仓库 `funscriptcore` 提交 `8cce3be`） |
 | 上游新版本 | 关注 release；`/live` 端点进入正式版后再评估（届时桥可改持久推流，省每请求会话重建） |
 | 工作区未提交 | R41 起已按功能分批提交（cb4026e / d16a540 / 80e0850）；dist-app 已同步并重编 exe |
 

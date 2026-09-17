@@ -22,6 +22,7 @@ import csv
 import hashlib
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import queue
 import re
@@ -300,11 +301,22 @@ def subtitle_cache_save(video_path: str, lang: str, segments: list,
         "segments": segments,
         "meta": meta or {},
     }
+    tmp = None
     try:
-        tmp = f.with_suffix(".json.tmp")
+        # tmp 名必须**唯一**（pid+线程）：同一 video+lang 的两次保存会并发——两台头显
+        # 播完同一部片、或客户端超时重发。固定名 `<key>.json.tmp` 会让两方互相踩：
+        # Windows 上 Python 的 open 不共享删除，先完成的一方 os.replace 会因另一方
+        # 仍持有该 tmp 而 WinError 32，这次保存直接失败（缓存丢了，"看第二遍不再重跑
+        # ASR"就成了空话）；交错发生在 replace 之前时，落盘还可能是两次写入的混合。
+        tmp = f.with_suffix(f".{os.getpid()}-{threading.get_ident()}.json.tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, f)
     except Exception as e:
+        try:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)   # 失败不留残骸（否则会被算进缓存体积）
+        except Exception:
+            pass
         return {"ok": False, "error": str(e)}
     RT.add_log(f"字幕已缓存（{lang} · {len(segments)} 段 → {f.name}）", "ok")
     return {"ok": True, "path": str(f), "count": len(segments),
@@ -386,6 +398,9 @@ SETTINGS_FILE = Path(os.environ.get("APPDATA") or str(Path.home())) / "FunScript
 _SETTINGS_LOCK = threading.RLock()
 # config.json / glossary_*.json 的写锁（同一原因；与设置文件分开，互不阻塞）
 _SUBTITLE_FILE_LOCK = threading.RLock()
+# 非空 = 设置文件存在但解析失败（由 load_settings 写、save_settings 读）：
+# 此时内存里是默认值，绝不能拿它当基底整文件覆盖回去。
+_SETTINGS_READ_ERROR = ""
 
 DEFAULT_SETTINGS = {
     "dlna_port": DLNA_PORT_DEFAULT,
@@ -409,7 +424,9 @@ DEFAULT_SETTINGS = {
 
 
 def load_settings() -> dict:
+    global _SETTINGS_READ_ERROR
     s = dict(DEFAULT_SETTINGS)
+    _SETTINGS_READ_ERROR = ""
     try:
         if SETTINGS_FILE.exists():
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -417,6 +434,11 @@ def load_settings() -> dict:
                 if k in data:
                     s[k] = data[k]
     except Exception as e:
+        # "文件不存在"（给默认值是对的）和"文件存在却读不出来"（给默认值就是错的）
+        # 必须分开：后者会让下一次 save_settings（它以本函数返回值作整文件写盘基底）
+        # 把"默认值 + 本次改动"落盘，用户的媒体根/同步目录/设置被永久抹掉。
+        # 打包版没有控制台，log.warning 谁也看不见——所以还要把状态传给 save_settings。
+        _SETTINGS_READ_ERROR = f"{type(e).__name__}: {e}"
         log.warning("读取设置失败：%s", e)
     # 兼容历史数据：早期版本会把用户粘进来的引号一起存下来（`"D:\my folder"`），
     # 那个路径永远不存在，DLNA 只会安静地列出空目录——头显里就是"文件夹是空的"，
@@ -491,6 +513,18 @@ def missing_roots(roots) -> list:
 def save_settings(patch: dict) -> dict:
     with _SETTINGS_LOCK:
         s = load_settings()
+        if _SETTINGS_READ_ERROR:
+            # 读失败时 s 就是默认值：写下去等于把用户配置换成默认值（只保留本次改动）。
+            # 宁可拒绝这次保存并保留原文件，也不能静默抹掉用户配置。
+            try:
+                shutil.copy2(SETTINGS_FILE, str(SETTINGS_FILE) + ".bak")
+                kept = f"原文件已备份为 {SETTINGS_FILE.name}.bak"
+            except Exception:
+                kept = "原文件未改动"
+            msg = f"设置文件无法解析（{_SETTINGS_READ_ERROR}），已拒绝覆盖以免清空配置（{kept}）"
+            log.warning("%s", msg)
+            RT.add_log(msg, "err")
+            return {"ok": False, "error": msg}
         for k, v in patch.items():
             if k not in DEFAULT_SETTINGS:
                 continue
@@ -588,12 +622,16 @@ def dlna_start(port: int | None = None, roots: list[str] | None = None) -> dict:
                 server = None
                 raise
             with RT.lock:
+                # 无论成功还是被取消，都必须复位 starting：dlna_start() 用这个标志
+                # 判断"已在启动中"，取消分支此前漏了复位 —— 于是"启动中点停止"之后
+                # 本会话内 DLNA 再也起不来（点启动只回 starting，界面永久卡在"启动中"，
+                # 只能重启宿主）。R41 加了代数校验撤下服务，但漏了这一个标志。
+                RT.dlna_starting = False
                 if gen != RT.dlna_gen:      # 期间用户点了停止 → 撤下，不留"僵尸服务"
                     cancelled = True
                 else:
                     cancelled = False
                     RT.dlna_server, RT.dlna_ssdp, RT.dlna_port = server, ssdp, port
-                    RT.dlna_starting = False
             if cancelled:
                 try:
                     ssdp.stop()
@@ -748,7 +786,10 @@ def _service_ours(health: dict | None) -> bool:
       · sub_spawn_ts == 0 → 本次宿主从没启动过服务，那 8756 上的一定是别人的；
       · started_at 缺失（老版本服务）→ 无从判断，当作自己人，宁可少报警。
     """
-    if not health:
+    if not health or not isinstance(health, dict):
+        # 非 dict 的 /health 返回体（别的程序占着 8756、或返回一个 JSON 数组/标量）
+        # 走 .get 会直接抛 AttributeError。这里判"不是自己人"而不是抛出去：
+        # 调用方 sub_start() 在异常下会把 sub_starting 永久卡住（见那里的注释）。
         return False
     with RT.lock:
         spawn = RT.sub_spawn_ts
@@ -757,7 +798,12 @@ def _service_ours(health: dict | None) -> bool:
         return False                # 我们没起过 → 不可能是自己人
     if not started:
         return True                 # 判不了，别误报
-    return float(started) >= float(spawn) - 1.0
+    try:
+        return float(started) >= float(spawn) - 1.0
+    except (TypeError, ValueError):
+        # started_at 不是数字（例如对方回 ISO 字符串）→ 判不了。
+        # 与 762-763 同一取舍：判不出来时当作自己人，宁可少报警也不要误杀。
+        return True
 
 
 def foreign_service() -> dict | None:
@@ -788,7 +834,16 @@ def sub_start() -> dict:
 
     # 端口已被别的进程占着：再拉一个也是徒劳（uvicorn 绑不上端口会立刻退出），
     # 直接复用它并如实标注，别制造一个"刚起来就死"的子进程。
-    f = foreign_service()
+    # ⚠️ 这一步会去读 8756 的 /health，必须在 sub_starting=True 之后**兜住异常**：
+    # 此前它裸奔，一抛就冒到 HTTP 层返回 500，而 sub_starting 永不复位 ——
+    # 之后每次启动都在 787-788 被短路成"启动中"，字幕服务直到重启宿主都起不来。
+    try:
+        f = foreign_service()
+    except Exception as e:
+        with RT.lock:
+            RT.sub_starting = False
+        RT.add_log(f"探测 8756 上已有服务失败：{type(e).__name__}: {e}", "err")
+        return {"ok": False, "error": f"探测已有服务失败：{type(e).__name__}: {e}"}
     if f:
         with RT.lock:
             RT.sub_starting = False
@@ -1114,15 +1169,40 @@ def sub_reclaim() -> dict:
     return {"ok": True, "killed": pid, "restart": sub_start()}
 
 
+def _host_code_sig() -> str:
+    """宿主自身源码签名（与字幕服务 /health 里的 code_sig 同一用途）。
+
+    为什么需要这个：头显其实同时依赖**两个面**——8756 的识别/翻译管线，以及 8791
+    的宿主面（字幕缓存读写、请求拉起服务）。而字幕服务的 code_sig 只覆盖
+    `vendor/subtitle/*.py`，宿主侧改了（缓存格式、白名单路由、缓存键规则…）
+    它完全看不出来。头显仓库的审查明确提出"无法回溯哪个 APK 配哪个服务端版本"，
+    这里把两半都做成头显能读到、能记录的标识。
+    """
+    try:
+        return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+    except Exception:
+        return ""
+
+
+_HOST_CODE_SIG = _host_code_sig()
+
+
 def headset_status() -> dict:
     """头显轮询用：模型起来没有。
 
     刻意只回最小字段——这个接口是暴露在局域网上的，`/api/state` 里有本机路径、
     日志、设备序列号之类的东西，不适合给头显（也就等于给整个局域网）。
+    这里新增的都是**标识类**字段（哈希/后端名/档位建议），不含路径与密钥。
     """
     st = sub_state()
     h = st.get("health") or {}
     status = st.get("status")
+    backend = str((h or {}).get("translate_backend") or "")
+    # 档位建议：云端单块 6.6–15s，而头显 3s 档的过期阈值只有 6s（STREAM_MAX_LAG_MS）
+    # ⇒ 3 秒块在云端**结构性**追不上，每块出队即被判过期丢弃（R40 实测）。本地
+    # 7B 单块 1.0–1.9s，3 秒档没问题。把建议由 PC 明确给出，头显据此切「分块 25s」，
+    # 不必靠人去记"切云端要手动改档位"这条隐规则。
+    cloud = backend in ("openai", "cloud")
     return {
         "ok": True,
         "ready": status == "ready",
@@ -1131,6 +1211,11 @@ def headset_status() -> dict:
         "asr": h.get("asr_model"),
         "translate": h.get("translate"),
         "version": app_version()["name"],
+        # ↓ 版本可追溯 + 档位联动（头显侧据此记录"哪个 APK 配哪个服务端版本"）
+        "translate_backend": backend or None,
+        "recommended_chunk_sec": 25 if cloud else 3,
+        "code_sig": (h or {}).get("code_sig"),
+        "host_sig": _HOST_CODE_SIG,
     }
 
 
@@ -1571,8 +1656,15 @@ def glossary_payload() -> dict:
         f = glossary_file(lang)
         try:
             out["langs"][lang] = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-        except Exception:
+        except Exception as e:
+            # 读失败**绝不能**伪装成"空表"：前端拿到 ok:true + 空表就认为"词库是空的"，
+            # 于是置 glossaryLoaded=true 放行保存；用户随后的常规操作（导入十几条新词
+            # 再保存）会用这十几条把几千条的词库整体覆盖。save_glossary 的空表防护
+            # 此时也判不出来——它读的是同一个坏文件。这里如实回 ok:false，
+            # 前端 loadGlossary 的 `if (!r.ok) return` 就会拒绝置位、保存被拦下。
             out["langs"][lang] = {}
+            out["ok"] = False
+            out.setdefault("errors", {})[lang] = f"{type(e).__name__}: {e}"
     return out
 
 
@@ -1583,6 +1675,21 @@ def save_glossary(body: dict) -> dict:
     if f is None or not isinstance(terms, dict):
         return {"ok": False, "error": "参数错误"}
     with _SUBTITLE_FILE_LOCK:
+        # 现有文件存在却**解析不了**时一律拒绝写入并先备份：此时 terms 很可能是
+        # 前端基于"读失败=空表"拼出来的残缺表（见 glossary_payload），
+        # 直接 os.replace 就等于把用户的词库替换成残缺版；而且下面那条
+        # "空表覆盖防护"的 existing 读的也是同一个坏文件，判不出来。
+        if f.exists():
+            try:
+                json.loads(f.read_text(encoding="utf-8"))
+            except Exception as e:
+                try:
+                    shutil.copy2(f, str(f) + ".bak")
+                    kept = f"（原文件已备份为 {f.name}.bak）"
+                except Exception:
+                    kept = "（备份失败，原文件未改动）"
+                return {"ok": False,
+                        "error": f"现有词表无法解析，已拒绝覆盖{kept}：{type(e).__name__}: {e}"}
         # 空表覆盖防护：前端在术语表**加载失败/未完成**时内存里就是空 dict，
         # 此时保存会把几千条词库整表清空且还报成功。真想清空的合法路径必须
         # 显式带 allow_empty（前端在用户确认后补发）。
@@ -1600,14 +1707,20 @@ def save_glossary(body: dict) -> dict:
             os.replace(tmp, f)
         except Exception as e:
             return {"ok": False, "error": str(e)}
-    # 通知服务端热重载（若在跑）
+    # 通知服务端热重载（若在跑）。结果必须如实回显：此前异常被 pass 吞掉，
+    # 而成功文案无条件打印——字幕服务没在跑时用户会看到"已热重载"，
+    # 实际服务下次启动读的还是启动时的旧词表，改动无声失效。
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{SUBTITLE_PORT}/glossary/reload", method="POST", data=b"")
         urllib.request.urlopen(req, timeout=2).read()
+        reloaded = True
     except Exception:
-        pass
-    RT.add_log(f"术语表已保存并热重载（{lang} · {len(terms)} 条）", "ok")
-    return {"ok": True, "count": len(terms)}
+        reloaded = False
+    if reloaded:
+        RT.add_log(f"术语表已保存并热重载（{lang} · {len(terms)} 条）", "ok")
+    else:
+        RT.add_log(f"术语表已保存（字幕服务当前未运行，重启服务后生效；{lang} · {len(terms)} 条）", "warn")
+    return {"ok": True, "count": len(terms), "reloaded": reloaded}
 
 
 # ---------------------------------------------------------------- 术语表 CSV
@@ -2052,10 +2165,19 @@ def request_quit() -> None:
         if win is not None:
             try:
                 win.destroy()
-                return
+                return             # 窗口模式：主线程 run() 的 finally 会做收尾
             except Exception as e:
                 log.warning("销毁窗口失败：%s", e)
-        os._exit(0)                # 无窗口模式兜底
+        # 无窗口模式（或销毁失败）走到这里。os._exit 会**跳过** run() 的 finally，
+        # 所以必须自己把字幕服务（连同 audiocpp 孙进程，约 3GB）和 DLNA 带走：
+        # 否则它们变成孤儿，而下次启动的 reap_orphan_audiocpp 看到 8756 还开着
+        # 会把它当成"在用"，于是永不回收，只能靠手动点「回收残留服务」。
+        for _step in (TRAY.stop, sub_stop, dlna_stop):
+            try:
+                _step()
+            except Exception:
+                pass
+        os._exit(0)
 
     threading.Thread(target=_do, daemon=True, name="quit").start()
 
@@ -2214,8 +2336,29 @@ def _create_app_mutex() -> None:
         pass
 
 
+def _setup_file_logging() -> None:
+    """把宿主日志同时落到 `%APPDATA%\\FunScriptCast-Nexus\\logs\\host.log`。
+
+    打包版是 GUI 子系统程序（`build/nexus.spec`: `console=False`）——没有控制台，
+    而 `logging` 此前只装了 stderr handler ⇒ `log.warning/error` **全部被丢弃**。
+    这正是"术语表读失败""设置文件解析失败""taskkill 失败"这类问题长期无声的直接原因：
+    它们只写 log，用户看不见，事后也无从排查。字幕服务那边早有同类做法
+    （`vendor/subtitle/run_server.py` tee 到 `logs/run_server.log`），宿主一直缺这一半。
+    """
+    try:
+        d = SETTINGS_FILE.parent / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(d / "host.log", maxBytes=2 * 1024 * 1024,
+                                 backupCount=3, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s"))
+        logging.getLogger().addHandler(fh)
+    except Exception as e:
+        log.warning("宿主文件日志不可用（忽略）：%s", e)
+
+
 def run(open_window: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    _setup_file_logging()
     _create_app_mutex()
     _migrate_settings()          # 先把历史设置里带引号的路径修掉，再读
     s = load_settings()
