@@ -1298,3 +1298,19 @@ GPU util 15%）、开关热生效闭环（false → reload enabled=False、词�
 一并删除；② 再删 6 条提示（Key 打码/关闭翻译说明/缓存说明/动效说明/LAN 说明/显存
 warn 块）。保留的只有真实状态（已启用/已停用、CSV 目标）与异常态警告（残留进程）、
 功能说明（CSV 管理词库、导入合并开关）。
+
+### Round 46 追加 6：自带 adb + 界面开发术语清理
+
+**自带 adb**（用户问"路径是不是写死了/能不能自带"）：原来不写死——vendor 探测链
+（ANDROID_HOME → LOCALAPPDATA SDK → C:\Android → PATH），但用户机器上没有就抓瞎。
+现改为**应用自带**：`tools\fetch_adb.ps1` 从 Google 官方源下载 platform-tools（~6MB，
+解压 adb.exe + 两个 AdbWin dll 到 `tools\adb\`，已执行并入库）；宿主 adb 解析顺序改为
+**界面填的路径 → 自带 tools\adb\adb.exe → vendor 自动探测**。build_exe/installer 的
+tools 清单自动携带 → 安装即开箱可用。实测打包版解析到自带副本（37.0.1）。
+⚠️ fetch_adb.ps1 新建后**又双叒丢了 BOM**（坑 #37 第三次自证）——PS5.1 按 GBK 读直接
+语法报错；凡是新建 .ps1 一律立刻补 BOM。
+
+**界面开发术语清理**（用户圈出术语表页的 "glossary_*.json/DOM/vendor 路径" 说明）：
+术语表行删 json 文件名副标题；圈出处整段删；同步页副标题去「adb 增量推送（打包 zip）」；
+「独立子进程 · PID · 端口 8756」→「运行中 · PID」；残留进程警告（界面+宿主日志）改人话。
+原则：**界面只说用户要做什么，实现细节（文件名/路径/协议/端口）一律不出现**。
