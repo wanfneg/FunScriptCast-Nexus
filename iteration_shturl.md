@@ -1175,3 +1175,50 @@ VAD，没有逐句合并/最短时长那套），所以这两行的绝对数字�
 
 
 
+
+## Round 45（2026-09-18）：Whisper 主 ASR 后端正式接入（R44 结论落地为可配置引擎）
+
+**任务**：执行交接文档 R44 §10 首推项——"PC 侧加 Whisper ASR 后端，与 audiocpp 并列、
+配置可切，头显零改动"。
+
+**实现**（提交 `ba5c34b`）：
+
+- 新增 `vendor/subtitle/whisper_backend.py`：faster-whisper / CTranslate2 进程内引擎，
+  默认 `kotoba-tech/kotoba-whisper-v2.0-faster`（cuda/float16），沿用生产 3s/1s 上传协议
+  与 `text_filters.keep_segment` 重叠去重——**头显侧一行不改**。
+- 三条 R44 实测铁律写死：① **不给 initial_prompt**（热词/上一句都忽略——给 prompt
+  诱发拉丁幻觉且热词无收益）；② `condition_on_previous_text=False`；③ 模型只用本地
+  HF 缓存（不在启动/请求内联网，`allow_download` 仅限启动期）。
+- 段级过滤与生产同源：复读退化 + 拉丁幻觉（`drop_latin_hallucination` 可关）；
+  **不给 prompt ⇒ 不存在回显条件，回显判据不写**（写了就是坑 #29 式误杀源）。
+- 空结果 `skipped=True`：语义"整块无语音"，server 的 whisper 二次兜底据此跳过
+  （主引擎已是 whisper，不能拿 CPU int8 把同段音频重跑一遍）。
+- 接线：`asr.backend = "whisper"` 分支（lifespan 加载，+2.5~3.9s）；新增
+  `NEXUS_ASR_BACKEND` 环境变量覆盖（与 TRANSLATE_BACKEND 同机制，评测切后端不用动
+  config.json）；`/health` 增 `asr_backend` 字段、`asr_model` 优先后端自报身份
+  （PyTorch 引擎的 `.model` 是模型对象不能直接回，已做类型守卫）。
+- 单元冒烟 +2（共 **10 项**）：whisper 后端懒加载/过滤/接口铁律、keep_segment 回归。
+
+**整片 A/B（sivr001 全片 1254s，同代码同口径，生产 3s/1s 协议经真实服务 :8759）**：
+
+| 指标 | audiocpp（r45qwen） | **whisper（r45whisper）** | 读法 |
+|---|---|---|---|
+| 语音覆盖召回 | **98.4%**（120/122） | 96.6%（115/119） | whisper 漏 4 vs 2 句（−1.8pp） |
+| 时序中位（可信配对） | −90ms | **+30ms** | whisper 系统性更准 |
+| \|偏差\|≤500ms | **68.6%** | 62.4% | qwen 的分布更收 |
+| 内容覆盖率（上界） | 0.484 | **0.542** | **+12%**，与 R44 预测 0.538 吻合 |
+| ≥0.80 高度一致 | 17.6% | **23.8%** | whisper 译文内容更好 |
+| 长度比（我/人工） | 1.56 | **1.46** | 碎片/重复更少 |
+| 越界拼接污染 | 20% | **18%** | 覆盖率上界更干净 |
+| 空译文 / 硬缺陷 | 2 / 0,0,0 | 2 / 0,0,0 | 持平 |
+| 端到端 wall | 263.7s | **197.9s** | ASR 部分 ~3×（每块中位 0.4s vs 1.0-1.9s） |
+
+- 与 R44 离线近似（--cut blocks：96.6%/+30ms/0.538）**逐位吻合** ⇒ 离线工具的预测
+  有效，正式接入没有损失。
+- qwen 侧基线同代码复现 R43（98.4%/−90ms/0.484）⇒ 两边都是同一份代码、同一把尺子。
+- **裁定**：whisper 后端达到接入标准，作为**可配置选项**就位（生产默认仍 audiocpp，
+  切换 = 配置一行 `asr.backend: "whisper"` 或环境变量）。召回 −1.8pp 的代价换来
+  覆盖 +12% / 时序更好 / 快 3×；是否切默认留给用户拍板（漏识的那几句是气声/耳语，
+  恰是 qwen+whisper 兜底组合理论上能覆盖的场景——未实测）。
+- 显存：whisper float16 ≈1.6GB + Sakura-7B 4.2GB ≈ 5.8GB / 8GB ✓（且该模式下不再
+  起 audiocpp 进程）。

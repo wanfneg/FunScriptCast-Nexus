@@ -1,11 +1,22 @@
 # AI 实时字幕 —— 状态与运维手册
 
-> 更新：2026-09-17（R41 全仓库审查修复日）
+> 更新：2026-09-18（R45 Whisper 后端接入日）
 > 范围：AI 字幕一条链路（VR 头显 ↔ PC Nexus ↔ audio.cpp ASR）+ 翻译质量
 > 事实来源：本文所有"实测"均来自真实运行；上游行为均读自 audio.cpp 源码（v0.7.4 二进制 + PR#553 源码克隆）
-> ⚠️ 本文 §0-§2 的翻译栈描述停留在 Ollama 时代（2026-09-16），**最新事实**（Sakura-7B +
->    llama.cpp + 云端 OpenAI 兼容、R37-R40 实测数据、25 秒档指引）以桌面交接文档 R40 与
->    `iteration_shturl.md` Round 36-41 为准；2026-09-17 R41 全仓库审查修复记录见 Round 41。
+> ⚠️ 本文 §0-§2 的栈描述停留在 Ollama/流式时代（2026-09-16），**最新事实**（Sakura-7B +
+>    llama.cpp + 云端、R43 重出基线、R44 参考项目实测、25 秒档真相）以桌面交接文档 R44 与
+>    `iteration_shturl.md` Round 36-45 为准；R41/R45 速览见下。
+
+## R45（2026-09-18）Whisper 主 ASR 后端接入速览
+
+`asr.backend = "whisper"`（新增分支，提交 `ba5c34b`）：faster-whisper/CTranslate2 进程内
+kotoba-whisper-v2.0-faster（cuda/float16），沿用生产 3s/1s 协议与 keep_segment 判据，
+**头显零改动**。三条铁律写死：不给 initial_prompt（诱发拉丁幻觉、热词无收益——
+`extra_context` 刻意忽略）；`condition_on_previous_text=False`；模型只用本地 HF 缓存。
+整片 A/B（同代码、真实服务、3s/1s）：召回 96.6% vs 98.4%（−1.8pp）、**时序 +30ms vs
+−90ms**、**覆盖 0.542 vs 0.484（+12%）**、wall 198s vs 264s，硬缺陷双方 0。生产默认仍
+audiocpp；切换=配置一行或 `NEXUS_ASR_BACKEND` 环境变量。`/health` 新增 `asr_backend`。
+详见 Round 45。
 
 ## R41（2026-09-17）全仓库审查修复速览
 
