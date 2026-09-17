@@ -49,7 +49,7 @@ from collections import deque
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 import uvicorn
 
@@ -181,6 +181,33 @@ def _multipart(pcm: bytes, model: str) -> tuple[bytes, str]:
     return bytes(out), boundary
 
 
+# 请求体上限：25s 块约 800KB，正常请求远远够用。与 server_app.MAX_BODY_BYTES 同值，
+# 两个入口（/transcribe 与 /transcribe/stream）必须同一口径——此前只有 /transcribe
+# 设了上限，而 /transcribe/stream 是**对局域网开放**的（头显流式模式直连它），
+# 于是 `await request.body()` 成了无上限读入：一个不带 Content-Length 的分块请求
+# 就能把服务进程读到 OOM。
+MAX_BODY_BYTES = 100 * 1024 * 1024
+
+
+async def read_capped_body(request: Request, limit: int = MAX_BODY_BYTES):
+    """带上限读取请求体；超限返回 None（并且不把整段读进内存）。
+
+    必须按块累加而不是先 `await request.body()` 再判长度：后者在判断之前
+    已经把整个 body 读进内存了，上限形同虚设。分块传输（无 Content-Length）
+    同样被这条挡住——`request.stream()` 是唯一的真相来源。
+    """
+    total = 0
+    parts: list[bytes] = []
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > limit:
+            return None
+        parts.append(chunk)
+    return b"".join(parts)
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "asr_base": ASR_BASE, "asr_model": ASR_MODEL,
@@ -189,7 +216,11 @@ def health():
 
 @app.post("/transcribe/stream")
 async def transcribe_stream(request: Request, lang: str = "ja", translate: bool = True, video_start_ms: int = 0):
-    pcm = await request.body()
+    pcm = await read_capped_body(request)
+    if pcm is None:
+        return JSONResponse(
+            {"error": f"请求体超过上限 {MAX_BODY_BYTES // (1024 * 1024)}MB"},
+            status_code=413)
     if len(pcm) % 2:
         pcm = pcm[:-1]
     if len(pcm) < 3200:

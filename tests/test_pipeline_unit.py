@@ -114,6 +114,43 @@ def t_degenerate_and_leak():
     assert not t._has_untranslated("", "")
 
 
+# 7 ---------------------------------- 请求体上限（/transcribe/stream 是局域网开放的）
+def t_read_capped_body():
+    """超限必须**边读边拒**，不能先整段读进内存再判长度。
+
+    /transcribe/stream 对局域网开放（头显流式模式直连），此前只有 /transcribe
+    设了上限，该路由的 `await request.body()` 无上限——一个不带 Content-Length
+    的分块请求能把服务读到 OOM。
+    """
+    import asyncio
+    from stream_bridge import read_capped_body
+
+    class FakeReq:
+        def __init__(self, chunks):
+            self.chunks = chunks
+            self.consumed = 0
+
+        async def stream(self):
+            for c in self.chunks:
+                self.consumed += 1
+                yield c
+
+    # 未超限：原样返回
+    req = FakeReq([b"abc", b"def"])
+    assert asyncio.run(read_capped_body(req, 100)) == b"abcdef"
+    assert req.consumed == 2
+
+    # 超限：返回 None，且**提前中断**（没有把后续分块读完）
+    chunks = [b"x" * 10] * 50
+    req = FakeReq(chunks)
+    assert asyncio.run(read_capped_body(req, 25)) is None
+    assert req.consumed < len(chunks), f"超限后仍在继续读：{req.consumed}/{len(chunks)}"
+
+    # 恰好等于上限：允许（边界不能差一）
+    req = FakeReq([b"y" * 25])
+    assert asyncio.run(read_capped_body(req, 25)) == b"y" * 25
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -122,6 +159,7 @@ if __name__ == "__main__":
     check("make_free 实例复用（含 auto/edge 别名）", t_make_free_auto_reused)
     check("中文式 JSON 归一化与校验", t_jsonish_and_validate)
     check("退化/漏译判据", t_degenerate_and_leak)
+    check("请求体上限边读边拒（超限提前中断）", t_read_capped_body)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

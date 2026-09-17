@@ -227,7 +227,10 @@ class _LoopbackGuard(BaseHTTPMiddleware):
         path = request.url.path
         if not path.startswith(_LAN_OPEN_PREFIXES):
             client = request.client.host if request.client else ""
-            if client and client not in _LOOPBACK:
+            # 判据写成 `not in`（而不是 `client and client not in`）：拿不到来源地址时
+            # 必须**拒绝**而不是放行。后者在 client 为 None/空串时跳过整个检查，
+            # 等于给"取不到来源"的请求开了一条直通管理接口的路——门卫要 fail-closed。
+            if client not in _LOOPBACK:
                 return JSONResponse({"error": "该接口仅限本机访问"}, status_code=403)
         return await call_next(request)
 
@@ -334,15 +337,18 @@ def glossary_reload():
 async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0,
                      keep_from_ms: int = 0, translate: bool = True):
     global _LAST_REQ_TS, _INFLIGHT
-    # 先看 Content-Length 再读体：超大请求直接拒收，不先把几百 MB 读进内存
+    # 先看 Content-Length 再读体：超大请求直接拒收，不先把几百 MB 读进内存。
+    # 没有 Content-Length（分块传输）时由 read_capped_body 兜底——它边读边累加，
+    # 超限立刻中断，与 /transcribe/stream 共用同一实现（两个入口必须同一口径）。
     cl = request.headers.get("content-length", "")
+    oversize = {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
+                "skipped": True, "error": f"请求体超过上限 {MAX_BODY_BYTES // (1024*1024)}MB"}
     if cl.isdigit() and int(cl) > MAX_BODY_BYTES:
-        return {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
-                "skipped": True, "error": f"请求体超过上限 {MAX_BODY_BYTES // (1024*1024)}MB"}
-    body = await request.body()
-    if len(body) > MAX_BODY_BYTES:
-        return {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
-                "skipped": True, "error": f"请求体超过上限 {MAX_BODY_BYTES // (1024*1024)}MB"}
+        return oversize
+    from stream_bridge import read_capped_body
+    body = await read_capped_body(request, MAX_BODY_BYTES)
+    if body is None:
+        return oversize
     with _INFLIGHT_LOCK:
         _INFLIGHT += 1
     try:
@@ -398,6 +404,14 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
             except Exception as e:
                 print(f"[asr] whisper 兜底失败（忽略）: {type(e).__name__}: {e}", flush=True)
     mt_ms = 0.0
+    # 源语言 == 目标语言时跳过翻译。头显的语言枚举里含"中文"（LangCodes=ja/en/ko/zh），
+    # 而 PC 的 target_lang 就是 zh：不跳过就会中→中再翻一遍——白烧一次请求，
+    # 还可能把本来就正确的中文字幕改坏。lang 可能带地区后缀（zh-CN），取主语言比。
+    _src = (lang or "").split("-")[0].strip().lower()
+    _tgt = str((CFG.get("translate") or {}).get("target_lang", "zh") or "zh").split("-")[0].lower()
+    if translate and _src and _src == _tgt:
+        print(f"[transcribe] 源语言({lang})与目标语言({_tgt})相同，跳过翻译", flush=True)
+        translate = False
     if translate and result["segments"]:
         t1 = time.perf_counter()
         tr_ctx = ""

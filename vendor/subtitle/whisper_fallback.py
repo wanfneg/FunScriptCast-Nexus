@@ -30,6 +30,8 @@ class WhisperFallback:
         self.device = str(cfg.get("device", "cpu"))
         self.compute_type = str(cfg.get("compute_type", "int8"))
         self.language = str(cfg.get("language", "ja"))
+        # 默认**禁止**在请求里联网下载（见 _ensure 的说明）
+        self.allow_download = bool(cfg.get("allow_download", False))
         self._model = None
         self._lock = threading.Lock()
         self.last_error = ""
@@ -48,10 +50,29 @@ class WhisperFallback:
         with self._lock:
             if self._model is not None:
                 return
+            from faster_whisper import WhisperModel
+            # 先用**本地缓存**加载，绝不在一次 /transcribe 里临时下载模型。
+            # 真炸点：本兜底由识别请求同步触发（server_app._transcribe_impl 里
+            # run_in_threadpool 调用），此前首次使用会直接去 HF 拉约 800MB ——
+            # 播放中途卡住数分钟，且很可能超过头显 uploadChunk 的 180s readTimeout，
+            # 于是"兜底"反而把正常块也拖丢。模型应随安装目录预置（见模块注释）。
+            try:
+                self._model = WhisperModel(self.model_ref, device=self.device,
+                                           compute_type=self.compute_type,
+                                           local_files_only=True)
+                return
+            except Exception as e:
+                self.last_error = f"本地无缓存：{type(e).__name__}: {e}"
+            if not self.allow_download:
+                raise RuntimeError(
+                    f"二次识别兜底模型不在本地（{self.model_ref}）：{self.last_error}；"
+                    "已跳过兜底（不影响主链路）。要启用请先手工下载该模型，"
+                    "或设 asr.whisper_fallback.allow_download=true（会在请求内联网下载约 800MB）")
             # 国内网络：未显式配置镜像时默认走 hf-mirror（模型 ~800MB）
             if self.model_ref.startswith(("kotoba-tech/",)) and not os.environ.get("HF_ENDPOINT"):
                 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-            from faster_whisper import WhisperModel
+            print(f"[asr] whisper 兜底模型本地缺失，开始下载 {self.model_ref}"
+                  f"（约 800MB，将阻塞本次识别请求）", flush=True)
             self._model = WhisperModel(self.model_ref, device=self.device,
                                        compute_type=self.compute_type)
 
