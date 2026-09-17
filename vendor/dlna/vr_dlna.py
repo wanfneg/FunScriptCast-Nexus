@@ -475,27 +475,28 @@ class MediaLibrary:
                     rel = rel[len(lbl) + 1:]
                     if not rel:
                         return None
-                p = _norm(Path(self.roots[0].path) / rel)
-                if not self._inside_root(self.roots[0], p):
+                matched_root = self.roots[0]
+                p = _norm(Path(matched_root.path) / rel)
+                if not self._inside_root(matched_root, p):
                     return None
             else:
                 label, _, rest = rel.partition("/")
-                root = next((r for r in self.roots if r.label.casefold() == label.casefold()), None)
-                if root is None or not rest:
+                matched_root = next((r for r in self.roots if r.label.casefold() == label.casefold()), None)
+                if matched_root is None or not rest:
                     return None
-                p = _norm(Path(root.path) / rest)
-                if not self._inside_root(root, p):
+                p = _norm(Path(matched_root.path) / rest)
+                if not self._inside_root(matched_root, p):
                     return None
         except OSError as e:
             log.warning("key_to_path resolve failed for %r: %s", key, e)
             return None
-        # 词法 containment 防不了符号链接/联接逃逸：最终组件若是 reparse point 直接拒绝
-        try:
-            if os.lstat(p).st_file_attributes & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
-                log.warning("拒绝 reparse point（符号链接/联接）: %s", p)
-                return None
-        except OSError:
-            pass  # 不存在或云盘异常：由后续 open/stat 处理
+        # 词法 containment 防不了联接/符号链接逃逸：root 内只要有一层目录是 reparse
+        # point，字符串看着仍在 root 里、真实落点却已经在 root 外（root=C:\Users 时
+        # 系统自带的 "All Users" → C:\ProgramData 就是这种），旧实现只检查最后一段
+        # 因此完全放行。这里改为逐段检查 root 之下的每个组件。
+        if not self._reparse_free_below(matched_root.path, p):
+            log.warning("拒绝 reparse point（符号链接/联接）路径: %s", p)
+            return None
         return p
 
     @staticmethod
@@ -516,6 +517,29 @@ class MediaLibrary:
             return bool(os.lstat(path).st_file_attributes & 0x400)
         except (OSError, AttributeError):
             return False
+
+    @staticmethod
+    def _reparse_free_below(root_path: Path, path: Path) -> bool:
+        """root 之下的每一段路径组件是否都不是 reparse point（符号链接/联接）。
+
+        纯词法 containment 只能保证"拼出来的字符串"在 root 内，一旦中间某层目录
+        是联接，真实落点就在 root 外；因此必须逐段检查，而不是只看最后一段。
+        root 自身不检查——媒体根本身挂在联接/网盘映射上是很常见的配置，不属于逃逸。
+        走 lstat 而不是 resolve()/realpath()：后者依赖句柄式解析，cd2 等云盘虚拟卷
+        必然失败（见 _norm），用它反而会把正常访问一起拒掉。
+        """
+        try:
+            rel = _norm(path).relative_to(_norm(root_path))
+        except (OSError, ValueError):
+            return False  # 不在 root 内：调用方本该拦下，这里按不安全处理
+        cur = _norm(root_path)
+        for part in rel.parts:
+            cur = cur / part
+            # 组件不存在时 _is_reparse 为 False，继续往下走也只会得到 False，
+            # 结果同样正确（不存在的路径不可能指向根外），代价只是几次失败的 lstat。
+            if MediaLibrary._is_reparse(cur):
+                return False
+        return True
 
     def collect_scripts(self, base_key: str = "") -> list[dict]:
         """枚举 .funscript 文件，返回 [{key,url,name,basename,rel}]。
@@ -550,7 +574,14 @@ class MediaLibrary:
                 cur, rel = stack.pop()
                 try:
                     it = _os_retry(lambda: os.scandir(cur), what=f"scandir {cur}")
+                except (FileNotFoundError, NotADirectoryError) as e:
+                    # 目录"这一刻不存在"（改名/移动/网盘未挂载）不是坏目录：记进 24h
+                    # 黑名单会让用户把目录恢复回来之后仍被隐藏一整天。与 _dir_items
+                    # 的既有口径保持一致——只报错，不进黑名单。
+                    log.error("目录不存在，已跳过：%s（%s）", cur, e)
+                    continue
                 except OSError:
+                    # 权限/IO/云盘卷瞬时故障：仍走黑名单退避，避免每次都卡在坏目录上
                     self._mark_broken(cur)
                     continue
                 with it:
@@ -1350,7 +1381,13 @@ class DlnaHandler(BaseHTTPRequestHandler):
 
     def _arg(self, body: bytes, name: str) -> str:
         m = re.search(rb"<%s>([^<]*)</%s>" % (name.encode(), name.encode()), body)
-        return m.group(1).decode("utf-8", errors="ignore") if m else ""
+        if not m:
+            return ""
+        # SOAP 参数是 XML 文本：客户端把名字里的 & 发成 &amp; 这类实体。不反转义的话
+        # 取到的是字面量 "a &amp; b.mp4"，拿去 key_to_path 查的是一个不存在的文件名，
+        # 于是 browse 返回 0 条 —— 头显里就显示空目录（目录名同理）。
+        # 播放不受影响：res URL 走 quote 编码（&→%26），不经过这里。
+        return html.unescape(m.group(1).decode("utf-8", errors="ignore"))
 
     def _soap_response(self, action: str, service: str, inner: str) -> None:
         body = (
@@ -1646,7 +1683,15 @@ class DlnaApp:
                 lambda: sorted(os.scandir(dir_path), key=lambda e: e.name.casefold()),
                 what=f"scandir {dir_path}",
             )
+        except (FileNotFoundError, NotADirectoryError) as e:
+            # 目录不存在（改名/移动/网盘未挂载）≠ 坏目录：只报错，绝不写黑名单。
+            # 黑名单是给"列得出但打不开"的云盘坏条目用的 24h 退避，把"暂时不存在"
+            # 也记进去，用户就算把目录恢复回来也照样看不见一整天。
+            # 与 _dir_items 的既有口径保持一致（browse 实际走的是本函数）。
+            log.error("目录不存在，已跳过：%s（%s）", dir_path, e)
+            return []
         except OSError:
+            # 权限/IO/云盘卷瞬时故障：仍走黑名单退避，避免每次浏览都卡在坏目录上
             self.library._mark_broken(dir_path)
             log.warning("目录 %s 无法枚举，已加入黑名单（24h 后重试）", dir_path)
             return []
@@ -1666,6 +1711,13 @@ class DlnaApp:
             except OSError:
                 continue
             entry_path = Path(entry.path)
+            if is_dir and self.library._is_reparse(entry_path):
+                # 根内的联接/符号链接目录会把浏览结果引到根外（Windows 自带的
+                # C:\Users\All Users → C:\ProgramData 就是这种），既泄露媒体库之外
+                # 的内容，又让客户端把它当普通容器继续下钻。collect_scripts 早已这样
+                # 过滤，浏览侧此前漏了，于是 junction 会以普通文件夹的样子出现。
+                log.info("跳过 reparse 目录（符号链接/联接）: %s", entry_path)
+                continue
             if is_dir and self.library._is_broken(entry_path):
                 log.info("跳过坏目录（黑名单）: %s", entry_path)
                 continue

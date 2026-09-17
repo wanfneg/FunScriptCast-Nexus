@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import subprocess
 import sys
 import tempfile
@@ -205,6 +206,8 @@ class FunscriptSyncEngine:
         self.adb = adb
         self.force_full = False
         self.delete_extra = False
+        # scan_local 会置位：本地扫描是否有无法读取的子树（残缺 ⇒ 禁止删除设备文件）
+        self.last_scan_incomplete = False
         self.on_log: Optional[Callable[[str], None]] = None
 
     def _emit(self, msg: str) -> None:
@@ -212,25 +215,37 @@ class FunscriptSyncEngine:
             self.on_log(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
     def scan_local(self) -> dict[str, str]:
-        """返回 {相对路径(实际): 相对路径(实际)}，键即值，方便按 casefold 比较。"""
+        """返回 {相对路径(实际): 相对路径(实际)}，键即值，方便按 casefold 比较。
+
+        顺带记录扫描是否**残缺**（`self.last_scan_incomplete`）：`rglob` 遇到无权限
+        目录是**静默跳过**的（Python 3.10 不抛异常），于是"本地看起来少了那些文件"
+        → 删除判定会把设备上对应的脚本全部当成"多余"删掉。改成 os.walk + onerror
+        记错，让删除路径能据此拒绝执行——空集闸门只挡住了"整体为空"这一种。
+        """
         root = Path(self.local_folder)
         result: dict[str, str] = {}
-        for p in root.rglob("*"):
-            if not p.is_file():
-                continue
-            if p.suffix.lower() != ".funscript":
-                continue
-            try:
-                rel = p.relative_to(root).as_posix()
-            except ValueError:
-                continue
-            result[rel] = rel
+        errors: list = []
+        for dirpath, _dirnames, filenames in os.walk(root, onerror=errors.append):
+            base = Path(dirpath)
+            for name in filenames:
+                p = base / name
+                try:
+                    if not p.is_file() or p.suffix.lower() != ".funscript":
+                        continue
+                    rel = p.relative_to(root).as_posix()
+                except (OSError, ValueError):
+                    continue
+                result[rel] = rel
+        self.last_scan_incomplete = bool(errors)
         return result
 
     def scan_device(self) -> set[str]:
         """设备上的 funscript 相对路径集合（实际路径字符串）。"""
         result: set[str] = set()
-        cmd = f"find {_shq(self.device_folder)} -name '*.funscript' -type f 2>/dev/null"
+        # -iname 而非 -name：本地判据是 suffix.lower()（大小写不敏感），设备端若用
+        # 大小写敏感的 -name，则 .FUNSCRIPT 这类大写扩展名永远匹配不上，每轮都被判成
+        # "设备上没有"而重复推送。只是白推，不会误删，但永不收敛。
+        cmd = f"find {_shq(self.device_folder)} -iname '*.funscript' -type f 2>/dev/null"
         out = self.adb.shell(self.serial, cmd)
         for line in out.splitlines():
             p = line.rstrip("\r\n")
@@ -262,10 +277,17 @@ class FunscriptSyncEngine:
         if not self.local_folder or not os.path.isdir(self.local_folder):
             raise InvalidOperationException("本地目录不存在：" + str(self.local_folder))
 
+        # 设备端是 POSIX 路径，必须先规范化再比对：'..' 段能绕过纯字符串比对
+        # （"/sdcard/Funscript/.." 规范化后正好是 /sdcard），护栏等于没有。
+        # 规范化结果同时写回 device_folder —— 带 '..' 的路径会让 scan_device 的
+        # 前缀裁剪失配，设备相对路径整体多出一层目录，删除判定就会把设备上的文件
+        # 全部当成"本地已删除"的多余文件。
+        dev_path = posixpath.normpath(self.device_folder.replace("\\", "/"))
+        dev_path = ("/" + dev_path.lstrip("/")).rstrip("/") or "/"  # 折叠 "//sdcard" 与尾部斜杠
         unsafe = {"/", "/sdcard", "/storage/emulated/0", "/storage/emulated/legacy", "/mnt/sdcard"}
-        dev_norm = self.device_folder.rstrip("/").casefold()
-        if dev_norm in {u.casefold() for u in unsafe}:
+        if dev_path.casefold() in {u.casefold() for u in unsafe}:
             raise InvalidOperationException("设备目录过宽，禁止使用根目录/存储根目录进行同步，以免误删文件")
+        self.device_folder = dev_path
 
         self.adb.verify_device(self.serial)
         self._emit(f"设备校验通过：{self.serial}")
@@ -349,7 +371,17 @@ class FunscriptSyncEngine:
                     pass
 
         # 删除检测：设备上存在但本地已不存在的文件
-        if self.delete_extra:
+        if self.delete_extra and (not local or self.last_scan_incomplete):
+            # stale 的含义在"本地集合不可信"时会整个翻转成"设备上的文件全是多余的"：
+            # 本地目录真的空、选错了目录、或**扫描残缺**（无权限子树被静默跳过）都会
+            # 导致本地看起来比设备少，紧接着就是 rm -f 把设备上的脚本清空。这一轮不删
+            # 顶多让用户再跑一次，误删却无法撤销 —— 所以本地集合不可信时只报警告，
+            # 不作为任何删除的依据（下面的数量校验仍保留，是第二道防线）。
+            why = ("本地扫描结果为 0 个" if not local
+                   else "本地扫描不完整（有子树无法读取）")
+            self._emit(f"⚠ {why}，已跳过「删除设备多余文件」以免误删设备上文件；"
+                       "请确认本地目录是否选错或缺少读取权限")
+        elif self.delete_extra:
             after = self.scan_device()
             local_cf = {rel.casefold() for rel in local}
             stale = [p for p in after if p.casefold() not in local_cf]
