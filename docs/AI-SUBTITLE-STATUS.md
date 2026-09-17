@@ -293,13 +293,16 @@ PC（FunScriptCast-Nexus）
   vendor\subtitle\stream_bridge.py      ★ 流式桥（攒批/切句/时间/WAV 封装/错误透出）
   vendor\subtitle\server_app.py         末尾 /transcribe/stream 路由 + 空闲回收防误杀 + 回环门卫（R41）
   vendor\subtitle\translate_engine.py   翻译引擎（批量/纠错/最好一轮/逐条兜底/术语修补）
-  vendor\subtitle\text_filters.py       两侧共用文本判据（退化复读/热词复读）
-  vendor\subtitle\audiocpp_backend.py   离线路径后端（热词 context 转发、Job Object 带走子进程）
+  vendor\subtitle\text_filters.py       两侧共用文本判据（退化复读/热词复读/**跨块去重 keep_segment/
+                                        token 拼接 join_tokens**，R42 起判据只有一份）
+  vendor\subtitle\audiocpp_backend.py   离线路径后端（热词 context 转发、Job Object 带走子进程、
+                                        RLock + 失败回收子进程，R42）
   vendor\subtitle\llama_backend.py      本地翻译 llama.cpp 生命周期（RLock 防死锁，R41）
   host_server.py                        按需拉起模型（缓存 :155/:192）；start/stop 代数校验、
-                                        Origin 校验、崩溃监控、AppMutex（R41）
-  tests\compare_with_reference.py       与人工字幕的质量对比工具
-  tests\test_pipeline_unit.py           管线单元冒烟（6 项，秒级，R41 新增）
+                                        Origin 校验、崩溃监控、AppMutex（R41）；
+                                        /api/headset/status 带头显可读的版本标识与档位建议（R42）
+  tests\compare_with_reference.py       与人工字幕的质量对比工具（R42 修假漏识判据与口径）
+  tests\test_pipeline_unit.py           管线单元冒烟（7 项，秒级，R41 新增 / R42 加一项）
 
 头显（VRFunScriptCast）
   funscriptcore\...\engine\AiSubtitleEngine.kt     流式上传分支（SSE 解析、STREAM_MAX_LAG_MS）
@@ -311,3 +314,45 @@ PC（FunScriptCast-Nexus）
   E:\Development\_ref\audio.cpp\        源码克隆（PR#553，比 v0.7.4 新两天）
   E:\Development\_ref\audiocpp-asr-stream.json   流式服务配置
 ```
+
+## 9. R42 变更摘要（下一步必须知道的行为变化）
+
+> 完整审查记录见 `iteration_shturl.md` Round 42。本轮共 6 个提交：
+> `1191398`（字幕服务健壮性/安全）→ `c9468bb`（宿主+UI）→ `535bfc3`（文档）→
+> `a08f77a`（tests 评测链）→ `b0a82a4`（翻译调度）→ `827e899`（ASR 判据）→
+> `750dc6e`（DLNA）。
+
+**改了对外行为/判据的（会影响质量指标与头显所见）：**
+
+| 变化 | 说明 |
+|---|---|
+| **8756 请求体上限两个入口统一** | `/transcribe/stream` 此前**没有**上限（而它对局域网开放）→ 现与 `/transcribe` 共用 `read_capped_body()`，边读边拒、超限提前中断 |
+| **回环门卫改 fail-closed** | 取不到来源地址时此前**放行**，现在拒绝。`/transcribe`、`/health` 仍对局域网开放（头显零改动） |
+| **复读判据只用"真正进提示词的键"** | 此前拿整张术语表（2096 键）当热词 → 正常台词被误判复读丢弃。实测四条正常句不再被丢；术语表里 81 条整句键的误判 47→0。**代价**：默认 `context_max_chars=0` 时"念领域词表"不再判复读（那些词本就不在 prompt 里） |
+| **`is_prompt_echo` 加长度下限** | 此前"与上一句同尾"的正常短句（`ね`/`悠亜`/`だめ`）被判回显丢弃，且重试救不回 |
+| **跨块去重判据统一** | PyTorch 侧此前仍用旧判据 → 跨块长句两块都丢（192.8s 那句的同类）。现两后端共用 `text_filters.keep_segment` |
+| **后端不可达不再逐句撞满超时** | 实测死后端单块请求数 **21→1**；内容级失败（缺键/漏译）**仍走逐句补救**（R41 的 14/14 救回路径已实测保留） |
+| **「关闭翻译」真正生效** | 此前 `backend=none` 会静默落到 Ollama（没服务就每句失败日志，有服务就**真的翻译**） |
+| **缓存键并入 `mt_user_prefix`**，`_CACHE_VERSION` 4→5 | 改这个提示词键后不再命中旧译文；版本号变化意味着旧缓存自然失效 |
+| **头显可从 8791 读到版本标识与档位建议** | `/api/headset/status` 新增 `code_sig`（字幕管线签名）、`host_sig`（宿主源码签名）、`translate_backend`、`recommended_chunk_sec`（local→3 / 云端→25）。这是 R41 §9 首推的"档位与后端联动"与头显仓库要求的"可回溯哪个 APK 配哪个服务端版本" |
+
+**运维安全（会直接影响你的机器）：**
+
+1. **`tests\` 里 4 个脚本此前会打到生产实例**：宿主被占端口后会主动退出、把请求留给已有实例，
+   而脚本假定 8790 上的是自己刚拉起的那个 → `run_full_with_cache.py` 会**把测试字幕写进你的真实缓存**、
+   `test_quit.py`/`test_tray_run.py` 会**把你的程序杀掉**、`test_frameless.py`/`test_tray_close.py`
+   会同端口双绑（`allow_reuse_address=1`，Windows 允许双绑）。**现已全部补上 8790 占用预检**——
+   但仍请记住：跑这些脚本前确认 8790 空闲。
+2. **用户术语表是 dist-app 侧的运行数据**（宿主 `SUBTITLE_DIR` 指向 `APP_DIR\vendor\subtitle`）。
+   `sync_distapp.ps1` 与 `build_exe.ps1` 若只保护 `config.json`，一次同步就会用仓库旧副本
+   静默替换你在 UI 里保存的术语表 —— 修复见打包/工具一批（R42）。
+3. **模型不都在安装目录**：whisper 兜底（kotoba-whisper）的模型来自 HF 缓存
+   （`%USERPROFILE%\.cache\huggingface`）。R42 起该兜底**默认只用本地缓存、不在请求内联网下载**
+   （此前首次触发会在识别请求里拉约 800MB，可能直接超过头显 180s readTimeout）。
+4. 打包版宿主此前**没有任何文件日志**（`console=False` + 只有 stderr handler）⇒ `log.warning/error`
+   全部丢弃。R42 起写 `%APPDATA%\FunScriptCast-Nexus\logs\host.log`（2MB × 3 轮换）。
+
+**注意：宿主本体在 exe 里**——`host_server.py` 的这些改动**必须重编 exe 才生效**
+（`build\build_exe.ps1`）；`ui\` 与 `vendor\` 外置，同步后生效。本轮**没有**重编、也没有
+重启你正在运行的程序。
+
