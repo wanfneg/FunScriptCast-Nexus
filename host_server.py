@@ -1170,16 +1170,39 @@ def sub_reclaim() -> dict:
 
 
 def _host_code_sig() -> str:
-    """宿主自身源码签名（与字幕服务 /health 里的 code_sig 同一用途）。
+    """宿主自身身份签名（与字幕服务 /health 里的 code_sig 同一用途）。
 
     为什么需要这个：头显其实同时依赖**两个面**——8756 的识别/翻译管线，以及 8791
     的宿主面（字幕缓存读写、请求拉起服务）。而字幕服务的 code_sig 只覆盖
     `vendor/subtitle/*.py`，宿主侧改了（缓存格式、白名单路由、缓存键规则…）
     它完全看不出来。头显仓库的审查明确提出"无法回溯哪个 APK 配哪个服务端版本"，
     这里把两半都做成头显能读到、能记录的标识。
+
+    ⚠️ 打包版（PyInstaller onefile）里 `__file__` 指向包内路径、磁盘上并不存在，
+    读源码必然失败——实测第一次重编后本字段恒为空（"字段在但永远空"比没有更糟，
+    看起来像能用）。所以读不到源码时退化为对 **exe 本身** 取哈希：宿主是编译进
+    exe 的，exe 哈希才是它真正的构建标识。
+    """
+    for cand in (Path(__file__), Path(sys.executable)):
+        try:
+            data = cand.read_bytes()
+            if data:
+                return hashlib.sha256(data).hexdigest()[:12]
+        except Exception:
+            continue
+    return ""
+
+
+def _configured_translate_backend() -> str:
+    """config.json 里**配置**的翻译后端（服务没跑、/health 拿不到时用它）。
+
+    头显正是在"等 PC 就绪"阶段轮询 headset_status，此时服务通常还没起来、
+    `/health` 是空的。若此时一律按"本地"给建议，配置成云端的用户会拿到
+    3 秒档的建议——那正是要防的那个结构性追不上的坑。
     """
     try:
-        return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+        cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+        return str((cfg.get("translate") or {}).get("backend") or "")
     except Exception:
         return ""
 
@@ -1198,6 +1221,11 @@ def headset_status() -> dict:
     h = st.get("health") or {}
     status = st.get("status")
     backend = str((h or {}).get("translate_backend") or "")
+    if not backend:
+        # 服务没在跑时 /health 拿不到后端 —— 头显正是在"等就绪"阶段轮询这里，
+        # 此时必须回落到**配置**里的后端，否则配云端的用户会拿到 3 秒档的建议
+        # （正是要防的那个"结构性追不上"的坑）。
+        backend = _configured_translate_backend()
     # 档位建议：云端单块 6.6–15s，而头显 3s 档的过期阈值只有 6s（STREAM_MAX_LAG_MS）
     # ⇒ 3 秒块在云端**结构性**追不上，每块出队即被判过期丢弃（R40 实测）。本地
     # 7B 单块 1.0–1.9s，3 秒档没问题。把建议由 PC 明确给出，头显据此切「分块 25s」，
