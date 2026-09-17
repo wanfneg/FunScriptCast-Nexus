@@ -16,6 +16,10 @@
      （无需 Key、显存 0），保证字幕不整段空白；如果累计失败批数达到
      fallback.after_fail_batches，则判定该后端已挂，后续批次直接走免费后端，
      不再每批都白等一个超时。
+     熔断**不以"配了免费兜底"为前提**：没兜底时同样停止撞死后端（只是不切换
+     后端而已）。而且"后端级故障"（连不上/超时/熔断）必须与"内容不合格"
+     （BatchPartial）分开——只有前者要跳过逐句补救，后者是健康后端在正常
+     工作，逐句换提示词形态实测能救回大量句子。
   5. **多线程**：批与批之间并行（thread_num）。
 
 对外接口保持 `translate_segments(segs, lang_key)` 不变。
@@ -31,6 +35,7 @@ import threading
 import urllib.error
 import urllib.request
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from free_translators import make_free
@@ -81,9 +86,14 @@ _LATIN = re.compile(r"[A-Za-z]{2,}")
 # 而它看起来"命中了"，属于最难查的一类 bug。
 #   v3：加 JSON 归一化 + 术语表修补 + 历史最好一轮保全（v2 缓存里的空白译文必须作废）
 #   v4：空译文也算不合格（v3 把 `{"0":""}` 当合格存进了缓存，必须作废）
-_CACHE_VERSION = 4
+#   v5：退化译文也算不合格（v4 把"啊啊啊啊…"当合格写进了 L1+L2，永不纠正）；
+#       同时缓存命名空间并入 mt_user_prefix（见 _cache_ns）
+_CACHE_VERSION = 5
 
 # 提示词指纹：改了 SYSTEM/BATCH/FIX/RETRY 任何一段，指纹就变，缓存自动失效。
+# ⚠️ 这里**盖不住** MT 实际发送的 `mt_user_prefix + text`（它不在上述任何一段里），
+# 所以那份输入由 _cache_ns() 单独并入哈希——否则改了这个配置键，缓存键不变，
+# 全部命中旧译文，现象就是"改了配置毫无效果"。
 _PROMPT_FP = hashlib.sha256(
     (SYSTEM + BATCH_PROMPT + FIX_PROMPT + RETRY_PROMPT).encode("utf-8")).hexdigest()[:10]
 
@@ -142,6 +152,24 @@ class BatchPartial(Exception):
         self.bad = set(bad or ())
 
 
+class BackendDown(RuntimeError):
+    """**后端级**故障：连不上 / 超时 / 熔断后跳过。与 BatchPartial 严格对立。
+
+    区分这两者只为一件事：**还要不要对着同一个后端重试**。
+
+      · BatchPartial —— 模型答得不好，但后端是活的。逐句换一种提示词形态实测
+        能救回大量句子（R41：云端批量截断 14 句 → 逐句 14/14 全救回），
+        这条补救路径必须保留，不能因为"看起来都算失败"就一起掐掉。
+      · BackendDown —— 后端没了。逐句补救等于把同一个死连接再撞 N 遍，而且每遍
+        都要吃满一个完整 timeout（云端默认 60s、本地 _post 默认 180s）：一块
+        10 句最坏 (max_steps 3 + 逐句 10 + 全局 20/4) × 60s ≈ 18 分钟，
+        头显 3s 的上屏节奏会被彻底拖垮。
+
+    所以后端级故障必须是一个**能被上层认出来**的类型：熔断抛它、_post 连不上/
+    超时抛它，`work()` 见到它就跳过逐句补救、全局补救也跳过对应段，只留空 + 留痕。
+    """
+
+
 _LOCAL_BE = None                     # 进程内单例：4 个翻译线程共用同一个 llama-server
 _LOCAL_BE_LOCK = threading.Lock()
 
@@ -154,6 +182,11 @@ _BACKEND_ALIAS = {
     "local": "local", "llamacpp": "local", "llama": "local",
     "ollama": "ollama", "none": "none",
 }
+
+# ollama 分支的模型默认值。config.json 里发运的就是 `"model": ""`（键存在、值为
+# 空串），于是 `c.get("model", "qwen2.5:3b")` 这个默认值**永远拿不到**——空串会原样
+# 发进请求体（ollama 报 model not found），诊断与缓存键里显示的模型名也一直是空。
+_OLLAMA_DEFAULT_MODEL = "qwen2.5:3b"
 
 
 def _local_backend(cfg: dict):
@@ -174,6 +207,11 @@ class Translator:
         # "openai"/"local" —— 不归一的话选"云端"会被静默当成 ollama（走错后端、还不报错）。
         raw = str(self.cfg.get("backend", "ollama")).lower()
         self.backend = _BACKEND_ALIAS.get(raw, raw)
+        # UI 的「关闭翻译」= backend "none"，必须**真正短路**：此前全链路只判
+        # openai/local，其余一律落到 _chat_ollama —— 选了"关闭翻译"反而逐句去请求
+        # 11435：没服务就每句一条失败日志 + error=translate_failed:mt_empty，
+        # 而若那个端口真有服务，就会**真的翻译**（与用户的显式选择完全相反）。
+        self.disabled = self.backend == "none"
         self._openai_fold_system: bool | None = None   # 见 _chat_openai：qwen-mt 不吃 system 角色
 
         self.batch_size = int(self.cfg.get("batch_size", 10))
@@ -212,21 +250,31 @@ class Translator:
         self.fallback_after = max(1, int(fb.get("after_fail_batches", 2)))
         self._fallback = None
         self._fail_streak = 0
+        # 同后端逐句补救的总预算（**每次调用**共享，不是每批）。逐句补救有价值
+        # （R41：批量截断 14 句 → 逐句 14/14 全救回），所以额度给得宽（默认 40，
+        # 约 2 倍 R41 的规模，正常块根本碰不到）；它的作用是兜住病态情况——
+        # 一个块里多批内容持续不合格时，"没有上限"等于把整块再逐句重跑一遍
+        # （本地小模型每句 2~13s，3s 的上屏节奏直接崩）。
+        self.single_budget = max(1, int(self.cfg.get("single_rescue_max", 40)))
 
         self._lock = threading.Lock()
         self._mem: dict = {}
         self.stats = {"batches": 0, "cache_hits": 0, "cache_disk_hits": 0,
-                      "fix_rounds": 0, "leak_rounds": 0, "fail_batches": 0,
+                      "fix_rounds": 0, "leak_rounds": 0, "degenerate_rounds": 0,
+                      "fail_batches": 0,
                       "fail_kinds": {}, "skipped_batches": 0, "partial_batches": 0,
                       "fallback_batches": 0, "fallback_errors": 0,
                       "fallback_error": "", "degraded": False, "segments": 0,
                       "leak_kept": 0, "glossary_repaired": 0,
                       "fatal_errors": 0, "fatal_error": "",
                       "single_fallbacks": 0, "single_capped": 0,
-                      "single_fallback_errors": 0}
+                      "single_fallback_errors": 0,
+                      # 熔断/不可达时被主动跳过的同后端逐句补救（P1-2 的留痕）
+                      "single_skipped_down": 0, "single_budget_skipped": 0}
         # 后台预热兜底后端：探测要真发一条请求，代理关闭时单次 30s。放后台做，
         # 真需要兜底时结果（含"全挂"的负缓存）已经就绪，不会在字幕流程中间卡住。
-        if self.fallback_kind:
+        # 关闭翻译时**不预热**：用户选的是"不发任何请求"，连兜底探测也不该发。
+        if self.fallback_kind and not self.disabled:
             threading.Thread(target=self._warmup_fallback, daemon=True,
                              name="fallback-warmup").start()
 
@@ -246,12 +294,24 @@ class Translator:
         return self.cfg.get(key) or {}
 
     def _model_name(self) -> str:
-        return str(self._backend_cfg().get("model", ""))
+        m = str(self._backend_cfg().get("model") or "").strip()
+        # ollama 段允许 model 留空（空串按 _OLLAMA_DEFAULT_MODEL 发送，见 _chat_ollama），
+        # 诊断与缓存键必须显示**实际**发出的模型名，否则"空模型"和"默认模型"会共用
+        # 同一个缓存命名空间。
+        if not m and not self.disabled and self.backend not in ("openai", "local"):
+            return _OLLAMA_DEFAULT_MODEL
+        return m
 
     def _cache_ns(self) -> str:
         """命名空间：缓存版本 + 提示词指纹 + 后端 + 端点 + 模型 + 目标语言。"""
         base = str(self._backend_cfg().get("base_url", "")).rstrip("/")
-        return (f"v{_CACHE_VERSION}|{_PROMPT_FP}|{self.backend}|{base}|"
+        # mt_user_prefix 必须并进来：MT 实际发给模型的 user 消息是
+        # `mt_user_prefix + text`（见 _mt_once），它是 config.json 的正式键，
+        # 改它等于改模型输入。它既不在 _PROMPT_FP（只覆盖 SYSTEM/BATCH/FIX/RETRY）
+        # 也不在 _key 里——不并进来就会出现"改了配置、译文一字不变"。
+        upfx = hashlib.sha256(
+            (self.mt_user_prefix or "").encode("utf-8")).hexdigest()[:8]
+        return (f"v{_CACHE_VERSION}|{_PROMPT_FP}|{upfx}|{self.backend}|{base}|"
                 f"{self._model_name()}|{self.target}")
 
     def _key(self, texts: list, system: str = "", lang_key: str = "") -> str:
@@ -304,6 +364,7 @@ class Translator:
                 for k in list(self._mem.keys())[:len(self._mem) // 2]:
                     del self._mem[k]
             self._mem[key] = value
+        tmp = None
         try:
             p = self._cache_path(key)
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -313,7 +374,15 @@ class Translator:
                 json.dump(value, f, ensure_ascii=False)
             os.replace(tmp, p)
         except Exception:
-            pass  # 缓存写失败不影响翻译结果
+            # 缓存写失败不影响翻译结果，但**必须清掉自己的临时文件**：
+            # os.replace 失败（杀软/权限/跨设备）会留下 .tmp，而 host_server 的
+            # translate_cache_summary 是按目录统计的——残留会被算进缓存体积，
+            # 且这些文件永远不会被复用或清理。
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------ 后端调用
     def _post(self, url: str, payload: dict, headers: dict | None = None,
@@ -321,11 +390,28 @@ class Translator:
         req = urllib.request.Request(
             url, data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json", **(headers or {})})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            # 后端**有响应**（鉴权/参数/额度错误）：不是"连不上"，上层照原样处理
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # 唯一一处把"连不上/超时"标成后端级故障的地方：三个后端（ollama /
+            # local / openai）都走这里，所以分类只需做一次。若不标，上层只看到
+            # "一条普通异常"，会按内容不合格去逐句补救 —— 对着死连接每句再吃满
+            # 一个 timeout。
+            raise BackendDown(
+                f"后端不可达（{url}）：{getattr(e, 'reason', None) or e}") from e
 
     def _chat(self, system: str, user: str) -> str:
         """一次 LLM 对话（local=本地 llama.cpp / ollama / openai 兼容）。"""
+        if self.disabled:
+            # 防御性收口：UI「关闭翻译」时不该有任何请求发出去。正常路径已在
+            # _translate_inner 短路，但 _chat 还有别的调用方（/translate/selftest、
+            # 逐句补救、兜底），任何一条漏判都会静默去请求 11434/8082 ——
+            # 没服务就是一堆失败日志，有服务就是**真的翻译了**，与用户的显式选择相反。
+            raise RuntimeError("翻译已关闭（translate.backend = none）")
         if self.backend == "openai":
             return self._chat_openai(system, user)
         if self.backend == "local":
@@ -340,9 +426,12 @@ class Translator:
                 if self.use_mt else
                 {"temperature": float(c.get("temperature", 0.2)),
                  "num_predict": int(c.get("num_predict", 2048))})
+        # 空串/全空白一律按默认模型：config.json 发运的 `"model": ""` 键存在，
+        # dict.get 的默认值拿不到，会把空模型名原样发出去（ollama 报 model not found）。
+        model = str(c.get("model") or "").strip() or _OLLAMA_DEFAULT_MODEL
         url = str(c.get("base_url", "http://127.0.0.1:11434")).rstrip("/") + "/api/chat"
         data = self._post(url, {
-            "model": c.get("model", "qwen2.5:3b"),
+            "model": model,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
             "stream": False,
@@ -437,7 +526,9 @@ class Translator:
                         continue
                 raise RuntimeError(f"云端翻译失败 HTTP {e.code}：{body or e.reason}") from e
             except urllib.error.URLError as e:
-                raise RuntimeError(f"云端不可达（{url}）：{e.reason}") from e
+                # 与 _post 的口径一致：连不上 = 后端级故障（不是内容不合格），
+                # 否则上层会对着这个死端点逐句再撞一遍。
+                raise BackendDown(f"云端不可达（{url}）：{e.reason}") from e
         if data is None:
             raise RuntimeError("云端翻译失败：兼容重试仍不通过")
         text = (data["choices"][0]["message"]["content"] or "").strip()
@@ -665,7 +756,14 @@ class Translator:
                 blank = [k for k, v in zip(keys, vals) if not v]
                 leak = [k for k, v, t in zip(keys, vals, texts)
                         if v and self._has_untranslated(t, v)]
-                if not blank and not leak:
+                # 退化译文（短句被放大成"啊啊啊啊…"）同样算不合格：只判空值和漏译时
+                # 它会一路当合格返回 → 被 _cache_put 写进 L1+L2 → 回填阶段才丢弃。
+                # 后果是这块每次都要多花一轮逐句补救，批量结果永远白算，而缓存里
+                # 那条退化译文**永远不会被纠正**（下次还命中它）。逐句路径
+                # （_single_translate / _mt_once）早就查了 _is_degenerate，这里补齐。
+                degen = [k for k, v, t in zip(keys, vals, texts)
+                         if v and self._is_degenerate(t, v)]
+                if not blank and not leak and not degen:
                     return vals
                 reasons = []
                 if blank:
@@ -674,10 +772,17 @@ class Translator:
                 if leak:
                     reasons.append("以下键的译文还是原文/夹着原文，没有真正翻译成中文："
                                    + ",".join(leak[:10]))
+                if degen:
+                    reasons.append("以下键的译文异常重复放大（疑似退化），必须重新翻译："
+                                   + ",".join(degen[:10]))
                 err = "；".join(reasons)
-                leak = blank + [k for k in leak if k not in set(blank)]
+                bad_keys = blank + [k for k in leak if k not in set(blank)]
+                bad_keys += [k for k in degen if k not in set(bad_keys)]
+                leak = bad_keys
                 with self._lock:
                     self.stats["leak_rounds"] += 1
+                    if degen:
+                        self.stats["degenerate_rounds"] += 1
             elif isinstance(got, dict):
                 # 键不齐：能用的先留着，缺的记成"不合格"（交给免费后端补这几条）
                 leak = sorted(set(keys) - {str(k) for k in got})
@@ -867,6 +972,15 @@ class Translator:
 
     def _translate_inner(self, segs: list, lang_key: str, context: str = "") -> None:
         """就地写入 seg['translation']；失败时留空并记录 seg['error']。"""
+        if self.disabled:
+            # UI 的「关闭翻译」（backend = none）：用户显式选择，**不是失败**，
+            # 所以不留 error（留了头显/诊断页会把自己的配置当故障报），也不留旧
+            # 译文（同一 seg 对象可能被复用，留旧值等于"关了还在翻"）。
+            # 放在 todo 计算之前：连"哪些段有文本"都不需要判断，一次请求都不发。
+            for s in segs:
+                s["translation"] = ""
+                s.pop("error", None)
+            return
         todo = [(i, s) for i, s in enumerate(segs) if (s.get("text") or "").strip()]
         for s in segs:
             if not (s.get("text") or "").strip():
@@ -890,23 +1004,55 @@ class Translator:
             self.stats["batches"] += len(batches)
 
         results: dict = {}
+        # 本块内被判为"后端级故障"的段索引：全局逐句补救要跳过它们
+        # （对着同一个死后端再撞一遍，每次都是一个完整 timeout）。
+        # 内容级不合格的段**不进这里**，那部分补救行为原样保留。
+        down_at: set = set()
+        # 同后端逐句补救的总预算，本块内由批内补救与全局补救共享（见 __init__）。
+        budget = self.single_budget
+        warned = False
+
+        def _take_budget() -> bool:
+            """领一次同后端逐句补救的额度；用尽返回 False（留痕 + 只喊一次）。"""
+            nonlocal budget, warned
+            with self._lock:
+                if budget > 0:
+                    budget -= 1
+                    return True
+                self.stats["single_budget_skipped"] += 1
+                fire, warned = not warned, True
+            if fire:
+                print(f"[translate] 本块逐句补救已达预算 {self.single_budget} 句，"
+                      f"剩余缺句不再逐句重试（同一后端反复撞只会拖垮上屏节奏）",
+                      flush=True)
+            return False
 
         def work(batch):
             texts = [(s.get("text") or "").strip() for _, s in batch]
             indices = [i for i, _ in batch]
-            # 先算 system：它包含命中到的术语表条目，要一起并进缓存键
-            system = self._system_with_glossary(lang_key, texts)
-            key = self._key(texts, system, lang_key)
-            cached = self._cache_get(key, len(texts))
-            if cached is not None:
-                return indices, cached
+            # system / key / 缓存读取也必须在 try 内：它们一样会抛（术语表要读盘、
+            # 缓存要建目录）。放在 try 外时，一条这样的异常会顺着下面 ex.map 的
+            # 消费循环炸穿 _translate_inner —— 整块（含其它批次**已经翻好的结果**）
+            # 全部作废，而 MT 路径早就做过单句加固，两边隔离度不对等。
+            # system 先置空：异常分支里的逐句补救会退回默认 SYSTEM 提示词。
+            system = ""
             try:
+                # 先算 system：它包含命中到的术语表条目，要一起并进缓存键
+                system = self._system_with_glossary(lang_key, texts)
+                key = self._key(texts, system, lang_key)
+                cached = self._cache_get(key, len(texts))
+                if cached is not None:
+                    return indices, cached
                 with self._lock:
                     streak = self._fail_streak
-                if self.fallback_kind and streak >= self.fallback_after:
+                # 熔断判据**与"是否配了免费兜底"解耦**：兜底关着时同样要停止撞
+                # 死后端（只是不切换到免费后端而已）。此前 `self.fallback_kind and`
+                # 这个门控让默认配置（fallback.enabled=false）下熔断恒不触发。
+                if streak >= self.fallback_after:
                     with self._lock:
                         self.stats["skipped_batches"] += 1
-                    raise RuntimeError(f"LLM 后端已连续 {streak} 批失败，跳过重试")
+                    # 抛 BackendDown（而非普通 RuntimeError）：下面据此跳过逐句补救
+                    raise BackendDown(f"LLM 后端已连续 {streak} 批失败，跳过重试")
                 out = self._translate_batch(texts, indices, system, lang_key, context)
                 self._cache_put(key, out)
                 with self._lock:
@@ -917,6 +1063,9 @@ class Translator:
                 # 后端还活着？只有"连不上/完全没响应"才计入熔断。
                 # 内容层面的不合格（缺键、漏译修不好）说明模型在正常工作，
                 # 拿它累加熔断会导致后面几十批全部跳过 LLM。
+                # down = 后端级故障（连不上/超时/熔断）：这类失败**不能**再逐句
+                # 重试——对着同一个死后端，每句都要白等一个完整 timeout。
+                down = isinstance(e, BackendDown)
                 alive = isinstance(e, BatchPartial)
                 with self._lock:
                     self.stats["fail_batches"] += 1
@@ -926,8 +1075,12 @@ class Translator:
                         self._fail_streak = 0
                     else:
                         self._fail_streak += 1
-                        if self.fallback_kind and self._fail_streak >= self.fallback_after:
+                        if self._fail_streak >= self.fallback_after:
+                            # 与上面的熔断判据同一口径：没配兜底时"后端已挂"也要可见
                             self.stats["degraded"] = True
+                if down:
+                    with self._lock:
+                        down_at.update(indices)
                 # 保住最后一轮里已经翻好的键，只对缺的/不合格的走免费兜底
                 partial = getattr(e, "partial", None) or {}
                 bad = getattr(e, "bad", None) or set()
@@ -939,11 +1092,15 @@ class Translator:
                         out[pos] = v
                     else:
                         missing.append(pos)
-                if missing:
+                if missing and not down:
                     # ① 先在同一后端上**逐句**救（不换家）：批量被截断/返回空时逐句往往能翻，
                     #    实测 deepseek-flash 批量截断的 14 句，逐句 14/14 全救回。
                     #    与"指定什么就用什么"一致——仍是同一个模型，只是换了提示词形态。
+                    #    这里**只对内容级失败开放**：后端级故障（down）走这条等于把同一个
+                    #    死连接按句数再撞一遍。另外受本块逐句预算约束（_take_budget）。
                     for p in list(missing):
+                        if not _take_budget():
+                            break
                         v = self._single_translate(texts[p], system)
                         if v:
                             out[p] = v
@@ -960,7 +1117,9 @@ class Translator:
                 for p in missing:
                     if not out[p]:
                         v = str(partial.get(str(indices[p]), "") or "").strip()
-                        if v:
+                        # 退化译文不要捞回来：回填阶段反正会丢弃它并标
+                        # translation_degenerate，捞回来只会让 leak_kept 统计说谎
+                        if v and not self._is_degenerate(texts[p], v):
                             out[p] = v
                             with self._lock:
                                 self.stats["leak_kept"] += 1
@@ -971,14 +1130,34 @@ class Translator:
                     return indices, out
                 return indices, ["" for _ in texts], f"{type(e).__name__}: {e}"
 
+        def safe_work(batch):
+            """单批兜底：work() 自己已尽量不抛，这里再兜一层。
+
+            为什么必须要有：`ex.map` 是**顺序消费**的，某一批的结果一旦在消费时
+            抛异常，整个 for 循环立刻中断——它后面批次的结果、以及**整个回填阶段**
+            全部丢掉（现象就是整块空白，日志里还看不出是哪批坏的）。
+            """
+            try:
+                return work(batch)
+            except Exception as e:
+                # work() 的异常分支已经记过账，能漏到这里的都是意料之外的；
+                # 仍然要留痕，否则又变成"整块空白但日志里什么都没有"。
+                with self._lock:
+                    self.stats["fail_batches"] += 1
+                    k = f"work:{type(e).__name__}"
+                    self.stats["fail_kinds"][k] = self.stats["fail_kinds"].get(k, 0) + 1
+                print(f"[translate] 单批异常，只报废该批（{len(batch)} 段）："
+                      f"{type(e).__name__}: {e}", flush=True)
+                return ([i for i, _ in batch], ["" for _ in batch],
+                        f"{type(e).__name__}: {e}")
+
         if self.thread_num > 1 and len(batches) > 1:
-            from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=min(self.thread_num, len(batches))) as ex:
-                for batch_r in ex.map(work, batches):
+                for batch_r in ex.map(safe_work, batches):
                     results[batch_r[0][0]] = batch_r
         else:
             for b in batches:
-                batch_r = work(b)
+                batch_r = safe_work(b)
                 results[batch_r[0][0]] = batch_r
 
         # 回填
@@ -1002,22 +1181,44 @@ class Translator:
 
         # ---- 逐条兜底：批量模式没能救回的（空译文 / 仍夹着原文）单独再试
         # 上限 20 条，避免异常情况下把整片都重跑一遍（正常一部片只有个位数）
-        need = [s for s in segs
+        need = [(i, s) for i, s in enumerate(segs)
                 if (s.get("text") or "").strip()
                 and (not (s.get("translation") or "").strip()
                      or self._has_untranslated(s["text"], s.get("translation") or ""))]
+        if down_at:
+            # 后端级故障的段直接跳过：对着同一个死后端逐句再撞一遍，每次都要吃满
+            # 一个完整 timeout —— 这正是"单块最坏 18 分钟"的主要来源。留空即可，
+            # 回填阶段已经给它们写了 err 留痕。
+            n_down = sum(1 for i, _ in need if i in down_at)
+            if n_down:
+                need = [(i, s) for i, s in need if i not in down_at]
+                with self._lock:
+                    self.stats["single_skipped_down"] += n_down
+                print(f"[translate] 后端级故障：跳过 {n_down} 段的逐句补救"
+                      f"（同一后端逐句重试只会再白等 {n_down} 个超时）", flush=True)
         if need:
             if len(need) > 20:
                 with self._lock:
                     self.stats["single_capped"] += 1
                 need = need[:20]
+            # 预算：与批内逐句补救共享同一份额度（内容级失败给得足够宽，默认 40 句；
+            # 这里只是兜住病态情况）
+            allowed = []
+            for i, s in need:
+                if not _take_budget():
+                    break
+                allowed.append((i, s))
+            need = allowed
+        if need:
             # 并发兜底：串行最坏 20 次完整 LLM 调用（本地小模型 +30~60s），
             # 全部计入该块的 mt_ms；并发 4 条能把最坏延迟压到约 1/4。
             workers = max(1, min(4, len(need)))
             with ThreadPoolExecutor(max_workers=workers) as ex:
-                results = list(ex.map(lambda s: self._single_translate(
-                    s.get("text") or ""), need))
-            for s, v in zip(need, results):
+                # 注意：这里的局部变量**不能**再叫 results —— 上面那个 results 字典
+                # 才是回填用的，重名会埋雷。
+                rescued = list(ex.map(lambda s: self._single_translate(
+                    s.get("text") or ""), [s for _, s in need]))
+            for (_, s), v in zip(need, rescued):
                 if v:
                     s["translation"] = v
                     s.pop("error", None)      # 修好了就把错误标记清掉
@@ -1026,6 +1227,12 @@ class Translator:
 
     # ------------------------------------------------------------ 诊断
     def describe(self) -> str:
+        if self.disabled:
+            # 不能走下面那行：_backend_cfg() 对未知后端一律回落到 ollama 段，
+            # 于是"关闭翻译"会显示成 `none/<ollama 的模型> ... fallback=...`，
+            # /health 与诊断页上根本看不出后端是 none（与"选了关闭反而真去翻译"
+            # 是同一类"静默走错后端"的坑）。
+            return "已关闭（translate.backend = none，不发起任何 LLM 请求）"
         cache = f"cache={'disk+mem' if self.cache_enabled else 'off'}"
         fb = self.fallback_kind or "off"
         used = int(self.stats.get("fallback_batches") or 0)
@@ -1033,6 +1240,10 @@ class Translator:
             fb = f"{fb}(已兜底{used}批)"          # 让 /health 一眼看出有没有被静默降质
         fails = int(self.stats.get("fail_batches") or 0)
         fail_note = f" 失败批次={fails}" if fails else ""   # 无兜底时，失败必须看得见
+        # 熔断跳过也要看得见：否则"后面几十批为什么全空"在诊断页上无迹可寻
+        skipped = int(self.stats.get("skipped_batches") or 0)
+        if skipped:
+            fail_note += f" 熔断跳过={skipped}批"
         return (f"{self.backend}/{self._model_name()} batch={self.batch_size} "
                 f"threads={self.thread_num} mode={'mt逐句' if self.use_mt else 'batch批量'} "
                 f"{cache} fallback={fb}{fail_note}")
