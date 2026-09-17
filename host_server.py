@@ -1290,14 +1290,20 @@ MODELS_CATALOG = [
         ],
     },
     {
+        # 仓库是私有的 → 自挂的 release 资产对用户不可达；llama.cpp 官方 release
+        # 是公开仓库，两个 zip（主程序 + CUDA 运行时）解压合并即得到 vendor/llama
         "id": "llama-runtime",
         "role": "translate-runtime",
         "label": "本地翻译运行时（llama.cpp · CUDA）",
         "kind": "zip",
-        "zip_url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest/download/llama-runtime-windows.zip",
         "dest_dir": APP_DIR / "vendor" / "llama",
-        "size_gb": 1.1,
-        "files": [],
+        "size_gb": 0.8,
+        "files": [
+            {"rel": "llama-b11000-bin-win-cuda-12.4-x64.zip",
+             "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11000/llama-b11000-bin-win-cuda-12.4-x64.zip"},
+            {"rel": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+             "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11000/cudart-llama-bin-win-cuda-12.4-x64.zip"},
+        ],
     },
     {
         "id": "sakura-7b",
@@ -1399,20 +1405,34 @@ def _model_dl_worker(e: dict) -> None:
     id_ = e["id"]
     try:
         if e.get("kind") == "zip":
+            # 运行时形态：下载一个或多个 zip（进度按文件数折算，留 5% 给解压）→
+            # 全部解压合并到目标目录 → 校验关键文件
             import zipfile
-            tmp = Path(tempfile.gettempdir()) / ("nexus-" + id_ + "-"
-                                                 + str(int(time.time())) + ".zip")
-            _download_to_file(e["zip_url"], tmp,
-                              prog=lambda done, total: (
-                                  None if not total else
-                                  (_MODEL_DL[id_].__setitem__(
-                                      "pct", round(done / total * 99)))))
+            import tempfile
+            n = max(1, len(e["files"]))
+            tmpdir = Path(tempfile.gettempdir())
+            zpaths = []
+            for i, f in enumerate(e["files"]):
+                tmp = tmpdir / (id_ + "--" + f["rel"])
+                if tmp.is_file() and tmp.stat().st_size > 0:
+                    zpaths.append(tmp)       # 上次中断留下的完整/半截包交给续传判断
+                def prog(done, total, _i=i):
+                    frac = (_i + (done / total if total else 0.0)) / n
+                    with _DL_LOCK:
+                        st = _MODEL_DL[id_]
+                        st["pct"] = round(frac * 95)
+                        st["bytes"] = done
+                        st["total"] = total
+                _download_to_file(f["url"], tmp, prog)
+                zpaths.append(tmp)
             with _DL_LOCK:
-                _MODEL_DL[id_]["pct"] = 100
+                _MODEL_DL[id_]["pct"] = 97
             e["dest_dir"].mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(tmp) as z:
-                z.extractall(e["dest_dir"])
-            tmp.unlink(missing_ok=True)
+            for zp in zpaths:
+                with zipfile.ZipFile(zp) as z:
+                    z.extractall(e["dest_dir"])
+            for zp in zpaths:
+                zp.unlink(missing_ok=True)
             if not (e["dest_dir"] / "llama-server.exe").is_file():
                 raise RuntimeError("解压后缺少 llama-server.exe（安装包内容不符）")
             with _DL_LOCK:
