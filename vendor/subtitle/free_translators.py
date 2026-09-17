@@ -81,19 +81,24 @@ class GoogleTranslator:
 
     def _get(self, url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
-        # 全局信号量限流 + 对 429/5xx 做一次指数退避重试（零重试时端点抖动
-        # 会直接让这一整批掉进空译文）
-        with _FREE_NET_SEM:
-            try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                    return r.read().decode("utf-8", "ignore")
-            except urllib.error.HTTPError as e:
-                if _is_rate_limited(e):
-                    time.sleep(_RETRY_BACKOFF)
-                    with _FREE_NET_SEM:
-                        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                            return r.read().decode("utf-8", "ignore")
-                raise
+        # 全局信号量限流 + 对 429/5xx 做一次退避重试（零重试时端点抖动
+        # 会直接让这一整批掉进空译文）。
+        #
+        # ⚠ 退避必须在 permit **之外**：threading.Semaphore 不可重入，而
+        # translate() 的线程池正好是 6 并发（_FREE_NET_SEM 也是 6）。旧实现
+        # 在仍持有外层 permit 时又 `with _FREE_NET_SEM` 再 acquire —— 端点一
+        # 429，6 个线程就全卡在第二次 acquire 上永不返回（连退出都做不到：
+        # ThreadPoolExecutor 的 atexit 会 join 这些线程）。字幕管线整条挂死、
+        # 没有超时、只能重启进程。
+        for attempt in (0, 1):
+            with _FREE_NET_SEM:
+                try:
+                    with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                        return r.read().decode("utf-8", "ignore")
+                except urllib.error.HTTPError as e:
+                    if not (attempt == 0 and _is_rate_limited(e)):
+                        raise
+            time.sleep(_RETRY_BACKOFF)   # 已释放 permit，不挡其它线程取锁
 
     def _one_json(self, text: str, tl: str) -> str:
         q = urllib.parse.urlencode({"client": "gtx", "sl": "auto", "tl": tl,

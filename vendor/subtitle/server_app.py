@@ -11,9 +11,11 @@
 设计要点：
   - 无状态：每次请求自带语言与时间基，服务端不保存会话（便于客户端重连/重试）
   - video_start_ms：本块音频第一帧在视频里的时间 → 返回的 start_ms/end_ms 是视频绝对时间
-  - keep_from_ms：重叠区去重（客户端传 chunk 起点 + overlap/2，服务端丢弃
-    **起点**早于它的句子——注意是起点判据不是中点，跨重叠边界、起点略早
-    于 keep_from 的整句会被丢弃）
+  - keep_from_ms：重叠区去重（客户端传 chunk 起点 + overlap/2）。判据只丢"整句
+    基本都落在重叠区"的段——起点在保留区之后，**或**句尾越过 keep_from 300ms 以上
+    才保留（跨块长句在两边 start 都早于各自 keep_from，旧判据会把整句扔两次，
+    实测 192.8s 那句就这么消失）。判据只有一份：`text_filters.keep_segment`，
+    PyTorch 与 audiocpp 两个后端共用
   - ASR 与翻译串行执行；ASR 占 GPU，翻译默认走 Ollama/云端（8GB 卡上两者不能同时驻留）
 """
 

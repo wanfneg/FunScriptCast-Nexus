@@ -164,7 +164,7 @@ class Glossary:
             return dict(self._maps.get(lang, {}))
 
     def asr_context(self, lang: str, max_chars: int = 0) -> str:
-        """拼 ASR 热词提示。
+        """拼 ASR 热词提示（只返回提示词本身；需要键的用 asr_context_with_keys）。
 
         **`extra`（人名）无条件全量带上**，`max_chars` 只约束"额外补充的领域词"，
         默认 **0 = 不补**。这个默认值是被实测逼出来的，不是拍脑袋：
@@ -185,6 +185,16 @@ class Glossary:
           全是 `私・ぼく・あなた・パパ・ママ` 这类代词（ASR 本来就不会错的词），
           780 字符里一个真正会被听错的领域词都没有，等于白填。
         """
+        return self.asr_context_with_keys(lang, max_chars)[0]
+
+    def asr_context_with_keys(self, lang: str, max_chars: int = 0) -> tuple:
+        """返回 (热词提示, 真正进入提示词的键列表)。
+
+        **为什么必须能拿到键**：复读判据（text_filters.is_glossary_echo）此前
+        拿 `keys()`（整张表 2096 条）当"热词"，而实际进提示词的默认只有 5 个人名
+        共 19 字符（context_max_chars=0）——判据与提示词完全对不上，正常台词被
+        大面积误判成复读丢弃。判据必须只用这里返回的键。
+        """
         self._ensure()
         with self._lock:
             extra_keys = list(self._extra.get(lang, {}).keys())
@@ -197,7 +207,7 @@ class Glossary:
                 picked.append(t)
                 used += len(t) + 1
         if max_chars <= 0:
-            return "、".join(picked)
+            return "、".join(picked), picked
         base = used
         # 分数只算一次：此前排序 key 和循环判断各调一遍 asr_term_score
         scored = sorted(((t, asr_term_score(t)) for t in maps if t),
@@ -208,10 +218,13 @@ class Glossary:
             if t in picked:
                 continue
             if used + len(t) + 1 - base > max_chars:
-                break
+                # continue 而不是 break：按分数降序，某个长词放不下不代表后面
+                # 的短词也放不下 —— break 会白扔预算（实测 max_chars=100 时
+                # 少装 1 个词 / 4 字符）。
+                continue
             picked.append(t)
             used += len(t) + 1
-        return "、".join(picked)
+        return "、".join(picked), picked
 
     def keys(self, lang: str) -> list:
         self._ensure()
@@ -225,3 +238,20 @@ class Glossary:
         with self._lock:
             snapshot = dict(self._maps.get(lang, {}))
         return {k: v for k, v in snapshot.items() if k in text}
+
+
+def context_with_keys(glossary, lang: str, max_chars: int = 0) -> tuple:
+    """从任意术语表对象取 (热词提示, 真正进了提示词的键)。两条 ASR 后端共用。
+
+    复读判据要求"键 = 实际进提示词的那批"，取法写两份迟早漂移（同一类 bug 已经
+    在两个后端之间出现过）。替身/旧版术语表对象只有 asr_context 时降级成空键
+    列表——**宁可漏判复读，也不能退回"拿整张术语表当判据"**：那会把正常台词
+    成片误杀（见 text_filters.is_glossary_echo）。
+    """
+    if glossary is None:
+        return "", []
+    fn = getattr(glossary, "asr_context_with_keys", None)
+    if fn is not None:
+        ctx, keys = fn(lang, max_chars)
+        return (ctx or ""), list(keys or ())
+    return (glossary.asr_context(lang, max_chars) or ""), []

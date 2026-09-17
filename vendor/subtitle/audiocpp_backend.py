@@ -31,7 +31,9 @@ from pathlib import Path
 
 import numpy as np
 
-from text_filters import has_repetition_loop, is_glossary_echo, is_prompt_echo
+from glossary import context_with_keys
+from text_filters import (has_repetition_loop, is_glossary_echo, is_prompt_echo,
+                          join_tokens, keep_segment)
 
 SR = 16000
 BASE_DIR = Path(__file__).resolve().parent          # vendor/subtitle
@@ -87,32 +89,44 @@ class AudioCppBackend:
         self.context_max_chars = int(context_max_chars)
         self._proc: subprocess.Popen | None = None
         self._job_handle = None       # Windows Job Object 句柄（父进程崩溃时带走子进程）
-        self._lock = threading.Lock()
+        # **必须是 RLock**：ensure_server 全程持锁，失败收尾要在锁内调
+        # stop_server 回收刚拉起的子进程（否则它继续加载模型、和回退后的
+        # PyTorch 引擎抢显存）；不可重入的 Lock 在那里会自锁死——与
+        # llama_backend.py 的既有事故同一类（超时收尾调 stop_server 挂死所有线程）。
+        self._lock = threading.RLock()
         self.echo_retries = 0        # 热词复读触发无热词重试的次数（诊断用）
         self.last_vad_error = ""     # 最近一次 VAD 失败原因（"" = 正常）
 
-    def _build_context(self, lang_key: str) -> str:
-        """本语言的 ASR 热词提示；未启用/无术语表时返回空串。"""
+    def _context_with_keys(self, lang_key: str) -> tuple:
+        """返回 (本语言的 ASR 热词提示, 真正进了提示词的键)。未启用/无术语表 → ("", [])。
+
+        键必须和提示词一起拿回来：复读判据要判"输出是不是把**这次发出去的**
+        提示词复读了"，拿整张术语表当判据与提示词完全对不上（见 _is_glossary_echo）。
+        """
         if not self.use_context or self.glossary is None:
-            return ""
+            return "", []
         try:
-            return self.glossary.asr_context(lang_key, self.context_max_chars)
+            return context_with_keys(self.glossary, lang_key, self.context_max_chars)
         except Exception as e:
             print(f"[asr] 热词提示构建失败（忽略）：{type(e).__name__}: {e}", flush=True)
-            return ""
+            return "", []
 
-    def _is_glossary_echo(self, text: str, lang_key: str) -> bool:
+    def _build_context(self, lang_key: str) -> str:
+        """本语言的 ASR 热词提示；未启用/无术语表时返回空串。"""
+        return self._context_with_keys(lang_key)[0]
+
+    def _is_glossary_echo(self, text: str, keys: list) -> bool:
         """热词表被当台词复读的检测。
 
         判据统一在 text_filters.is_glossary_echo（与 PyTorch 引擎共用同一实现，
         此前两边各写一份已出现单向漂移：覆盖率重复计数的旧算法在一边修掉了、
-        另一边还留着，嵌套键能把覆盖率算出 >1 而误杀正常句子）。"""
-        if self.glossary is None:
-            return False
-        try:
-            keys = self.glossary.keys(lang_key)
-        except Exception:
-            return False
+        另一边还留着，嵌套键能把覆盖率算出 >1 而误杀正常句子）。
+
+        `keys` 由调用方从 _context_with_keys 传入（= 这次真的发出去的键）；
+        旧实现这里自己取 glossary.keys()，拿到的是整张表 2096 条 —— 默认配置里
+        进提示词的只有 5 个人名 19 字符，判据却按整张表算，覆盖率必然饱和，
+        正常台词被成片判成复读后丢弃（还白烧一次无热词重试）。
+        """
         return is_glossary_echo(text, keys)
 
     # ---- 与 PyTorch 引擎对齐的属性（server_app 的 /health 会读）----
@@ -233,8 +247,14 @@ class AudioCppBackend:
                 if self.probe():
                     return True
                 if self._proc.poll() is not None:
-                    raise AudioCppError(f"audiocpp_server 启动即退出（code {self._proc.returncode}）")
+                    code = self._proc.returncode
+                    self.stop_server()     # 收尾：清掉 _proc/_job_handle 并确认进程已死
+                    raise AudioCppError(f"audiocpp_server 启动即退出（code {code}）")
                 time.sleep(0.5)
+            # 失败必须回收：调用方随即回退 PyTorch 引擎并加载模型，剩一个还在
+            # 启动/加载的 audiocpp 会和它抢显存（8GB 卡上直接 OOM）。
+            # 这里在锁内调 stop_server —— 靠 self._lock 是 RLock（见 __init__ 注释）。
+            self.stop_server()
             raise AudioCppError(f"audiocpp_server 未在 {wait_s}s 内就绪")
 
     def _attach_kill_on_close(self, proc: subprocess.Popen) -> None:
@@ -360,7 +380,8 @@ class AudioCppBackend:
                     pass
 
     # ------------------------------------------------------------- 转写
-    def _transcribe_span(self, wav, context: str, lang_key: str, echo_ref: str = "") -> str:
+    def _transcribe_span(self, wav, context: str, keys: list, lang_key: str,
+                         echo_ref: str = "") -> str:
         """转写单个语音段；热词导致复读时**改用无热词重试一次**。
 
         为什么必须重试而不是丢弃：audiocpp 的 Qwen3-ASR 在喘息/气声这类
@@ -370,16 +391,16 @@ class AudioCppBackend:
         506-529s 三块全没了，全片 205 段掉到 190 段）。改成无热词重试，
         热词就变成"有收益就吃、有副作用就退回去"的纯增益开关。
 
-        回显判定有两路：`_is_glossary_echo`（术语表复读）与 `is_prompt_echo`
-        （上一句转写 echo_ref 的回显——v1.6.12 起热词里追加了上一句原文，
-        静音段把上一句吐出来的情况与术语表复读同性质）。
+        回显判定有两路：`_is_glossary_echo`（术语表复读，keys = 本次发出去的
+        热词键）与 `is_prompt_echo`（上一句转写 echo_ref 的回显——v1.6.12 起
+        热词里追加了上一句原文，静音段把上一句吐出来的情况与术语表复读同性质）。
 
         另外这也解释了为什么开热词会慢 2.5 倍：模型把 130 个热词一个个生成
         出来（约 130 token）才被丢弃，纯属白烧 CPU。
         """
         r = self.transcribe_wav(wav, context, lang_key)
         text = (r.get("text") or "").strip()
-        if not context or not (self._is_glossary_echo(text, lang_key)
+        if not context or not (self._is_glossary_echo(text, keys)
                                or is_prompt_echo(text, echo_ref)):
             return text
         print(f"[asr] 热词表复读，改用无热词重试：{text[:40]!r}", flush=True)
@@ -390,7 +411,11 @@ class AudioCppBackend:
         except Exception:
             return ""
         t2 = (r2.get("text") or "").strip()
-        if not t2 or self._is_glossary_echo(t2, lang_key) or is_prompt_echo(t2, echo_ref):
+        # 重试请求**没有带任何 prompt**（context=""），所以这里不能再拿
+        # is_prompt_echo(t2, echo_ref) 否决：模型根本没看到那段 prompt，
+        # 与上一句同尾的正常输出会被二次误杀，整句直接消失。
+        # 只保留"复读/退化"这一类与请求无关的判据。
+        if not t2 or self._is_glossary_echo(t2, keys):
             return ""
         return t2
 
@@ -479,7 +504,8 @@ class AudioCppBackend:
         merged = capped
 
         pad = self.pad_sec
-        context = self._build_context(lang_key)
+        # 键与提示词一起取回：复读判据只认"这次真的发出去的键"
+        context, context_keys = self._context_with_keys(lang_key)
         if extra_context:
             # 上一句转写结果作为热词补充（借鉴 realtime-subtitle 的 context carryover）：
             # 治人名/专名跨块听错。echo_ref 单独保存，复读重试判定要区分
@@ -495,7 +521,8 @@ class AudioCppBackend:
             wav = d / f"asr_{os.getpid()}_{threading.get_ident()}_{int(time.time()*1000)}_{i}.wav"
             try:
                 self._write_wav(wav, pcm[a:b])
-                text = self._transcribe_span(wav, context, lang_key, echo_ref=extra_context)
+                text = self._transcribe_span(wav, context, context_keys, lang_key,
+                                             echo_ref=extra_context)
             except Exception as ex:
                 segs.append({"start_ms": video_start_ms + int(round(a / SR * 1000)),
                              "end_ms": video_start_ms + int(round(b / SR * 1000)),
@@ -527,13 +554,11 @@ class AudioCppBackend:
 
         if keep_from_ms:
             # 去重判据：只丢"整句基本都在重叠区"的段（句尾也早于 keep_from+300ms）。
-            # 旧判据 "start < keep_from 即丢" 会把**跨块长句在两个块里都扔掉**：
-            # 句子横跨块 A 尾/块 B 头时，两边的 start 都落在各自的 keep_from 之前
-            # （实测 192.8s "今天特别破例让你看看哦" 整句消失）。
-            # 容差 300ms：句尾恰好在重叠区内但主体在新区块的句子保留。
+            # 判据已抽到 text_filters.keep_segment 与 PyTorch 引擎共用——此前
+            # 只在本侧修了容差，PyTorch 回退路径仍是 "start < keep_from 即丢"，
+            # 跨块长句在那条路径上照样两块都丢。
             segs = [x for x in segs
-                    if x["start_ms"] >= keep_from_ms
-                    or x["end_ms"] > keep_from_ms + 300]
+                    if keep_segment(x["start_ms"], x["end_ms"], keep_from_ms)]
         return {"language": lang_key, "segments": segs,
                 "asr_ms": round((time.perf_counter() - t0) * 1000, 1),
                 "skipped": False, "backend": "audiocpp",
@@ -542,7 +567,11 @@ class AudioCppBackend:
     @staticmethod
     def _merge_short_segments(segs: list, seg_cfg: dict) -> list:
         """把过短的碎片并进相邻句（判据与 AsrEngine._merge_short 一致：
-        时长 < min_sec 或字数 < min_chars、与前句间隔 < 0.8s、合并后不超长）。"""
+        时长 < min_sec 或字数 < min_chars、与前句间隔 < 0.8s、合并后不超长）。
+
+        拼接用 join_tokens（与 PyTorch 侧同一实现）：旧实现是字符串直接相加，
+        英文/数字两段会被粘成一坨（"hello"+"world" → "helloworld"）。
+        """
         if not seg_cfg or len(segs) < 2:
             return segs
         min_sec = float(seg_cfg.get("min_sec", 1.2))
@@ -560,7 +589,7 @@ class AudioCppBackend:
                 if (dur < min_sec or len(s["text"]) < min_chars) and gap < 0.8 \
                         and (s["end_ms"] - prev["start_ms"]) / 1000 <= max_sec:
                     prev["end_ms"] = s["end_ms"]
-                    prev["text"] = prev["text"] + s["text"]
+                    prev["text"] = join_tokens([prev["text"], s["text"]])
                     continue
             merged.append(dict(s))
         # 首句过短则并进下一句
@@ -572,7 +601,7 @@ class AudioCppBackend:
                 if not nxt.get("error") \
                         and (nxt["end_ms"] - first["start_ms"]) / 1000 <= max_sec:
                     nxt["start_ms"] = first["start_ms"]
-                    nxt["text"] = first["text"] + nxt["text"]
+                    nxt["text"] = join_tokens([first["text"], nxt["text"]])
                     merged.pop(0)
         return merged
 
