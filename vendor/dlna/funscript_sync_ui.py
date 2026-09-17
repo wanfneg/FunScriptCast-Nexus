@@ -169,10 +169,6 @@ def create_sync_page(parent: tk.Widget, root: tk.Misc, on_resize=None) -> None:
         ent_dlg_adb.grid(row=0, column=1, sticky="ew", pady=6)
         if config.adb_path:
             ent_dlg_adb.insert(0, config.adb_path)
-        else:
-            found_adb = AdbClient.find_adb()
-            if found_adb and os.path.isfile(found_adb):
-                ent_dlg_adb.insert(0, found_adb)
 
         def browse_dlg_adb() -> None:
             initial = os.path.dirname(ent_dlg_adb.get()) if ent_dlg_adb.get() else ""

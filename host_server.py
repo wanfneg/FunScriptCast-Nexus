@@ -2002,20 +2002,16 @@ class SyncService:
 
     # ---- 懒加载 vendor 模块 ----
     def _resolve_adb(self) -> str:
-        """adb 解析顺序：用户在界面填的路径 → 应用自带的 tools\adb\adb.exe →
-        留空（vendor 模块再按 ANDROID_HOME / 常见位置 / PATH 自动探测）。
+        """adb 只有两个可能：界面填的路径，否则永远是自带的 tools/adb/adb.exe。
 
-        自带 adb（tools\fetch_adb.ps1 下载，约 6 MB）让设备同步开箱即用，
-        不再要求用户机器上恰好装过 Android SDK。
+        不做任何系统探测：自带版本经过验证，避免悄悄用上用户机器上
+        版本不明/位置不明的 adb。tools/fetch_adb.ps1 负责把 adb 放进来。
         """
         s = load_settings()
         p = str(s.get("adb_path") or "").strip()
         if p:
             return p
-        bundled = APP_DIR / "tools" / "adb" / "adb.exe"
-        if bundled.exists():
-            return str(bundled)
-        return ""
+        return str(APP_DIR / "tools" / "adb" / "adb.exe")
 
     def _controller(self, kind: str):
         slot = self.slots[kind]

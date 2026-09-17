@@ -109,31 +109,6 @@ class AdbClient:
                 f"找不到 adb：{adb_path}\n请在「设置…」里指定 adb.exe 路径"
             )
 
-    @staticmethod
-    def find_adb() -> str:
-        """探测 adb.exe：环境变量 → 常见 SDK 路径 → PATH。"""
-        candidates: list[str] = []
-        android_home = os.environ.get("ANDROID_HOME")
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if android_home:
-            candidates.append(os.path.join(android_home, "platform-tools", "adb.exe"))
-        if local_app_data:
-            candidates.append(os.path.join(local_app_data, "Android", "Sdk", "platform-tools", "adb.exe"))
-        candidates.extend([
-            r"C:\Android\platform-tools\adb.exe",
-        ])
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
-        path_var = os.environ.get("PATH", "")
-        for d in path_var.split(os.pathsep):
-            try:
-                p = os.path.join(d.strip(), "adb.exe")
-                if os.path.isfile(p):
-                    return p
-            except OSError:
-                pass
-        return "adb"
 
     def run(
         self,
@@ -422,9 +397,12 @@ class VideoSyncController:
             self.on_log(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
     def get_adb(self) -> AdbClient:
+        # adb 由应用自带（toolsdbdb.exe），宿主总会传入确定路径；
+        # 空路径直接报错，不再探测 ANDROID_HOME/PATH——避免悄悄用上
+        # 用户机器上另一个版本的 adb。
         path = self.config.adb_path.strip()
         if not path:
-            path = AdbClient.find_adb()
+            raise AdbException("未找到 adb：应用应自带 tools\adb\adb.exe，或在界面指定路径")
         return AdbClient(path)
 
     def connect_usb(self) -> bool:
