@@ -421,23 +421,31 @@
           </div>
         </div>
 
-        <div class="grid g2 stack">
-          <div class="panel card">
-            <div class="panel-head">
-              <div>
-                <div class="eyebrow">Translation</div>
-                <h2>翻译后端</h2>
-              </div>
+        <div class="panel card stack">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Engine</div>
+              <h2>识别与翻译</h2>
             </div>
+          </div>
+          <div class="grid g2 gap-2">
             <label class="field">
-              <span>后端</span>
+              <span>识别引擎</span>
+              <select class="input" id="asrBackend">
+                <option value="audiocpp">Qwen3（默认）</option>
+                <option value="whisper">Whisper</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>翻译后端</span>
               <select class="input" id="mtBackend">
-                <option value="local">本地 · llama.cpp（模型在安装目录 models\）</option>
+                <option value="local">本地 · llama.cpp</option>
                 <option value="openai">云端 · OpenAI 兼容 API</option>
                 <option value="ollama">本地 · Ollama</option>
                 <option value="none">关闭翻译</option>
               </select>
             </label>
+          </div>
 
             <!-- 本地（llama.cpp）：只显示这一组 -->
             <div class="mt-group" data-mt-group="local">
@@ -491,23 +499,6 @@
               <svg class="ic"><use href="#i-triangle-alert"/></svg>
               <div>本地模型与 ASR 共享显存；云端翻译不占</div>
             </div>
-          </div>
-
-          <div class="panel card">
-            <div class="panel-head">
-              <div>
-                <div class="eyebrow">Recognition</div>
-                <h2>识别与分段</h2>
-              </div>
-            </div>
-            <label class="field">
-              <span>识别引擎</span>
-              <select class="input" id="asrBackend">
-                <option value="audiocpp">Qwen3（默认）</option>
-                <option value="whisper">Whisper</option>
-              </select>
-            </label>
-          </div>
         </div>
 
         <div class="panel card stack">
