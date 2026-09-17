@@ -930,7 +930,7 @@ def sub_start() -> dict:
                 _kill_tree(proc.pid)
                 RT.add_log("字幕服务启动完成前收到停止请求，已撤下刚拉起的进程", "info")
                 return
-            RT.add_log(f"字幕服务子进程已拉起 · PID {proc.pid}", "ok")
+            RT.add_log(f"字幕服务已启动", "ok")
             _watch_subtitle(proc)
         except Exception as e:
             with RT.lock:
@@ -1123,12 +1123,12 @@ def sub_state() -> dict:
     if health and foreign_pid:
         status = "ready"
         if not alive:
-            err = err or f"8756 上的字幕服务不是本程序启动的（PID {foreign_pid}）"
+            err = err or f"字幕服务被残留的旧进程占用（PID {foreign_pid}），可点「结束并重启」恢复"
     elif alive and RT.sub_ready:
         status = "ready"
     elif not alive and RT.sub_ready and not starting:
         status = "error"
-        err = err or "8756 被某个进程占用，但它不应答 /health，不像是正常的字幕服务"
+        err = err or "字幕服务端口被占用且无响应，请尝试「结束并重启」"
     elif starting or (alive and not RT.sub_ready):
         status = "loading"
     elif err:
@@ -2001,6 +2001,22 @@ class SyncService:
         self.adb_path = ""
 
     # ---- 懒加载 vendor 模块 ----
+    def _resolve_adb(self) -> str:
+        """adb 解析顺序：用户在界面填的路径 → 应用自带的 tools\adb\adb.exe →
+        留空（vendor 模块再按 ANDROID_HOME / 常见位置 / PATH 自动探测）。
+
+        自带 adb（tools\fetch_adb.ps1 下载，约 6 MB）让设备同步开箱即用，
+        不再要求用户机器上恰好装过 Android SDK。
+        """
+        s = load_settings()
+        p = str(s.get("adb_path") or "").strip()
+        if p:
+            return p
+        bundled = APP_DIR / "tools" / "adb" / "adb.exe"
+        if bundled.exists():
+            return str(bundled)
+        return ""
+
     def _controller(self, kind: str):
         slot = self.slots[kind]
         if slot.controller is not None:
@@ -2012,7 +2028,7 @@ class SyncService:
         cfg = getattr(mod, meta["config"])()
         cfg.local_folder = s.get(meta["local_key"]) or ""
         cfg.device_folder = s.get(meta["device_key"]) or cfg.device_folder
-        cfg.adb_path = s.get("adb_path") or ""
+        cfg.adb_path = self._resolve_adb()
         cfg.force_full = bool(s.get("sync_force_full"))
         cfg.delete_extra = bool(s.get("sync_delete_extra"))
         ctrl = getattr(mod, meta["controller"])(cfg)
@@ -2027,7 +2043,7 @@ class SyncService:
         s = load_settings()
         ctrl.config.local_folder = s.get(meta["local_key"]) or ""
         ctrl.config.device_folder = s.get(meta["device_key"]) or ctrl.config.device_folder
-        ctrl.config.adb_path = s.get("adb_path") or ""
+        ctrl.config.adb_path = self._resolve_adb()
         ctrl.config.force_full = bool(s.get("sync_force_full"))
         ctrl.config.delete_extra = bool(s.get("sync_delete_extra"))
 

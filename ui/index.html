@@ -411,10 +411,9 @@
           <div class="notice warn top-3" id="subForeignNotice" style="display:none">
             <svg class="ic"><use href="#i-triangle-alert"/></svg>
             <div class="grow">
-              <div id="subForeignMsg">8756 上的字幕服务不是本程序启动的。</div>
+              <div id="subForeignMsg">字幕服务被上次残留的旧进程占用。</div>
               <div class="hint" style="margin-top:5px">
-                它用的是启动那一刻的旧配置，之后改过的模型 / 翻译后端 / 术语表都不会生效——
-                界面却会显示"就绪"。通常来自上次宿主被强杀留下的残留进程。
+                它仍按启动时的旧配置运行，界面上改过的设置不会生效。点下方「结束并重启」即可恢复。
               </div>
             </div>
             <button class="btn ghost" id="subReclaim"><svg class="ic"><use href="#i-refresh-ccw"/></svg><span>结束并重启</span></button>
@@ -514,7 +513,7 @@
           <div class="ph-text">
             <div class="eyebrow">Device Link</div>
             <h1>设备同步</h1>
-            <p>脚本与视频 <svg class="ic inline-ic"><use href="#i-arrow-right"/></svg> Quest · adb 增量推送（本地打包 zip，设备端解压）</p>
+            <p>把脚本与视频推送到 Quest</p>
           </div>
           <div class="actions">
             <button class="btn ghost" id="syncDevices"><svg class="ic"><use href="#i-refresh-cw"/></svg><span>扫描设备</span></button>
@@ -649,7 +648,6 @@
               <svg class="ic muted"><use href="#i-languages"/></svg>
               <div class="grow">
                 <div class="name">日语 <svg class="ic inline-ic"><use href="#i-arrow-right"/></svg> 中文</div>
-                <div class="sub" id="glossJaMeta">—</div>
               </div>
               <span class="badge acc" id="glossJaCount">0 条</span>
             </div>
@@ -657,13 +655,8 @@
               <svg class="ic muted"><use href="#i-languages"/></svg>
               <div class="grow">
                 <div class="name">英语 <svg class="ic inline-ic"><use href="#i-arrow-right"/></svg> 中文</div>
-                <div class="sub" id="glossEnMeta">—</div>
               </div>
               <span class="badge acc" id="glossEnCount">0 条</span>
-            </div>
-            <div class="hint">
-              词库已改为 CSV 管理，界面不再渲染条目（4000+ 条会把 DOM 撑爆）。用上方「导入 / 导出」维护，
-              或直接编辑 <span class="mono">vendor\subtitle\glossary_*.json</span>。
             </div>
           </div>
 

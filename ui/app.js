@@ -328,10 +328,10 @@
     setBadge($("#subBadge"), sub.status === "ready" ? "ok" : sub.status === "loading" ? "warn" : sub.status === "error" ? "err" : "",
       sub.status === "ready" ? "就绪" : sub.status === "loading" ? "加载中" : sub.status === "error" ? "错误" : "已停止");
     $("#subSub").textContent = sub.status === "ready"
-      ? ("独立子进程 · PID " + sub.pid + " · 端口 " + sub.port)
-      : sub.status === "loading" ? "独立子进程 · 正在加载模型（首次约 3~10s）"
-      : sub.status === "error" ? ("独立子进程 · " + (sub.error || "异常"))
-      : "独立子进程 · 未启动";
+      ? ("运行中 · PID " + sub.pid)
+      : sub.status === "loading" ? "正在加载模型…"
+      : sub.status === "error" ? (sub.error || "异常")
+      : "未启动";
     $("#subLoadBar").style.display = sub.status === "loading" ? "" : "none";
     var h = sub.health || {};
     $("#subModel").textContent = h.asr_model ? String(h.asr_model).split(/[\\/]/).pop() : "—";
@@ -352,7 +352,7 @@
     if (fn) {
       var fp = sub.foreignPid;
       fn.style.display = fp ? "" : "none";
-      if (fp) $("#subForeignMsg").textContent = "8756 上的字幕服务不是本程序启动的（PID " + fp + "）";
+      if (fp) $("#subForeignMsg").textContent = "字幕服务被残留的旧进程占用（PID " + fp + "），点「结束并重启」恢复";
     }
 
     /* ---- 字幕缓存 ---- */
@@ -651,8 +651,6 @@
     var t = $("#glossTotal"); if (t) t.textContent = (ja + en) + " 条";
     var c1 = $("#glossJaCount"); if (c1) c1.textContent = ja + " 条";
     var c2 = $("#glossEnCount"); if (c2) c2.textContent = en + " 条";
-    var m1 = $("#glossJaMeta"); if (m1) m1.textContent = "glossary_ja_zh.json";
-    var m2 = $("#glossEnMeta"); if (m2) m2.textContent = "glossary_en_zh.json";
   }
 
   /* ---------------------------------------------------------- 事件绑定 */
