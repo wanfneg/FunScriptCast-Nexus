@@ -1243,3 +1243,32 @@ VAD，没有逐句合并/最短时长那套），所以这两行的绝对数字�
 
 **部署**：`vendor/subtitle` + `ui` 已同步到 `89728d2`；宿主 exe 本轮未动（无需重编），
 运行配置 asr.backend 仍为 audiocpp——切默认由用户在界面操作。
+
+## Round 46（2026-09-18）：UI 减负四连（用户点名：SIGNAL 卡片/圆环化/术语表开关/黑窗/蓝边）
+
+**改动**（提交 `4a7c3ca`，含宿主 exe 重编）：
+
+1. **删 SIGNAL 波形动画，改负载三环**：仪表盘 SIGNAL 卡（常驻 60fps canvas 重绘）删除，
+   原位换成 **CPU / GPU 利用率 / 内存** 三个经典占比圆环（与显存环同款式，`setRing`
+   通用化）；宿主新增 `sys_info()`（纯 ctypes：`GetSystemTimes` 差分 + `GlobalMemoryStatusEx`，
+   零新依赖），`/api/state` 增 `sys` 段。指针环境光同步改**事件驱动**：仅 pointermove 后
+   ≤350ms 突发收帧、光追上即停（旧实现是永动 RAF 空转）——页面空闲时帧循环归零。
+2. **术语表总开关**（`glossary.enabled`，缺省开）：关闭后 ASR 热词/翻译注入/术语修补
+   全部走空，**词表文件原样保留**（实测 2096 条）；`/glossary/reload` 热同步开关，
+   宿主保存字幕配置时只要动了 glossary 段就自动触发 ⇒ **即时生效，无需重启**。
+   UI 开关在术语表页头，保存失败自动弹回。缓存键含 system（术语注入变了键自然变），
+   开关切换不会吃到旧译文缓存。单测 +1（共 11 项）。
+3. **命令行黑窗根治**：宿主（netstat/tasklist/taskkill/依赖探测）+ audiocpp VAD CLI +
+   vr_dlna sc.exe 全部补 `CREATE_NO_WINDOW`——此前宿主以无窗口方式拉起服务后，
+   识别每 3s 闪一次 VAD 黑窗、启停服务闪 netstat/tasklist 黑窗。vendor/dlna 的 adb
+   同步链路此前已带防护。
+4. **无边框窗口去系统描边**：`DWMWA_BORDER_COLOR(34) = DWMWA_COLOR_NONE(0xFFFFFFFE)`
+   （Win11 的主题色描边即"蓝边"；Win10 不支持该属性静默忽略）。
+
+**验证**：单测 11/11；UI 截图回归零 issue（仪表盘三环 CPU 14%/GPU 17%/内存 57% 渲染
+正常、术语表开关正常，截图亲验）；打包版实测：`/api/state` sys 段出数（RAM 8/16GB、
+GPU util 15%）、开关热生效闭环（false → reload enabled=False、词表保留 → 还原 true）、
+干净退场。exe 已重编（sys_info/边框/黑窗修复都在宿主里，必须重编才生效——已做）。
+
+**注意**：蓝边修复只能在新窗口上生效（DWM 属性），截图验证不了窗口框——待用户下次
+正常打开窗口确认。
