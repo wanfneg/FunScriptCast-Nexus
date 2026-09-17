@@ -334,7 +334,7 @@
       : "独立子进程 · 未启动";
     $("#subLoadBar").style.display = sub.status === "loading" ? "" : "none";
     var h = sub.health || {};
-    $("#subModel").textContent = h.asr_model || "—";
+    $("#subModel").textContent = h.asr_model ? String(h.asr_model).split(/[\\/]/).pop() : "—";
     $("#subDevice").textContent = h.device || "—";
     $("#subMt").textContent = h.translate_backend || "—";
     // 当前实际生效的识别引擎（/health 的 asr_backend）。显示"实际"而不是"配置"：
@@ -592,18 +592,15 @@
     api("/api/subtitle/config").then(function (r) {
       if (!r.ok) return;
       var c = r.config || {};
-      var asr = c.asr || {}, seg = c.segment || {}, tr = c.translate || {}, vad = c.vad || {};
-      $("#asrModel").value = asr.model || "";
-      $("#asrDevice").value = asr.device || "";
+      var asr = c.asr || {}, tr = c.translate || {};
       /* 识别引擎：归一到 select 的两个取值（服务端另认 faster-whisper/kotoba/cpp/ggml 别名）。
-         兜底 audiocpp 与 index.html 首项一致——配置缺 backend 时不能把选择器甩到另一项 */
+         兜底 audiocpp 与 index.html 首项一致——配置缺 backend 时不能把选择器甩到另一项。
+         其余识别参数（模型路径/设备/分段/VAD）不进界面：属内部调优项，留在 config.json */
       var rawAb = String(asr.backend || "audiocpp").toLowerCase();
-      $("#asrBackend").value = (rawAb === "whisper" || rawAb === "faster-whisper" || rawAb === "kotoba")
+      var asrSel = $("#asrBackend");
+      asrSel.value = (rawAb === "whisper" || rawAb === "faster-whisper" || rawAb === "kotoba")
         ? "whisper" : "audiocpp";
-      $("#segMaxSec").value = seg.max_sec != null ? seg.max_sec : "";
-      $("#segMaxChars").value = seg.max_chars != null ? seg.max_chars : "";
-      $("#segPause").value = seg.pause_sec != null ? seg.pause_sec : "";
-      $("#vadThreshold").value = vad.threshold != null ? vad.threshold : "";
+      S.asrBackendPrev = asrSel.value;   // 引擎即改即存，失败时弹回这个值
       // 兜底必须与 index.html 里 <select> 的首项一致（local）。写成 "ollama" 的话，
       // 配置里 backend 为空时会把选择器指向 Ollama，用户一保存就把后端切成
       // 本地根本没在跑的 Ollama（翻译整条挂掉）。
@@ -792,22 +789,17 @@
         box.innerHTML = lines.map(function (s) { return "<div>" + esc(s) + "</div>"; }).join("");
       });
     });
-    $("#saveAsr").addEventListener("click", function () {
-      var body = {
-        asr: {
-          backend: $("#asrBackend").value,
-          model: $("#asrModel").value, device: $("#asrDevice").value
-        },
-        glossary: { enabled: $("#glossEnabled").checked },
-        segment: {
-          max_sec: parseFloat($("#segMaxSec").value) || 8,
-          max_chars: parseInt($("#segMaxChars").value, 10) || 50,
-          pause_sec: parseFloat($("#segPause").value) || 0.8
-        },
-        vad: { threshold: parseFloat($("#vadThreshold").value) || 0.5 }
-      };
-      api("/api/subtitle/config", "POST", body).then(function (r) {
-        toast(r.ok ? "识别设置已保存" : "保存失败", r.ok ? "重启字幕服务后生效" : (r.error || ""), r.ok ? "ok" : "err");
+    /* 识别引擎即改即存（选错自动弹回）；其余识别参数不进界面 */
+    $("#asrBackend").addEventListener("change", function () {
+      var sel = this, prev = S.asrBackendPrev || sel.value;
+      api("/api/subtitle/config", "POST", { asr: { backend: sel.value } }).then(function (r) {
+        if (r.ok) {
+          S.asrBackendPrev = sel.value;
+          toast("识别引擎已保存", "重启字幕服务后生效", "ok");
+        } else {
+          sel.value = prev;
+          toast("保存失败", r.error || "", "err");
+        }
       });
     });
 
@@ -1163,8 +1155,7 @@
     // 配置输入框时不要覆盖他的输入
     setTimeout(function () { if (!S.subCfgDirty) loadSubtitleConfig(); }, 2500);
     // 配置输入一旦被用户动过就标记：之后的自动回填一律让路
-    ["asrBackend", "asrModel", "asrDevice", "segMaxSec", "segMaxChars", "segPause", "vadThreshold", "glossEnabled",
-     "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey"
+    ["asrBackend", "glossEnabled", "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey"
     ].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) el.addEventListener("input", function () { S.subCfgDirty = true; });
