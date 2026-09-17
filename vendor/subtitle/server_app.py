@@ -87,6 +87,10 @@ if not CFG.get("asr", {}).get("model") and os.environ.get("ASR_MODEL"):
     CFG["asr"]["model"] = os.environ["ASR_MODEL"]
 if os.environ.get("TRANSLATE_BACKEND"):
     CFG["translate"]["backend"] = os.environ["TRANSLATE_BACKEND"]
+# ASR 后端同名机制：评测/排障时用环境变量切后端（NEXUS_ASR_BACKEND=whisper），
+# 不用动 config.json——它要么是仓库模板（改了会进 git）、要么是运行配置（有 key）。
+if os.environ.get("NEXUS_ASR_BACKEND"):
+    CFG["asr"]["backend"] = os.environ["NEXUS_ASR_BACKEND"]
 
 state = {"asr": None, "translator": None, "glossary": None}
 
@@ -164,8 +168,21 @@ def _make_asr(cfg: dict, glossary):
     - "pytorch"（默认）：原来的 Qwen3-ASR + torch 实现
     - "audiocpp"：audiocpp 常驻服务（CPU 后端显存 0 占用；必须先 VAD 裁剪语音段，
       否则长音频会退化出成百上千连重复——见 audiocpp_backend 模块注释）
+    - "whisper"：faster-whisper/CTranslate2 进程内引擎（R44 实测覆盖率 +10%、
+      时序更好、快 3×；R45 起可配，见 whisper_backend 模块注释——**不给 prompt**）
     """
     kind = str(cfg.get("backend", "pytorch") or "pytorch").lower()
+    if kind in ("whisper", "faster-whisper", "kotoba"):
+        try:
+            from whisper_backend import WhisperBackend
+
+            be = WhisperBackend(cfg.get("whisper", {}) or {},
+                                drop_latin=bool(cfg.get("drop_latin_hallucination", True)))
+            be.ensure_model()     # 启动期加载（+2.5~3.9s），首次请求不再付这个代价
+            return be
+        except Exception as e:
+            print(f"[server] whisper 不可用（{type(e).__name__}: {e}），回退 PyTorch"
+                  f"（轻量运行时没有 torch 会死在这里——确认 asr.whisper 配置或装依赖）")
     if kind in ("audiocpp", "cpp", "ggml"):
         try:
             from audiocpp_backend import AudioCppBackend
@@ -257,6 +274,11 @@ def _gpu_used_gb() -> float:
 @app.get("/health")
 def health():
     asr = state["asr"]
+    # asr_model 优先显示后端自报的身份（whisper 是 HF 模型名而非本机路径；
+    # PyTorch 引擎的 .model 是模型对象，不能直接回）——评测日志靠它区分 A/B 两边
+    m = getattr(asr, "model", None)
+    if not isinstance(m, str) or not m:
+        m = (CFG.get("asr", {}) or {}).get("model")
     return {
         "ok": asr is not None,
         "code_sig": CODE_SIG,
@@ -265,7 +287,9 @@ def health():
         # 头显就会跳过等待、把音频发给一个陈旧进程（实测踩过）。
         "pid": os.getpid(),
         "started_at": _BOOT_TS,
-        "asr_model": (CFG.get("asr", {}) or {}).get("model"),
+        "asr_backend": getattr(asr, "backend_kind", None)
+                       or str((CFG.get("asr", {}) or {}).get("backend", "pytorch")),
+        "asr_model": m,
         "device": (CFG.get("asr", {}) or {}).get("device"),
         "vad": asr.vad is not None if asr else False,
         "aligner": asr.use_aligner if asr else False,

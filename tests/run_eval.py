@@ -123,7 +123,8 @@ def main() -> int:
     if info:
         got_sig = info.get("code_sig")
         print(f"[eval] :{PORT} 已有实例 code_sig={got_sig} pid={info.get('pid')} "
-              f"started_at={info.get('started_at')} asr_model={info.get('asr_model')} "
+              f"started_at={info.get('started_at')} asr_backend={info.get('asr_backend')} "
+              f"asr_model={info.get('asr_model')} "
               f"translate_backend={info.get('translate_backend')}")
         if got_sig == want_sig:
             reuse = True
@@ -156,7 +157,8 @@ def main() -> int:
         info = health_info()
         print(f"[eval] 测试服务就绪 :{PORT}（transport={args.transport}，"
               f"{'复用' if reuse else '新起'}）code_sig={info.get('code_sig')} "
-              f"started_at={info.get('started_at')} asr_model={info.get('asr_model')} "
+              f"started_at={info.get('started_at')} asr_backend={info.get('asr_backend')} "
+              f"asr_model={info.get('asr_model')} "
               f"translate_backend={info.get('translate_backend')}")
         if info.get("code_sig") != want_sig:
             # 起完了还不一致（例如另有人往这个端口塞了实例）：结果不能代表当前代码
