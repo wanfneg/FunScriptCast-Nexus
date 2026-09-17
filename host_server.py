@@ -1290,6 +1290,16 @@ MODELS_CATALOG = [
         ],
     },
     {
+        "id": "llama-runtime",
+        "role": "translate-runtime",
+        "label": "本地翻译运行时（llama.cpp · CUDA）",
+        "kind": "zip",
+        "zip_url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest/download/llama-runtime-windows.zip",
+        "dest_dir": APP_DIR / "vendor" / "llama",
+        "size_gb": 1.1,
+        "files": [],
+    },
+    {
         "id": "sakura-7b",
         "role": "translate",
         "label": "翻译模型 · Sakura-7B（推荐）",
@@ -1370,6 +1380,8 @@ def _download_to_file(url: str, dest: Path, prog=None) -> None:
 
 
 def _model_installed(e: dict) -> bool:
+    if e.get("kind") == "zip":               # 运行时压缩包：看关键可执行文件
+        return (e["dest_dir"] / "llama-server.exe").is_file()
     if e.get("repo_dirname"):                # whisper：HF 缓存结构
         repo = _hf_hub_dir() / e["repo_dirname"]
         ref = repo / "refs" / "main"
@@ -1383,8 +1395,30 @@ def _model_installed(e: dict) -> bool:
 
 
 def _model_dl_worker(e: dict) -> None:
+    import tempfile
     id_ = e["id"]
     try:
+        if e.get("kind") == "zip":
+            import zipfile
+            tmp = Path(tempfile.gettempdir()) / ("nexus-" + id_ + "-"
+                                                 + str(int(time.time())) + ".zip")
+            _download_to_file(e["zip_url"], tmp,
+                              prog=lambda done, total: (
+                                  None if not total else
+                                  (_MODEL_DL[id_].__setitem__(
+                                      "pct", round(done / total * 99)))))
+            with _DL_LOCK:
+                _MODEL_DL[id_]["pct"] = 100
+            e["dest_dir"].mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(tmp) as z:
+                z.extractall(e["dest_dir"])
+            tmp.unlink(missing_ok=True)
+            if not (e["dest_dir"] / "llama-server.exe").is_file():
+                raise RuntimeError("解压后缺少 llama-server.exe（安装包内容不符）")
+            with _DL_LOCK:
+                _MODEL_DL[id_].update(state="done", pct=100)
+            RT.add_log("模型下载完成：" + e["label"], "ok")
+            return
         if e.get("repo_dirname"):
             # 修复历史损坏：此前版本给 refs/main 写过带换行的值，faster-whisper
             # 读 refs 不 strip → 解析出带换行的 snapshot 目录名 → 永远找不到模型

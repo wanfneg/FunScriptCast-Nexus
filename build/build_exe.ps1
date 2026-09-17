@@ -130,6 +130,15 @@ foreach ($f in 'version.json', 'start.bat', 'README.md') {
     Copy-Item (Join-Path $root $f) $out -Force
 }
 
+# 本地翻译运行时（llama.cpp + CUDA 库，约 1.1GB）不进产物：改为「识别与翻译」卡
+# 的一键下载项（host_server MODELS_CATALOG → llama-runtime）。设备同步脚本
+# toolsetch_llama.ps1 仍是构建机侧的安装方式。
+$distLlama = Join-Path $out 'vendor\llama'
+if (Test-Path $distLlama) {
+    Remove-Item $distLlama -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "  已剔除 vendor\llama（改为界面内下载，安装包瘦身约 300MB）" -ForegroundColor DarkGray
+}
+
 # 清理不该进产物/安装包的东西：运行日志、__pycache__（仓库里可能残存，Copy 不看 .gitignore）
 Get-ChildItem (Join-Path $out 'vendor'), (Join-Path $out 'ui'), (Join-Path $out 'tools') -Recurse -Force -ErrorAction SilentlyContinue |
     Where-Object { -not $_.PSIsContainer -and $_.Name -like '*.log' } |
