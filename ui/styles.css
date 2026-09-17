@@ -412,12 +412,13 @@ html[data-motion="reduced"] .brand-mark{ animation-duration:24s; }
 .g2{ grid-template-columns:repeat(2,minmax(0,1fr)); }
 /* 不对称分栏：内容量差得多的两块并排时，1:1 会显得两边都空 */
 .g2b{ grid-template-columns:minmax(0,1.45fr) minmax(0,1fr); }
+.g3{ grid-template-columns:repeat(3,minmax(0,1fr)); }
 .g4{ grid-template-columns:repeat(4,minmax(0,1fr)); }
 .gap-2{ gap:9px; } .gap-3{ gap:12px; } .gap-l{ margin-left:26px; }
 .top-1{ margin-top:4px; } .top-3{ margin-top:12px; } .top-4{ margin-top:20px; }
 .flush{ padding-left:0 !important; padding-right:0 !important; }
 
-@media (max-width:1180px){ .g4{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:1180px){ .g3,.g4{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width:1000px){ .g2,.g2b{ grid-template-columns:1fr; } .panel-tools .input{ width:190px; } }
 
 /* ---------------------------------------------------------------- 按钮 */

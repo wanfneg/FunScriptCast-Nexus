@@ -285,10 +285,8 @@
     }
     if (termCount) countTo($("#mTerms"), termCount);
     else countTo($("#mTerms"), 0);   // 服务停止/未就绪时指标也要归零，别留着旧数
-    setRing($("#gpuRing"), gpuPct);
-    $("#gpuText").textContent = g.total_mb ? (Math.round(g.used_mb) + " / " + Math.round(g.total_mb) + " MB") : "—";
 
-    /* ---- 系统负载三环（CPU / GPU 利用率 / 内存）——替代旧 SIGNAL 波形动画 ---- */
+    /* ---- 系统负载四环（CPU / GPU 利用率 / 内存 / 显存）——替代旧 SIGNAL 波形动画 ---- */
     var sy = st.sys || {};
     setRing($("#cpuRing"), sy.cpu_pct || 0);
     if ($("#cpuTxt")) $("#cpuTxt").textContent = (sy.cpu_pct || 0) + "%";
@@ -298,6 +296,8 @@
       ? (Math.round(sy.ram_used_mb / 1024) + " / " + Math.round(sy.ram_total_mb / 1024) + " GB") : "—";
     setRing($("#gpuUtilRing"), g.util || 0);
     if ($("#gpuUtilTxt")) $("#gpuUtilTxt").textContent = (g.util || 0) + "%";
+    setRing($("#gpuRing"), gpuPct);
+    $("#gpuText").textContent = g.total_mb ? (Math.round(g.used_mb) + " / " + Math.round(g.total_mb) + " MB") : "—";
 
     /* ---- 事件时间线 ---- */
     var tl = $("#timeline");

@@ -263,11 +263,15 @@
                 <div class="ring" id="ramRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
                 <div><div class="t">内存</div><div class="d mono" id="ramTxt">—</div></div>
               </div>
+              <div class="gauge">
+                <div class="ring" id="gpuRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
+                <div><div class="t">显存</div><div class="d mono" id="gpuText">—</div></div>
+              </div>
             </div>
           </div>
         </div>
 
-        <div class="grid g4 stack">
+        <div class="grid g3 stack">
           <div class="panel card metric">
             <div class="metric-lab">媒体根目录</div>
             <div class="metric-val"><span class="num" id="mRoots">0</span><span class="unit">个</span></div>
@@ -279,16 +283,6 @@
           <div class="panel card metric">
             <div class="metric-lab">术语表条目</div>
             <div class="metric-val"><span class="num" id="mTerms">0</span><span class="unit">条</span></div>
-          </div>
-          <div class="panel card metric">
-            <div class="metric-lab">显存占用</div>
-            <div class="metric-row">
-              <div class="ring" id="gpuRing">
-                <svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg>
-                <span class="pct">—</span>
-              </div>
-              <div class="mono muted" id="gpuText">—</div>
-            </div>
           </div>
         </div>
 
