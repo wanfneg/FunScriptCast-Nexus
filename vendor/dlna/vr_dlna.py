@@ -1102,6 +1102,14 @@ class DlnaHandler(BaseHTTPRequestHandler):
     def _stream_file(self, path: str, query: str, want_body: bool) -> None:
         key = path[len("/media/"):]
         file_path = self.app.library.key_to_path(key)
+        # key_to_path 返回 None 表示键不合法/越界，**也包括最终组件是符号链接/联接的
+        # 媒体文件**（key_to_path 内部拒绝 reparse point）——这类文件在列表里照样
+        # 可点播。旧实现不判空，None.is_file 抛 AttributeError；它继承自
+        # Exception 而非 OSError，下面那个 except OSError 接不住，于是冒到 _route
+        # 的兜底 except Exception → 500 + 异常文本（判据同 _stream_subtitle）。
+        if file_path is None:
+            self._send_error_text(404, "not found")
+            return
         try:
             is_file = _os_retry(file_path.is_file, what=f"is_file {file_path}")
         except OSError:
@@ -1255,8 +1263,23 @@ class DlnaHandler(BaseHTTPRequestHandler):
                 conn = http.client.HTTPSConnection(host, u.port or 443, timeout=30) if u.scheme == "https" else http.client.HTTPConnection(host, u.port or 80, timeout=30)
                 conn.request("GET", req_path, headers=headers)
                 resp = conn.getresponse()
-                resp.read(65536)  # 只探测可用性，绝不能把整个视频读进内存
-                self._send(200, b"", "video/mp4", want_body=False)
+                # 根因：旧实现把探测 GET 的结果全丢掉，恒回 200 + Content-Length: 0 +
+                # video/mp4 —— DeoVR 拿不到真实大小与可拖动性（Accept-Ranges），
+                # 非 mp4 的源还会被当成 mp4。这里把探测到的头透传（HEAD 只发头不发 body）。
+                if resp.getheader("Content-Length") is None:
+                    # 无长度声明时才读一点探测可用性；有长度就绝不读 body
+                    # （否则会把整个视频拉进内存）。
+                    resp.read(65536)
+                self.send_response(resp.status)
+                for h in ("Content-Type", "Content-Length", "Content-Range",
+                          "Accept-Ranges", "Content-Disposition", "Content-Language"):
+                    v = resp.getheader(h)
+                    if v:
+                        self.send_header(h, v)
+                if resp.getheader("Content-Type") is None:
+                    self.send_header("Content-Type", "video/mp4")
+                self._send_connection_headers()
+                self.end_headers()
                 return
             self.send_response(resp.status)
             for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Content-Disposition",
@@ -1282,7 +1305,13 @@ class DlnaHandler(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except OSError as e:
+        except (OSError, http.client.HTTPException) as e:
+            # 根因：上游 chunked 流中途断开时，resp.read() 抛的是
+            # http.client.IncompleteRead（也含 BadStatusLine/LineTooLong），它是
+            # HTTPException 而**不是** OSError 子类，旧 catch 列表接不住 → 异常冒到
+            # _route 的兜底 `except Exception`，在媒体流已经发出去之后又补一份完整的
+            # HTTP 500 响应，客户端收到的视频流里就混进了一段 500 响应文本
+            # （与作者在下面"绝不能二次发响应污染媒体流"的注释同一个坑，只是没覆盖这条路径）。
             log.warning("strm proxy %s failed: %s", target[:80], e)
             if not headers_sent:
                 try:
@@ -1338,11 +1367,25 @@ class DlnaHandler(BaseHTTPRequestHandler):
         self._send(200, body, subtitle_mime(sub_path))
 
     # ---- SOAP ----
+    # SOAP 控制请求体上限：实际请求只有几 KB（Browse 的 ObjectID 等），1MB 已极宽裕。
+    # 根因：旧实现直接 `self.rfile.read(int(Content-Length))`，长度不设上限——
+    # 局域网任意主机发一个超大 Content-Length 再慢速灌数据，就能让本进程按声明长度
+    # 持续累积内存。DLNA 与宿主同进程，MemoryError 会把 UI/托盘一起带走。
+    MAX_POST_BYTES = 1024 * 1024
+
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         try:
             length = int(self.headers.get("Content-Length") or 0)
+            if length > self.MAX_POST_BYTES:
+                # 不读 body、直接拒收并关连接：按声明长度读下去正中攻击者下怀；
+                # close_connection 让客户端立刻看到响应而不是继续灌数据。
+                log.warning("POST %s 请求体过大（%d B > %d B），已拒收",
+                            path, length, self.MAX_POST_BYTES)
+                self.close_connection = True
+                self._send_error_text(413, "payload too large")
+                return
             body = self.rfile.read(length) if length > 0 else b""
             if path in ("/control/cds", "/control/cm"):
                 # 调试：记录 SOAP 请求体（截断），便于对照 DeoVR 实际请求

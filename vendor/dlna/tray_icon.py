@@ -131,6 +131,11 @@ _kernel32 = ctypes.windll.kernel32
 
 # 常用 WinAPI 原型（避免 64 位指针截断 / 返回值类型错误）
 _user32.DefWindowProcW.restype = LRESULT
+# argtypes 不能省：缺省时 ctypes 对未声明的参数按 32 位 c_int 转换，lParam/wParam
+# 一旦 ≥0x100000000（64 位下完全可能）就抛 ctypes.ArgumentError —— 而这里是在
+# **窗口回调内部**调用，回调抛异常等于把该消息吞掉（消息对应的行为静默丢失）。
+# 当前必经消息恰好都在低地址所以没爆，属明确遗漏。
+_user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 _user32.LoadIconW.restype = wt.HICON
 _user32.CreateWindowExW.argtypes = [
     wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD,

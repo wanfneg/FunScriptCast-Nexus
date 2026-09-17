@@ -79,7 +79,17 @@ class WhisperFallback:
     def transcribe(self, pcm_f32: np.ndarray, sr: int = 16000, lang: str = "ja") -> list:
         """pcm_f32: [-1,1] float32 单声道。返回 [{"start_ms","end_ms","text"}]（可能为空）。
 
-        vad_filter 过滤非语音段（faster-whisper 标准行为）。"""
+        vad_filter 过滤非语音段（faster-whisper 标准行为）。
+
+        `sr` 只接受 16000：faster-whisper 内部**恒按 16k** 解码，收到别的采样率
+        不会报错、而是把 48k 的样本当 16k 读 —— 输出听起来"差不多"但时间戳整体
+        偏 3 倍、且高频内容被当作低频（静默出错）。旧实现收下 sr 却从不使用，
+        所以这里显式拒绝，不做隐式重采样：宁可让调用方报错，也不能给出错时间戳。
+        """
+        if int(sr) != 16000:
+            raise ValueError(
+                f"WhisperFallback 只支持 16k 输入（faster-whisper 恒按 16k 解码），"
+                f"收到 sr={sr}；请先重采样到 16000 再调用")
         self._ensure()
         with self._lock:
             segments, info = self._model.transcribe(

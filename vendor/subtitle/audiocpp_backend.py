@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 import wave
 from pathlib import Path
@@ -95,7 +96,10 @@ class AudioCppBackend:
         # llama_backend.py 的既有事故同一类（超时收尾调 stop_server 挂死所有线程）。
         self._lock = threading.RLock()
         self.echo_retries = 0        # 热词复读触发无热词重试的次数（诊断用）
-        self.last_vad_error = ""     # 最近一次 VAD 失败原因（"" = 正常）
+        self.last_vad_error = ""     # 最近一次 VAD 失败原因全文（"" = 正常）
+        # 回给客户端的**错误类别**（last_vad_error 的全文含绝对路径/用户名，
+        # 只能进本地日志——见 _error_kind / _vad_fail 的说明）
+        self.last_vad_error_kind = ""
 
     def _context_with_keys(self, lang_key: str) -> tuple:
         """返回 (本语言的 ASR 热词提示, 真正进了提示词的键)。未启用/无术语表 → ("", [])。
@@ -263,6 +267,7 @@ class AudioCppBackend:
         纯 ctypes 实现，失败时静默降级为旧行为（下次启动 reap 兜底）。"""
         if os.name != "nt":
             return
+        job = None
         try:
             import ctypes
             from ctypes import wintypes
@@ -298,6 +303,18 @@ class AudioCppBackend:
                 ]
 
             k32 = ctypes.windll.kernel32
+            # 句柄原型：不声明 restype 时 ctypes 默认按 c_int 返回（32 位），
+            # 0x100000000 以上的句柄值会被截断——之后 CloseHandle 拿到的就是
+            # 一个错句柄（关不掉真句柄，还可能误关同值对象）。
+            k32.CreateJobObjectW.restype = ctypes.c_void_p
+            k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+            k32.SetInformationJobObject.restype = ctypes.c_int
+            k32.SetInformationJobObject.argtypes = [
+                ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+            k32.AssignProcessToJobObject.restype = ctypes.c_int
+            k32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            k32.CloseHandle.restype = ctypes.c_int
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
             job = k32.CreateJobObjectW(None, None)
             info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
             info.BasicLimitInformation.LimitFlags = 0x2000   # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -308,7 +325,36 @@ class AudioCppBackend:
                 raise OSError("AssignProcessToJobObject 失败")
             self._job_handle = job    # 句柄保持打开；进程结束由 OS 回收
         except Exception as e:
+            # 失败路径同样要关句柄：job 已在上面创建但 SetInformationJobObject /
+            # AssignProcessToJobObject 失败时，旧实现直接抛出 → 句柄无人关闭。
+            try:
+                if job:
+                    ctypes.windll.kernel32.CloseHandle(job)
+            except Exception:
+                pass
             print(f"[asr] Job Object 保护不可用（{e}），跳过", flush=True)
+
+    def _close_job_handle(self) -> None:
+        """关闭 Job Object 句柄（幂等；非 Windows 或句柄为空时跳过）。
+
+        根因：stop_server 旧实现只把 `_job_handle` 置 None，注释写着"关闭 Job
+        句柄"却**没有** CloseHandle —— 每次启停泄漏一个内核句柄（Job 对象也因
+        句柄未关而不被回收）。`_job_handle` 可能是 None（非 Windows / 创建失败）
+        或 0（CreateJobObjectW 返回 NULL），必须先判空再关。
+        """
+        h = self._job_handle
+        self._job_handle = None
+        if not h or os.name != "nt":
+            return
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.CloseHandle.restype = ctypes.c_int
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+            k32.CloseHandle(ctypes.c_void_p(h))
+        except Exception as e:
+            print(f"[asr] 关闭 Job 句柄失败（由 OS 兜底回收）：{type(e).__name__}: {e}",
+                  flush=True)
 
     def stop_server(self) -> None:
         with self._lock:
@@ -322,7 +368,42 @@ class AudioCppBackend:
                     except Exception:
                         pass
             self._proc = None
-            self._job_handle = None   # 进程已死，关闭 Job 句柄（幂等，OS 兜底回收）
+            # 真正关闭 Job 句柄（旧实现只是置 None → 每次启停泄漏一个内核句柄）。
+            # 句柄是最后一个引用时 KILL_ON_JOB_CLOSE 生效，顺带保证子进程被带走。
+            self._close_job_handle()
+            # 启动时写的 %TEMP%\audiocpp_asr_{port}.json 含安装路径/端口，旧实现
+            # 从不删除：长期残留，且换端口后每次多留一份。
+            try:
+                (Path(tempfile.gettempdir())
+                 / f"audiocpp_asr_{self.port}.json").unlink(missing_ok=True)
+            except OSError as e:
+                print(f"[asr] 清理临时配置失败（忽略）：{type(e).__name__}: {e}", flush=True)
+
+    # ------------------------------------------------------------ 错误脱敏
+    @staticmethod
+    def _error_kind(ex: BaseException) -> str:
+        """异常 → 可回给客户端的**错误类别**；详细文本一律只进本地日志。
+
+        根因：详细文本里带本机绝对路径与 Windows 用户名。实测样例
+        （VAD CLI 超时）：
+          Command '['E:\\audiocpp-portable\\cpu\\audiocpp_cli.exe', ...,
+                   'C:\\Users\\admin\\AppData\\Local\\Temp\\vad_in_...wav']'
+          timed out after 30 seconds
+        这段文本经 transcribe() 的 error 字段回到响应里，而 /transcribe 按
+        server.host=0.0.0.0 对局域网开放 ⇒ 同网段任意主机都能拿到本机的安装
+        目录、临时目录与 Windows 用户名。所以对外只保留类别，全文 print 到服务日志。
+        """
+        if isinstance(ex, (subprocess.TimeoutExpired, TimeoutError)):
+            return "asr_timeout"
+        if isinstance(ex, (urllib.error.URLError, ConnectionError, FileNotFoundError)):
+            return "backend_unavailable"
+        return "asr_error"
+
+    def _vad_fail(self, kind: str, detail: str) -> None:
+        """记录一次 VAD 失败：类别回客户端，全文只进本地日志（见 _error_kind）。"""
+        self.last_vad_error = detail
+        self.last_vad_error_kind = kind
+        print(f"[asr] VAD 失败（{kind}）：{detail}", flush=True)
 
     # ------------------------------------------------------------------ VAD
     def speech_spans(self, pcm: np.ndarray, tmpdir: Path | None = None) -> list | None:
@@ -331,7 +412,8 @@ class AudioCppBackend:
         返回 **None 表示 VAD 本身失败**（CLI 缺失/崩溃/超时），[] 才是"真没有
         语音"。旧实现把所有异常一律吞成 []，上层判 skipped 后静默丢块——CLI
         一坏整片字幕无声消失，且与真静音完全不可区分。失败原因存
-        self.last_vad_error 供上层带回 error 字段。
+        self.last_vad_error（全文，供日志），回给客户端的只有 last_vad_error_kind
+        这个类别（全文含路径/用户名，见 _error_kind）。
         """
         exe = self.exe_dir / "audiocpp_cli.exe"
         d = Path(tmpdir or tempfile.gettempdir())
@@ -351,13 +433,12 @@ class AudioCppBackend:
                 encoding="utf-8", errors="replace", timeout=timeout,
             )
             if r.returncode != 0:
-                self.last_vad_error = (f"VAD CLI 退出码 {r.returncode}："
-                                       f"{(r.stderr or '').strip()[:200] or '无 stderr'}")
-                print(f"[asr] {self.last_vad_error}", flush=True)
+                self._vad_fail("vad_cli_failed",
+                               f"VAD CLI 退出码 {r.returncode}："
+                               f"{(r.stderr or '').strip()[:200] or '无 stderr'}")
                 return None
             if not out_json.exists():
-                self.last_vad_error = "VAD CLI 未产出 chunks 文件（可能被秒退）"
-                print(f"[asr] {self.last_vad_error}", flush=True)
+                self._vad_fail("vad_no_chunks", "VAD CLI 未产出 chunks 文件（可能被秒退）")
                 return None
             data = json.loads(out_json.read_text(encoding="utf-8"))
             spans = []
@@ -367,10 +448,18 @@ class AudioCppBackend:
                 if b > a:
                     spans.append((a, b))
             self.last_vad_error = ""
+            self.last_vad_error_kind = ""
             return spans
+        except subprocess.TimeoutExpired as e:
+            # 全文（含完整命令行与临时文件路径）只进本地日志
+            self._vad_fail("vad_timeout",
+                           f"VAD CLI 超时（{timeout:.0f}s）：{type(e).__name__}: {e}")
+            return None
+        except FileNotFoundError as e:
+            self._vad_fail("vad_cli_missing", f"VAD CLI 不存在：{exe}（{e}）")
+            return None
         except Exception as e:
-            self.last_vad_error = f"VAD 失败：{type(e).__name__}: {e}"
-            print(f"[asr] {self.last_vad_error}", flush=True)
+            self._vad_fail("vad_error", f"{type(e).__name__}: {e}")
             return None
         finally:
             for f in (wav_in, out_json):
@@ -381,9 +470,11 @@ class AudioCppBackend:
 
     # ------------------------------------------------------------- 转写
     def _transcribe_span(self, wav, context: str, keys: list, lang_key: str,
-                         echo_ref: str = "") -> str:
+                         echo_ref: str = "", timeout: float = 600.0) -> str:
         """转写单个语音段；热词导致复读时**改用无热词重试一次**。
 
+        `timeout` 由调用方按本段音频时长收紧后传入（见 transcribe；默认 600s
+        只用于不关心时长的直接调用）。
         为什么必须重试而不是丢弃：audiocpp 的 Qwen3-ASR 在喘息/气声这类
         非清晰语音上，有相当高的概率把 `context` 整段复读出来当结果
         （实测 5 个窗口里 3 个中招，输出就是 `ゆあ、女子アナ、ソープ嬢、…`）。
@@ -398,7 +489,7 @@ class AudioCppBackend:
         另外这也解释了为什么开热词会慢 2.5 倍：模型把 130 个热词一个个生成
         出来（约 130 token）才被丢弃，纯属白烧 CPU。
         """
-        r = self.transcribe_wav(wav, context, lang_key)
+        r = self.transcribe_wav(wav, context, lang_key, timeout=timeout)
         text = (r.get("text") or "").strip()
         if not context or not (self._is_glossary_echo(text, keys)
                                or is_prompt_echo(text, echo_ref)):
@@ -407,7 +498,7 @@ class AudioCppBackend:
         with self._lock:
             self.echo_retries += 1
         try:
-            r2 = self.transcribe_wav(wav, "", lang_key)
+            r2 = self.transcribe_wav(wav, "", lang_key, timeout=timeout)
         except Exception:
             return ""
         t2 = (r2.get("text") or "").strip()
@@ -419,13 +510,18 @@ class AudioCppBackend:
             return ""
         return t2
 
-    def transcribe_wav(self, wav: Path, context: str = "", lang_key: str = "") -> dict:
+    def transcribe_wav(self, wav: Path, context: str = "", lang_key: str = "",
+                       timeout: float = 600.0) -> dict:
         """调常驻服务转写单个 wav，返回 {text, rtf, wall_s}。
 
         `context` 是热词/领域词偏置。实测 audiocpp 只认 `context` 这个字段名：
         `prompt`、`hotwords` 都被静默忽略（同一段音频、同一份解码设置下输出
         逐字节相同）。语言按请求的 lang_key 传（AUDIOCPP_LANG 映射），映射不到
         时退回构造配置里的 self.language。
+
+        `timeout` 是**单段请求**的超时，由调用方按音频时长收紧后传入：旧实现写死
+        600s，小于 8s 的一段音频最坏也能把请求线程钉住 10 分钟；3s 节奏下请求
+        堆积，且 server_app 的空闲回收看到 _INFLIGHT>0 就一直不触发。
         """
         body = {"model": STREAM_MODEL_ID, "audio": str(wav),
                 "language": AUDIOCPP_LANG.get(lang_key, self.language)}
@@ -435,7 +531,7 @@ class AudioCppBackend:
                                      data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
         t0 = time.perf_counter()
-        with urllib.request.urlopen(req, timeout=600) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.loads(r.read().decode("utf-8"))
         d["wall_s"] = time.perf_counter() - t0
         return d
@@ -473,10 +569,12 @@ class AudioCppBackend:
 
         spans = self.speech_spans(pcm, tmpdir=d)
         if spans is None:
-            # VAD 本身失败（区别于"真没有语音"）：明确带回错误，绝不静默丢块
+            # VAD 本身失败（区别于"真没有语音"）：明确带回错误类别，绝不静默丢块。
+            # 只回类别不回全文：全文含绝对路径/用户名（见 _error_kind），而
+            # /transcribe 对局域网开放；全文已经 print 到服务日志。
             return {"language": lang_key, "segments": [], "asr_ms": 0.0,
                     "skipped": True, "backend": "audiocpp",
-                    "error": self.last_vad_error or "vad_failed"}
+                    "error": self.last_vad_error_kind or "vad_failed"}
         if not spans:
             return {"language": lang_key, "segments": [], "asr_ms": 0.0,
                     "skipped": True, "backend": "audiocpp"}
@@ -519,14 +617,25 @@ class AudioCppBackend:
                 continue
             # 文件名带线程 id：并发时同 pid 同毫秒互覆
             wav = d / f"asr_{os.getpid()}_{threading.get_ident()}_{int(time.time()*1000)}_{i}.wav"
+            # 单段请求超时按**本段音频时长**收紧（与 VAD 侧 min(300, duration*2)
+            # 同一意图）：旧实现写死 600s，≤8s 的一段最坏把请求线程钉 10 分钟，
+            # 3s 节奏下请求堆积，_INFLIGHT>0 还会让空闲回收一直不触发。
+            # 下界 60s：CPU 后端 rtf≈0.04，放大 30× 已有充足余量。
+            span_timeout = max(60.0, min(600.0, (b - a) / float(SR) * 30.0))
             try:
                 self._write_wav(wav, pcm[a:b])
                 text = self._transcribe_span(wav, context, context_keys, lang_key,
-                                             echo_ref=extra_context)
+                                             echo_ref=extra_context,
+                                             timeout=span_timeout)
             except Exception as ex:
+                # 回给客户端的只有错误类别：详细文本含临时 wav 绝对路径与本机
+                # 用户名（见 _error_kind），而 /transcribe 对局域网开放。
+                # 全文留在服务日志里，诊断信息不丢。
+                print(f"[asr] 单段转写失败（{self._error_kind(ex)}）："
+                      f"{type(ex).__name__}: {ex}", flush=True)
                 segs.append({"start_ms": video_start_ms + int(round(a / SR * 1000)),
                              "end_ms": video_start_ms + int(round(b / SR * 1000)),
-                             "text": "", "error": f"{type(ex).__name__}: {ex}"})
+                             "text": "", "error": self._error_kind(ex)})
                 continue
             finally:
                 try:

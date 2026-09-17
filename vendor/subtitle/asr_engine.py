@@ -91,12 +91,32 @@ class AsrEngine:
         self.load_s = time.perf_counter() - t0
 
         self.vad = None
+        # 模型是否加载只看 asr 段的旧键（历史遗留，config.json 里没有这个键）；
+        # 真正"用不用 VAD"的判定在 _vad_enabled —— 独立段 vad.enabled 也在那里生效。
         if cfg.get("vad_enabled", True):
             try:
                 from silero_vad import load_silero_vad
                 self.vad = load_silero_vad()
             except Exception as e:  # VAD 只是优化，不可用时退化为全量识别
                 print("[asr] VAD 不可用，已跳过静音检测:", e)
+
+    def _vad_enabled(self, vad_cfg: dict) -> bool:
+        """本请求是否启用 VAD。
+
+        根因：开关存在**两处键**，而此前只有一处能被读到。
+          · `config.json` 把开关写在独立段 `vad.enabled`（vendor/subtitle/config.json），
+            但全仓库没有任何代码读 `vad.enabled`；
+          · 本类构造时只拿到 `asr` 段（server_app._make_asr 传的是 CFG["asr"]），
+            历史上读的是 `asr.vad_enabled` —— 该键在 config.json 里并不存在。
+        两者相叠 ⇒ 用户在 config.json 里把 VAD 关掉是**静默无效**的。
+        server_app 会把独立段随请求传进来（transcribe(vad_cfg=CFG["vad"])），
+        所以在本方法里合并即可：不改构造签名、不破坏既有调用方。
+        判据取"任一为 false 即关闭"——既让 vad.enabled 生效，也不改变
+        既有 `asr.vad_enabled=false`（显式关闭）的行为。
+        """
+        asr_side = bool(self.cfg.get("vad_enabled", True))
+        vad_side = bool((vad_cfg or {}).get("enabled", True))
+        return asr_side and vad_side
 
     def _budget_tokens(self, n_samples: int) -> int:
         """按音频时长估算生成上限（秒数 × 每秒 token 数，夹在 min/max 之间）。"""
@@ -240,10 +260,13 @@ class AsrEngine:
         seg_cfg = seg_cfg or {}
         t0 = time.perf_counter()
 
-        # VAD：先切出语音区间，只把语音段送 ASR（含少量前后 padding 防切头）
+        # VAD：先切出语音区间，只把语音段送 ASR（含少量前后 padding 防切头）。
+        # 关掉 VAD 时（vad.enabled / asr.vad_enabled 任一为 false，见 _vad_enabled）
+        # 整块送 ASR，与"silero 加载失败"的既有降级路径行为一致。
+        vad_on = self._vad_enabled(vad_cfg) and self.vad is not None
         spans = self.speech_spans(pcm, vad_cfg.get("threshold", 0.5),
-                                  vad_cfg.get("min_speech_ms", 250))
-        if self.vad is not None and not spans:
+                                  vad_cfg.get("min_speech_ms", 250)) if vad_on else []
+        if vad_on and not spans:
             return {"language": None, "segments": [], "asr_ms": 0.0, "skipped": True}
         if spans:
             pcm_asr, tmap = self._crop_to_spans(
@@ -254,9 +277,13 @@ class AsrEngine:
         context = ""
         context_keys: list = []
         if self.cfg.get("use_glossary_context", True):
-            # 同时取回"真正进提示词的键"：复读判据只认这批键，不能拿整张术语表
-            # （本路径与既有行为一致，不补领域词：asr_context 的 max_chars 默认 0）
-            context, context_keys = context_with_keys(self.glossary, lang_key)
+            # 同时取回"真正进提示词的键"：复读判据只认这批键，不能拿整张术语表。
+            # max_chars 必须和 audiocpp 后端同源（asr.context_max_chars）：此前这里
+            # 吃默认值 0，同一份 config.json 在两个后端的热词长度不一致（audiocpp
+            # 会补领域词、PyTorch 不补），复读判据用的键集也跟着漂移。
+            context, context_keys = context_with_keys(
+                self.glossary, lang_key,
+                int(self.cfg.get("context_max_chars", 0) or 0))
         if extra_context:
             # 上一句转写结果作为热词补充（与 audiocpp 后端同策略，治跨块人名听错）
             context = (context + " " + extra_context).strip()
