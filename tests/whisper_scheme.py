@@ -83,6 +83,28 @@ def cut_rms(pcm, np):
     return cuts
 
 
+def cut_blocks(pcm, np, chunk_sec: int, overlap_sec: int):
+    """**生产等价的定长块**（3s/1s 重叠）→ [(start_sample, end_sample, keep_from_ms)]。
+
+    为什么要单独有这一档：头显现在按固定块长上传，PC 不知道"下一句什么时候来"，
+    所以切句只能在客户端做。如果**只换 ASR、不动上传协议**就能拿到大部分收益，
+    那就完全不用改头显；这一档就是用来回答这个问题的。
+    keep_from_ms 与生产同义：块起点 + overlap/2，交给 keep_segment 去重。
+    """
+    out = []
+    step = int((chunk_sec - overlap_sec) * SR)
+    span = int(chunk_sec * SR)
+    half_ms = int(overlap_sec * 1000 / 2)
+    i = 0
+    while i < len(pcm):
+        end = min(i + span, len(pcm))
+        if (end - i) / SR < 0.1:
+            break
+        out.append((i, end, int(i / SR * 1000) + half_ms))
+        i += step
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pcm", default=str(DEFAULT_PCM))
@@ -95,8 +117,12 @@ def main() -> int:
                     help="faster-whisper 模型；kotoba 是日文特化（本机已缓存）")
     ap.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     ap.add_argument("--compute-type", default="float16")
-    ap.add_argument("--cut", default="rms", choices=["rms", "vad"],
-                    help="rms=它的内容自适应切句；vad=Whisper 自带 VAD 整片切（粗切对照）")
+    ap.add_argument("--cut", default="rms", choices=["rms", "blocks", "vad"],
+                    help="rms=它的内容自适应切句；blocks=生产等价的定长块（模拟头显现有"
+                         "上传协议，用来回答'只换 ASR 不动头显能否拿到收益'）；"
+                         "vad=Whisper 自带 VAD 整片切（粗切对照）")
+    ap.add_argument("--chunk-sec", type=int, default=3, help="--cut blocks 的块长（生产=3）")
+    ap.add_argument("--overlap-sec", type=int, default=1, help="--cut blocks 的重叠（生产=1）")
     ap.add_argument("--no-filter", action="store_true",
                     help="关掉幻觉过滤（复读/热词回显/拉丁幻觉），用于量化过滤的贡献")
     ap.add_argument("--prompt-mode", default="both", choices=["none", "glossary", "both"],
@@ -118,13 +144,18 @@ def main() -> int:
     print(f"[1/5] 音频 {len(pcm)/SR:.1f}s（{args.start}s 起）", flush=True)
 
     # ---------------------------------------------------------------- 切句
+    # spans: [(起, 止, keep_from_ms)]；None = Whisper 自带 VAD 整片切
     if args.cut == "rms":
-        cuts = cut_rms(pcm, np)
-        durs = [(b - a) / SR for a, b in cuts]
-        print(f"[2/5] 它的 RMS 切句 → {len(cuts)} 块 中位={np.median(durs):.1f}s "
+        spans = [(a, b, 0) for a, b in cut_rms(pcm, np)]
+        durs = [(b - a) / SR for a, b, _ in spans]
+        print(f"[2/5] 它的 RMS 切句 → {len(spans)} 块 中位={np.median(durs):.1f}s "
               f"[{min(durs):.1f},{max(durs):.1f}]", flush=True)
+    elif args.cut == "blocks":
+        spans = cut_blocks(pcm, np, args.chunk_sec, args.overlap_sec)
+        print(f"[2/5] 生产等价定长块 {args.chunk_sec}s/{args.overlap_sec}s 重叠 → "
+              f"{len(spans)} 块（模拟头显现有的上传协议，PC 侧不参与切句）", flush=True)
     else:
-        cuts = None
+        spans = None
         print("[2/5] Whisper 自带 VAD 整片切（粗切对照）", flush=True)
 
     # ---------------------------------------------------------------- ASR
@@ -159,23 +190,28 @@ def main() -> int:
             prompt = " ".join(x for x in bits if x)[:200]
         out, _ = model.transcribe(
             pcm[a:b], language="ja", beam_size=5,
-            vad_filter=(args.cut == "vad"),
-            vad_parameters={"min_silence_duration_ms": 300} if args.cut == "vad" else None,
+            vad_filter=(args.cut != "rms"),
+            vad_parameters={"min_silence_duration_ms": 300} if args.cut != "rms" else None,
             initial_prompt=prompt or None,
             condition_on_previous_text=False)
         return list(out)
 
-    if cuts is None:
-        blocks = transcribe_span(0, len(pcm), 0.0)
-        for s in blocks:
+    from text_filters import keep_segment            # 跨块去重判据（与生产共用）
+
+    if spans is None:
+        for s in transcribe_span(0, len(pcm), 0.0):
             segs.append({"start_ms": int(s.start * 1000), "end_ms": int(s.end * 1000),
                          "text": (s.text or "").strip()})
     else:
-        for a, b in cuts:
+        for a, b, keep_from in spans:
             base_s = a / SR
             for s in transcribe_span(a, b, base_s):
-                segs.append({"start_ms": int((base_s + s.start) * 1000),
-                             "end_ms": int((base_s + s.end) * 1000),
+                s0 = int((base_s + s.start) * 1000)
+                s1 = int((base_s + s.end) * 1000)
+                # 定长块有重叠 ⇒ 必须走生产的同一套去重判据，否则重叠区的句子出两次
+                if not keep_segment(s0, s1, keep_from):
+                    continue
+                segs.append({"start_ms": s0, "end_ms": s1,
                              "text": (s.text or "").strip()})
     asr_s = time.time() - t0
 
@@ -192,7 +228,10 @@ def main() -> int:
             if is_glossary_echo(t, ctx_keys):
                 dropped["glossary_echo"] += 1
                 continue
-            if prev_text and is_prompt_echo(t, prev_text):
+            # ⚠ 只在**真的把 prev_text 当 prompt 发出去**时才判回显：--prompt-mode none
+            # 时模型根本没看到它，拿它做判据会把"恰巧与上一句同尾"的正常短句丢掉
+            # （audiocpp 侧犯过同一个错，R42 已修）。
+            if args.prompt_mode == "both" and prev_text and is_prompt_echo(t, prev_text):
                 dropped["prompt_echo"] += 1
                 continue
             # 拉丁幻觉：日语音频里"没有假名也没有汉字"的短输出。实测本片 Whisper 会吐
