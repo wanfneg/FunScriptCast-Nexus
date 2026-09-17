@@ -64,7 +64,12 @@ def main() -> int:
         emit(f"找不到视频：{video}")
         return 2
 
-    ffmpeg = shutil.which("ffmpeg") or r"C:\Users\admin\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0-full_build\bin\ffmpeg.exe"
+    # ffmpeg 只认 PATH：原先写得再全的兜底绝对路径也只对作者本机成立，
+    # 换台机器/别人 clone 下来只会得到一个含个人用户名的误导路径，报错还不如直接说清。
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        emit("PATH 里找不到 ffmpeg：请先安装并加入 PATH（vendor 的 test_client 里写死的是 \"ffmpeg\"）")
+        return 2
     emit(f"视频: {video.name}  时长测试上限: {minutes} 分钟  ffmpeg: {ffmpeg}")
 
     # 0) 端口必须空着，否则会打到别人的宿主（例如 dist-app 的 EXE）上
@@ -122,7 +127,22 @@ def main() -> int:
             emit("[stderr] " + proc.stderr.rstrip()[-2000:])
         emit(f"客户端退出码={proc.returncode}")
 
-        # 4) 收尾
+        # 4) 收尾：客户端退出码以前只打印不判定，失败照样报 PASS
+        if proc.returncode != 0:
+            emit(f"客户端非零退出：{proc.returncode}（上面的 traceback/stderr 才是根因）")
+            return 1
+        # 产物要真的有时间轴才叫字幕：0 段时 test_client 也会写出一个空 SRT，
+        # 只判「文件存在」会把「整段没识别出东西」当成通过。
+        out_srt = OUT_DIR / f"{video.stem}.srt"
+        if not out_srt.exists():
+            emit(f"没有产物 SRT：{out_srt}")
+            return 1
+        n_cues = sum(1 for ln in out_srt.read_text(encoding="utf-8", errors="replace").splitlines()
+                     if "-->" in ln)
+        if n_cues < 1:
+            emit(f"产物 SRT 里没有一条时间轴（{out_srt}）：0 段也被判通过过，这里直接判失败")
+            return 1
+        emit(f"产物 SRT 共 {n_cues} 条字幕：{out_srt}")
         post("/api/subtitle/stop", {}, timeout=30)
         emit("字幕服务已停止（显存释放）")
     finally:

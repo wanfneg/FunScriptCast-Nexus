@@ -56,6 +56,19 @@ def main() -> int:
     R: dict = {}
     case = sys.argv[1] if len(sys.argv) > 1 else "plain"
     R["case"] = case
+
+    # 端口必须空着：host_server 发现 8790 已被占用时会主动退出、把请求留给已有实例，
+    # 于是下面的 /api/quit 打到的是**用户正在跑的宿主**——测试杀掉了生产程序，
+    # 还因为「进程退出成功」报 PASS。这条预检必须先于 Popen。
+    import socket
+    with socket.socket() as s:
+        s.settimeout(1.0)
+        if s.connect_ex(("127.0.0.1", 8790)) == 0:
+            print("RESULT " + json.dumps({"error": "8790 已被占用：先关掉正在运行的 "
+                                                   "FunScriptCast-Nexus / host_server"},
+                                         ensure_ascii=False), flush=True)
+            return 1
+
     proc = subprocess.Popen([str(PY), str(APP_DIR / "host_server.py")], cwd=str(APP_DIR))
     try:
         st = {}
@@ -74,14 +87,31 @@ def main() -> int:
                     break
             R["sub_status"] = st.get("subtitle", {}).get("status")
         time.sleep(1.0)
+        # quit 之前必须先确认「自己那个进程还活着」：否则 proc 早就崩了，
+        # wait_exit 会立刻返回 True，测试把一个从没被 quit 到的死进程当成退出成功。
+        R["alive_before_quit"] = proc.poll() is None
         R["quit_resp"] = post("/api/quit", {})
         R["process_exited"] = wait_exit(proc, 20.0)
+        R["exit_code"] = proc.poll()
+        # 判定：API 通 + 进程本来活着 + 确实退出了，三者缺一不可
+        R["pass"] = bool(R.get("api_up") and R["alive_before_quit"] and R["process_exited"])
+        if not R.get("api_up"):
+            R["fail_reason"] = "宿主 API 没起来（api_up=False），结果不可信"
+        elif not R["alive_before_quit"]:
+            R["fail_reason"] = "quit 之前自己的宿主进程就已退出（多半是启动失败，不是退出成功）"
     finally:
         if proc.poll() is None:
-            proc.kill()
-            R["killed"] = True
+            try:
+                proc.kill()
+                R["killed"] = True
+            except Exception as e:
+                # 记下而不是让 finally 抛出去：否则 emit(R) 不执行，
+                # RESULT 行消失，日志里就看不出到底哪一步失败
+                R["kill_error"] = repr(e)
         emit(R)
-    return 0
+    # 以前不管结果如何都 return 0（只记录不判定），失败在 CI/脚本调用方看来是 PASS。
+    # 这里用 os._exit 会跳过缓冲刷新，所以先 emit（内部已 flush）再返回退出码。
+    return 0 if R.get("pass") else 1
 
 
 if __name__ == "__main__":
