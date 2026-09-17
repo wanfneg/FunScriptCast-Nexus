@@ -403,6 +403,7 @@
           </div>
           <div class="progress indet" id="subLoadBar" style="display:none"><i></i></div>
           <div class="grid g4 top-3">
+            <div class="kv"><div class="eyebrow">ASR Engine</div><div class="mono kv-v" id="subAsr">—</div></div>
             <div class="kv"><div class="eyebrow">ASR Model</div><div class="mono kv-v" id="subModel">—</div></div>
             <div class="kv"><div class="eyebrow">Device</div><div class="mono kv-v" id="subDevice">—</div></div>
             <div class="kv"><div class="eyebrow">Translate</div><div class="mono kv-v" id="subMt">—</div></div>
@@ -502,6 +503,14 @@
                 <h2>识别与分段</h2>
               </div>
             </div>
+            <label class="field">
+              <span>识别引擎（二选一）</span>
+              <select class="input" id="asrBackend">
+                <option value="audiocpp">Qwen3 · 漏识最少（98.4%）· 时序准 — 默认</option>
+                <option value="whisper">Whisper · 内容更全（+12%）· 时序更准 · 快 3 倍</option>
+              </select>
+            </label>
+            <div class="hint">两者共用同一上传协议，切换只影响 PC 侧识别，头显零改动；保存后需重启字幕服务。Whisper 的模型（约 1.4GB）需已在本机缓存，缺失时会自动回落 Qwen3 并在日志说明</div>
             <div class="grid g2 gap-2">
               <label class="field"><span>模型路径</span><input class="input mono" id="asrModel"></label>
               <label class="field"><span>设备</span><input class="input mono" id="asrDevice"></label>

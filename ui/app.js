@@ -322,6 +322,13 @@
     $("#subModel").textContent = h.asr_model || "—";
     $("#subDevice").textContent = h.device || "—";
     $("#subMt").textContent = h.translate_backend || "—";
+    // 当前实际生效的识别引擎（/health 的 asr_backend）。显示"实际"而不是"配置"：
+    // 选了 Whisper 但模型缺失回落 Qwen3 时，这里必须能看出来（与选择器不一致即异常）
+    if ($("#subAsr")) {
+      var ab = String(h.asr_backend || "").toLowerCase();
+      $("#subAsr").textContent = ab === "whisper" ? "Whisper（kotoba）"
+        : ab === "audiocpp" ? "Qwen3（audio.cpp）" : (h.asr_backend || "—");
+    }
     $("#subGloss").textContent = h.glossary ? Object.keys(h.glossary).map(function (k) { return k + " " + h.glossary[k]; }).join(" · ") : "—";
 
     /* 8756 上挂着别人的服务（上次强杀宿主留下的残留）：必须显式告警。
@@ -547,6 +554,11 @@
       var asr = c.asr || {}, seg = c.segment || {}, tr = c.translate || {}, vad = c.vad || {};
       $("#asrModel").value = asr.model || "";
       $("#asrDevice").value = asr.device || "";
+      /* 识别引擎：归一到 select 的两个取值（服务端另认 faster-whisper/kotoba/cpp/ggml 别名）。
+         兜底 audiocpp 与 index.html 首项一致——配置缺 backend 时不能把选择器甩到另一项 */
+      var rawAb = String(asr.backend || "audiocpp").toLowerCase();
+      $("#asrBackend").value = (rawAb === "whisper" || rawAb === "faster-whisper" || rawAb === "kotoba")
+        ? "whisper" : "audiocpp";
       $("#segMaxSec").value = seg.max_sec != null ? seg.max_sec : "";
       $("#segMaxChars").value = seg.max_chars != null ? seg.max_chars : "";
       $("#segPause").value = seg.pause_sec != null ? seg.pause_sec : "";
@@ -732,7 +744,10 @@
     });
     $("#saveAsr").addEventListener("click", function () {
       var body = {
-        asr: { model: $("#asrModel").value, device: $("#asrDevice").value },
+        asr: {
+          backend: $("#asrBackend").value,
+          model: $("#asrModel").value, device: $("#asrDevice").value
+        },
         segment: {
           max_sec: parseFloat($("#segMaxSec").value) || 8,
           max_chars: parseInt($("#segMaxChars").value, 10) || 50,
@@ -1186,7 +1201,7 @@
     // 配置输入框时不要覆盖他的输入
     setTimeout(function () { if (!S.subCfgDirty) loadSubtitleConfig(); }, 2500);
     // 配置输入一旦被用户动过就标记：之后的自动回填一律让路
-    ["asrModel", "asrDevice", "segMaxSec", "segMaxChars", "segPause", "vadThreshold",
+    ["asrBackend", "asrModel", "asrDevice", "segMaxSec", "segMaxChars", "segPause", "vadThreshold",
      "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey"
     ].forEach(function (id) {
       var el = document.getElementById(id);

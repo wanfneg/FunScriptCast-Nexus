@@ -181,9 +181,12 @@ def _make_asr(cfg: dict, glossary):
             be.ensure_model()     # 启动期加载（+2.5~3.9s），首次请求不再付这个代价
             return be
         except Exception as e:
-            print(f"[server] whisper 不可用（{type(e).__name__}: {e}），回退 PyTorch"
-                  f"（轻量运行时没有 torch 会死在这里——确认 asr.whisper 配置或装依赖）")
-    if kind in ("audiocpp", "cpp", "ggml"):
+            # 回落 audiocpp（生产验证过的默认）而不是 PyTorch：轻量运行时没有 torch，
+            # 掉进 PyTorch 分支 = lifespan 直接炸 = 整场零字幕。回落链必须落在
+            # "能跑"的那一级；/health 的 asr_backend 会如实显示实际生效的引擎。
+            print(f"[server] ⚠️ whisper 不可用（{type(e).__name__}: {e}），回落 audiocpp（Qwen3）")
+    if kind in ("audiocpp", "cpp", "ggml", "whisper", "faster-whisper", "kotoba"):
+        # whisper 配置失败也会走到这里（见上）：回退链 whisper → audiocpp → pytorch
         try:
             from audiocpp_backend import AudioCppBackend
 
