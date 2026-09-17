@@ -17,6 +17,11 @@ _LENIENT_REPEAT = "ーｰ〜〰…‥·"
 
 _KANA = re.compile(r"[\u3041-\u309f\u30a0-\u30ff]")
 
+# 日语识别里"有没有日文字符"的判据用（假名 + 汉字），见 is_latin_hallucination
+_JA_CHARS = re.compile(r"[\u3041-\u309f\u30a0-\u30ff\u4e00-\u9fff]")
+# 判为"拉丁幻觉"的输出长度上限：长段纯英文属于另一类问题，不在这里一刀切
+_LATIN_HALLUCINATION_MAX_CHARS = 16
+
 # 字幕行首尾的引号类符号：ASR 会带出（实测 …想让你看呢。"），字幕不需要
 _WRAP_QUOTES = "「」『』“”\"“”‘’'"
 
@@ -45,6 +50,30 @@ def count_kana(text: str) -> int:
 def strip_wrap_quotes(text: str) -> str:
     """剥掉字幕行首尾的引号类符号（中间的不动）。"""
     return (text or "").strip().strip(_WRAP_QUOTES).strip()
+
+
+def is_latin_hallucination(text: str, lang_key: str = "ja") -> bool:
+    """日语音频里输出"一个日文字符都没有"的**短**文本 → 判为 Whisper 系幻觉。
+
+    实测来源（R44 整片 A/B，SIVR-001，`tests/whisper_scheme.py`）：Whisper 在日语
+    短块/噪声上会退化成吐"字幕腔"的常见英文词，本片实测到 `.` / `Thank`×2 /
+    `I` / `you` / `2`×2 共 7 段**直接当台词上屏**；而**关掉 initial_prompt 回传后
+    这 7 段一个都不出现**（同一音频、同一模型）⇒ 是 prompt 把解码器往字幕腔上带。
+
+    为什么"没有日文字符"就足以判：日语里的外来语会被写成片假名（オーケー），
+    **不会写成拉丁字母**，所以整段既无假名也无汉字的短输出，在日语识别里不可能是
+    真实台词。三条限制避免误杀：
+      · 只对 ja 生效（en/ko 源语言本来就该是拉丁字母）
+      · 只要含任意假名/汉字就放行 —— 正常日语一律放行
+      · 只对**短**输出下手（≤16 字符）：长段纯英文是"模型串到英文"的另一类问题，
+        宁可放行也不要在这里一刀切
+    """
+    t = (text or "").strip()
+    if not t or not str(lang_key or "").startswith("ja"):
+        return False
+    if _JA_CHARS.search(t):
+        return False
+    return len(t) <= _LATIN_HALLUCINATION_MAX_CHARS
 
 
 def join_tokens(parts):

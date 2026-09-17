@@ -11,7 +11,8 @@ import time
 import numpy as np
 
 from glossary import context_with_keys
-from text_filters import has_repetition_loop, is_glossary_echo, join_tokens, keep_segment
+from text_filters import (has_repetition_loop, is_glossary_echo, is_latin_hallucination,
+                          join_tokens, keep_segment)
 
 # torch / qwen_asr 只被 **PyTorch 回退引擎** 用到（audiocpp 主路径完全不需要，
 # 两者合计约 5 GB）。改为懒加载：模块导入不再要求安装它们——这样字幕服务可以
@@ -347,6 +348,13 @@ class AsrEngine:
         segs = [s for s in segs if not has_repetition_loop(s["text"])]
         if len(segs) != before:
             print(f"[asr] 重复退化，丢弃 {before - len(segs)} 段", flush=True)
+        # 拉丁幻觉过滤：日语音频里"没有假名也没有汉字"的短输出（Whisper 系会吐
+        # `.`/`Thank`/`I`/`you` 并当台词上屏）。判据与 audiocpp 后端共用。
+        if bool(self.cfg.get("drop_latin_hallucination", True)):
+            before = len(segs)
+            segs = [s for s in segs if not is_latin_hallucination(s["text"], lang_key)]
+            if len(segs) != before:
+                print(f"[asr] 拉丁幻觉，丢弃 {before - len(segs)} 段", flush=True)
 
         return {"language": r.language, "segments": segs,
                 "asr_ms": round((time.perf_counter() - t0) * 1000, 1), "skipped": False}

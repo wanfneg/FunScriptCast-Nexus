@@ -176,6 +176,8 @@ def _make_asr(cfg: dict, glossary):
                 # 热词开关在 asr 段（与 PyTorch 引擎同源），不是 audiocpp 段的
                 use_context=bool(cfg.get("use_glossary_context", True)),
                 context_max_chars=int(cfg.get("context_max_chars", 0)),
+                # 拉丁幻觉过滤也在 asr 段（与热词开关同源），默认开
+                drop_latin=bool(cfg.get("drop_latin_hallucination", True)),
             )
             be.ensure_server()
             ctx = be._build_context("ja")

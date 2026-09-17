@@ -33,8 +33,8 @@ from pathlib import Path
 import numpy as np
 
 from glossary import context_with_keys
-from text_filters import (has_repetition_loop, is_glossary_echo, is_prompt_echo,
-                          join_tokens, keep_segment)
+from text_filters import (has_repetition_loop, is_glossary_echo, is_latin_hallucination,
+                          is_prompt_echo, join_tokens, keep_segment)
 
 SR = 16000
 BASE_DIR = Path(__file__).resolve().parent          # vendor/subtitle
@@ -57,7 +57,7 @@ class AudioCppBackend:
     """封装 audiocpp_server 的 ASR + silero_vad。"""
 
     def __init__(self, cfg: dict, glossary=None, use_context: bool = True,
-                 context_max_chars: int = 0):
+                 context_max_chars: int = 0, drop_latin: bool = True):
         self.dir = Path(cfg.get("dir") or AUDIOCPP_DIR)
         self.backend = str(cfg.get("backend", "cpu"))          # cpu | cuda
         self.threads = int(cfg.get("threads", max(1, (os.cpu_count() or 4) - 1)))
@@ -88,6 +88,11 @@ class AudioCppBackend:
         self.glossary = glossary
         self.use_context = bool(use_context)
         self.context_max_chars = int(context_max_chars)
+        # 拉丁幻觉过滤（判据见 text_filters.is_latin_hallucination）：日语音频里
+        # "一个日文字符都没有"的短输出直接丢。实测 Whisper 会吐 `.`/`Thank`/`I`/`you`
+        # 并当台词上屏；日语外来语写片假名不写拉丁字母，所以这类短输出不可能是真实台词。
+        # 留成可关：万一某片里真出现拉丁字母的短台词（如 OK），关掉即可。
+        self.drop_latin = bool(drop_latin)
         self._proc: subprocess.Popen | None = None
         self._job_handle = None       # Windows Job Object 句柄（父进程崩溃时带走子进程）
         # **必须是 RLock**：ensure_server 全程持锁，失败收尾要在锁内调
@@ -647,6 +652,10 @@ class AudioCppBackend:
             # 重复退化过滤：判据与 PyTorch 后端共用（text_filters.has_repetition_loop，
             # 含合法拖长音「ー」放宽），不再用本地 8 连正则——两后端阈值曾差一倍
             if has_repetition_loop(text):
+                continue
+            # 拉丁幻觉过滤：日语音频里"没有假名也没有汉字"的短输出（实测 Whisper 会吐
+            # `.`/`Thank`/`I`/`you` 并当台词上屏）。判据见 text_filters.is_latin_hallucination。
+            if self.drop_latin and is_latin_hallucination(text, lang_key):
                 continue
             segs.append({
                 "start_ms": video_start_ms + int(round(a / SR * 1000)),

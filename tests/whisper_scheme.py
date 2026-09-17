@@ -19,12 +19,12 @@ ASH 层换成 **Whisper 系**，切句不用定长块，而是**在静音处切�
 
 ## 用法
 
-    # 它的方案（默认：RMS 切句 + 幻觉过滤 + 上一句 prompt 回传），跑完直接打分
+    # 它的方案（默认：RMS 切句 + 幻觉过滤 + 热词与上一句作 prompt），跑完直接打分
     python tests/whisper_scheme.py --tag R43whisper --score
 
-    # 消融：分别关掉过滤 / prompt 回传，量化各自贡献
-    python tests/whisper_scheme.py --tag R43nofilter --no-filter --score
-    python tests/whisper_scheme.py --tag R43noprompt --no-prompt --score
+    # 消融：prompt 回传内容的影响（实测 both 会诱发 Whisper 的拉丁幻觉）
+    python tests/whisper_scheme.py --tag R43glossary --prompt-mode glossary --score
+    python tests/whisper_scheme.py --tag R43noprompt --prompt-mode none --score
 
     # 切句方式对照：Whisper 自带 VAD 整片切（粗切，段长可达十几秒）
     python tests/whisper_scheme.py --tag R43vad --cut vad --score
@@ -98,9 +98,11 @@ def main() -> int:
     ap.add_argument("--cut", default="rms", choices=["rms", "vad"],
                     help="rms=它的内容自适应切句；vad=Whisper 自带 VAD 整片切（粗切对照）")
     ap.add_argument("--no-filter", action="store_true",
-                    help="关掉幻觉过滤（复读/热词回显/退化），用于量化过滤的贡献")
-    ap.add_argument("--no-prompt", action="store_true",
-                    help="关掉'上一句作为 ASR prompt 回传'，用于量化它的贡献")
+                    help="关掉幻觉过滤（复读/热词回显/拉丁幻觉），用于量化过滤的贡献")
+    ap.add_argument("--prompt-mode", default="both", choices=["none", "glossary", "both"],
+                    help="ASR prompt 回传内容：none=不给；glossary=只给热词；"
+                         "both=热词+上一句（它的做法）。实测 both 会诱发 Whisper 的"
+                         "拉丁幻觉（`.`, `Thank`, `I`, `you`），none 则一段都没有")
     ap.add_argument("--score", action="store_true", help="跑完直接调 compare_with_reference.py 打分")
     args = ap.parse_args()
 
@@ -140,18 +142,19 @@ def main() -> int:
         gl, "ja", int((CFG.get("asr") or {}).get("context_max_chars", 0) or 0))
     print(f"[3/5] 热词提示 {len(ctx_terms)} 字符 / {len(ctx_keys)} 个键", flush=True)
 
-    from text_filters import has_repetition_loop, is_glossary_echo, is_prompt_echo, strip_wrap_quotes
+    from text_filters import (has_repetition_loop, is_glossary_echo, is_latin_hallucination,
+                              is_prompt_echo, strip_wrap_quotes)
 
     t0 = time.time()
     segs: list[dict] = []
-    dropped = {"repetition": 0, "glossary_echo": 0, "prompt_echo": 0}
+    dropped = {"repetition": 0, "glossary_echo": 0, "prompt_echo": 0, "latin": 0}
     prev_text = ""          # 上一句终稿 → 作为 Whisper initial_prompt（它的 last_final_text）
 
     def transcribe_span(a: int, b: int, base_s: float):
         prompt = ""
-        if not args.no_prompt:
+        if args.prompt_mode != "none":
             bits = [ctx_terms] if ctx_terms else []
-            if prev_text:
+            if args.prompt_mode == "both" and prev_text:
                 bits.append(prev_text)
             prompt = " ".join(x for x in bits if x)[:200]
         out, _ = model.transcribe(
@@ -192,6 +195,12 @@ def main() -> int:
             if prev_text and is_prompt_echo(t, prev_text):
                 dropped["prompt_echo"] += 1
                 continue
+            # 拉丁幻觉：日语音频里"没有假名也没有汉字"的短输出。实测本片 Whisper 会吐
+            # `.`/`Thank`×2/`I`/`you`/`2`×2 —— 而且**只在开了 prompt 回传时出现**
+            # （关掉后同一音频 0 段），是 initial_prompt 把解码器往字幕腔上带的结果。
+            if is_latin_hallucination(t, "ja"):
+                dropped["latin"] += 1
+                continue
         s["text"] = t
         kept.append(s)
         if len(t.split()) > 1 or len(t) > 8:      # 与它一致的"够长才更新上下文"
@@ -199,7 +208,10 @@ def main() -> int:
     segs = kept
     print(f"[3/5] 转写 {asr_s:.1f}s → 保留 {len(segs)} 段；过滤丢弃 "
           f"复读{dropped['repetition']} 热词回显{dropped['glossary_echo']} "
-          f"prompt回显{dropped['prompt_echo']}", flush=True)
+          f"prompt回显{dropped['prompt_echo']} 拉丁幻觉{dropped['latin']}", flush=True)
+    if dropped["latin"]:
+        print("      ⚠ initial_prompt 会诱发 Whisper 的英文幻觉（实测：给 prompt 约 6~7 段/片，"
+              "不给则 0 段）。要根治请用 --prompt-mode none。", flush=True)
 
     # ---------------------------------------------------------------- 翻译
     # 沿用生产同一套 Sakura MT（保持"翻译"这个变量不变，只变 ASR 与切句）
@@ -235,7 +247,7 @@ def main() -> int:
         "meta": {"tag": args.tag, "scheme": "realtime-subtitle 复现",
                  "asr": args.model, "device": f"{args.device}/{args.compute_type}",
                  "cut": args.cut, "filter": not args.no_filter,
-                 "prompt_carryover": not args.no_prompt,
+                 "prompt_mode": args.prompt_mode,
                  "translate": tr.backend, "asr_sec": round(asr_s, 1),
                  "mt_sec": round(mt_s, 1), "empty_zh": empty,
                  "dropped": dropped},

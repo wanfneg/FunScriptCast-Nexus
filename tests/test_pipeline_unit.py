@@ -151,6 +151,26 @@ def t_read_capped_body():
     assert asyncio.run(read_capped_body(req, 25)) == b"y" * 25
 
 
+# 8 ------------------------------------- 拉丁幻觉判据（R44 整片实测新增）
+def t_latin_hallucination():
+    """日语音频里"没有假名也没有汉字"的短输出要判为幻觉，正常日语与片假名不得误杀。
+
+    实测来源：Whisper 在日语短块上会吐 `.`/`Thank`/`I`/`you`/`2` 并当台词上屏
+    （且只在开了 initial_prompt 回传时出现）。判据见 text_filters.is_latin_hallucination。
+    """
+    from text_filters import is_latin_hallucination as f
+    # 该丢的
+    for t in ("I", "you", "Thank", ".", "2", "Thank you."):
+        assert f(t, "ja"), f"应判为幻觉：{t!r}"
+    # 不该丢的：正常日语 / 汉字 / 片假名外来语（外来语写片假名，不是拉丁字母）
+    for t in ("そうですね", "悠亜", "セックス", "オーケー", "こんにちは、いい天気ですね。", ""):
+        assert not f(t, "ja"), f"误杀：{t!r}"
+    # 长段英文是另一类问题，不在这里一刀切
+    assert not f("This is a long English sentence that should not be flagged.", "ja")
+    # 只对 ja 生效：英文源语言本来就该是拉丁字母
+    assert not f("I", "en") and not f("you", "ko")
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -160,6 +180,7 @@ if __name__ == "__main__":
     check("中文式 JSON 归一化与校验", t_jsonish_and_validate)
     check("退化/漏译判据", t_degenerate_and_leak)
     check("请求体上限边读边拒（超限提前中断）", t_read_capped_body)
+    check("拉丁幻觉判据（不误杀正常日语/片假名）", t_latin_hallucination)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
