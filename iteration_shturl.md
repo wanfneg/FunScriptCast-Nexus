@@ -1366,3 +1366,9 @@ vr_dlna 按需 import（本次差点埋一个运行时 ImportError）。
    Q5KS（官方 GGUF 仓只有 fp16）；URL 已修正（206+字节数与本地文件一致实测）。
 4. 新建发行仓库时的 git push 遇直连重置 → 走本机代理（7897）成功；**管道 `| tail`
    会吞退出码**导致 `|| 回退` 不触发——写推送脚本时注意。
+
+**Round 47 追加 3（流程教训）**：修复 host_server.py 后只重编了 dist-app 的 exe、
+**忘了重编发行仓库上的安装包**——线上资产落后两个修复轮（缺看门狗+1.5B URL），靠
+"源码 mtime vs 资产 updated_at"对比才发现。规则入档：**凡是动 host_server.py，
+exe 与安装包视为一体，必须同一批重编替换**（build_installer 内含 build_exe，
+直接跑 build_installer 即可两者兼顾；-NoBump 仅用于不想动版本号的补发）。
