@@ -12,11 +12,20 @@
   4. make_free("auto") 必须复用同一实例（探测负缓存/已选后端才有意义）。
   5. 中文式 JSON 归一化与批量校验的基础行为不回归。
 """
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 SUB = Path(__file__).resolve().parents[1] / "vendor" / "subtitle"
 sys.path.insert(0, str(SUB))
+
+# 整个套件把用户数据目录指到临时目录 —— 必须在 import 任何服务模块**之前**设。
+# 不设的话，凡是被测代码走到 user_paths 的路径都会落到 %APPDATA%\FunScriptCast-Nexus\：
+# 轻则在那儿留下 `.layout-v2` 标记（补救扫描被提前用掉），重则用**仓库模板**播种
+# subtitle_config.json（空 key），把真实 key 挡在迁移之外——本机已经这样中过一次。
+# 单个测试内部可以再改（迁移测试就来回切），但默认值必须是隔离的。
+os.environ["NEXUS_USER_DIR"] = tempfile.mkdtemp(prefix="nexus-unittest-user-")
 
 FAILED = []
 
