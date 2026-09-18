@@ -1504,6 +1504,26 @@ def _model_dl_worker(e: dict) -> None:
         with _DL_LOCK:
             _MODEL_DL[id_].update(state="done", pct=100)
         RT.add_log("模型下载完成：" + e["label"], "ok")
+        # 翻译模型下载完成 → 若 config 当前指向的模型文件不存在，自动切到刚下载的
+        # （闭环缺口：用户下了 1.5B 轻量版，config 仍指向 7B，翻译依旧"找不到文件"）
+        if e.get("role") == "translate":
+            try:
+                cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+                cur = str(((cfg.get("translate") or {}).get("local") or {}).get("model") or "")
+                cur_path = Path(cur)
+                if cur and not cur_path.is_absolute():
+                    cur_path = SUBTITLE_DIR / cur_path
+                if cur and not cur_path.is_file():
+                    new_model = Path(e["dest_dir"]) / e["files"][0]["rel"]
+                    try:
+                        new_model = Path(os.path.relpath(new_model, SUBTITLE_DIR)).as_posix()
+                    except Exception:
+                        pass
+                    save_subtitle_config({"translate": {"local": {"model": str(new_model)}}})
+                    RT.add_log("本地翻译已自动切换为刚下载的模型：" + str(new_model)
+                               + "（重启字幕服务后生效）", "ok")
+            except Exception as ex:
+                print("[models] 自动切换翻译模型失败（忽略）：", ex, flush=True)
     except Exception as exc:
         with _DL_LOCK:
             _MODEL_DL[id_].update(state="error", error=type(exc).__name__ + ": " + str(exc))
