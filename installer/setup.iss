@@ -36,8 +36,20 @@ AppPublisher={#MyAppPublisher}
 ; 安装器检测到就提示用户先关闭程序，而不是覆写 exe 失败后留一堆裸报错。
 AppMutex=FunScriptCastNexusMutex
 DefaultDirName={localappdata}\Programs\{#MyAppName}
+; 升级安装：沿用上次选的目录（**不会**装成第二份）。同一个 AppId 让 Inno 认出已有安装，
+; 附加任务（桌面图标/开机自启）的选择也一并沿用（UsePreviousTasks 默认就是 yes）。
 UsePreviousAppDir=yes
 PrivilegesRequired=lowest
+; 让安装包 EXE 自己在文件属性里带版本号 —— 用户右键就能看出手里这个是哪一版。
+; （R47 的教训：发行资产落后两个修复轮却没人发现，只能靠比 mtime。有这个就不用猜了。）
+; ⚠ 值必须是纯数字 x.y.z（version.json 的 versionName 一直是这种形式）。
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoProductName={#MyAppName}
+VersionInfoDescription={#MyAppName} 安装程序
+VersionInfoCompany={#MyAppPublisher}
+; 安装日志落到 %TEMP%\Setup Log*.txt：装失败时用户能把它发过来，不必靠回忆。
+SetupLogging=yes
 OutputDir=..\dist-installer
 OutputBaseFilename={#MyAppName}-Setup-{#MyAppVersion}
 Compression=lzma2/max
@@ -48,6 +60,10 @@ DisableProgramGroupPage=yes
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+
+[Messages]
+; 首页就把"升级会不会动我的数据"说清楚——这是用户最担心的点，也是本安装包最该讲清的规则。
+WelcomeLabel2=即将安装 [name/ver] 到你的电脑。%n%n· 升级安装：只覆盖程序文件，你的数据（data\ 目录：云端 Key、术语表、DLNA 共享目录）与已下载的模型都会保留，不会重新下载。%n· 全新安装：请选一个空间充足的目录 —— 模型可能占用 20GB 以上，建议不要装在系统盘。%n%n继续前请先关闭正在运行的程序。
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; \
@@ -124,4 +140,122 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; \
     Flags: nowait postinstall skipifsilent
 
-; 用户数据（cache\、日志）卸载时有意保留：Inno 默认只删除它安装过的文件。
+[Code]
+{ ── 升级识别 ────────────────────────────────────────────────────────────────
+  Inno 靠 AppId 认出"已有安装"并沿用目录，但它**不会告诉你装的是哪一版，也不比较新旧**：
+  拿一个旧安装包覆盖新装会静默降级，同版本重装也毫无提示。R47 那次"发行资产落后两个
+  修复轮"正是这种沉默的土壤。所以这里读一次注册表里的已装版本，把四种情形讲明白。 }
+const
+  { ⚠ 必须与 [Setup] 的 AppId **逐字一致**（含花括号）：Inno 就是用它建这条卸载注册项。
+    改了 AppId 却忘了改这里（或反之），升级识别会失效——表现是"检测不到已安装版本"，
+    而且**不报错**。 }
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3A9D52-6B7E-4C31-9A48-D2E1F0C5B7A3}_is1';
+  { 换行。**不要**在续行开头直接写 #13#10 —— ISPP 会把行首的 '#' 当成预处理器指令，
+    报 "Unknown preprocessor directive"（已实测踩过）。 }
+  NL = #13#10;
+
+var
+  PrevVersion: String;
+  PrevDir: String;
+
+{ 取版本号第 Index 段（从 1 起）。只吃数字与点；遇到 '-' 之类后缀就停。 }
+function VerPart(const S: String; Index: Integer): Integer;
+var
+  i, part: Integer;
+  cur: String;
+begin
+  Result := 0;
+  part := 1;
+  cur := '';
+  for i := 1 to Length(S) do
+  begin
+    if S[i] = '.' then
+    begin
+      if part = Index then
+      begin
+        Result := StrToIntDef(cur, 0);
+        Exit;
+      end;
+      Inc(part);
+      cur := '';
+    end
+    else if (S[i] >= '0') and (S[i] <= '9') then
+      cur := cur + S[i]
+    else
+      Break;
+  end;
+  if part = Index then
+    Result := StrToIntDef(cur, 0);
+end;
+
+{ 逐段比较，A<B 返回 -1，A=B 返回 0，A>B 返回 1。 }
+function CompareVer(const A, B: String): Integer;
+var
+  i, x, y: Integer;
+begin
+  Result := 0;
+  for i := 1 to 4 do
+  begin
+    x := VerPart(A, i);
+    y := VerPart(B, i);
+    if x < y then begin Result := -1; Exit; end;
+    if x > y then begin Result := 1; Exit; end;
+  end;
+end;
+
+function InitializeSetup(): Boolean;
+var
+  msg: String;
+  rc: Integer;
+begin
+  Result := True;
+  PrevVersion := '';
+  PrevDir := '';
+  RegQueryStringValue(HKEY_CURRENT_USER, UninstallKey, 'DisplayVersion', PrevVersion);
+  RegQueryStringValue(HKEY_CURRENT_USER, UninstallKey, 'InstallLocation', PrevDir);
+  { 落进安装日志（SetupLogging=yes → %TEMP%\Setup Log*.txt）：装出问题时能看出
+    它到底认没认出已装版本，而不是靠猜。 }
+  Log('升级检测：已装版本=' + PrevVersion + ' / 本包版本={#MyAppVersion} / 位置=' + PrevDir);
+
+  { 全新安装：不打扰，直接进向导选目录 }
+  if PrevVersion = '' then
+    Exit;
+
+  if PrevDir <> '' then
+    msg := '安装位置：' + PrevDir + NL + NL;
+
+  rc := CompareVer(PrevVersion, '{#MyAppVersion}');
+  Log('升级检测：判定=' + IntToStr(rc) + '（-1 升级 / 0 同版本 / 1 降级）');
+
+  if rc > 0 then
+  begin
+    { 已装的比本安装包更新 → 默认不降级（默认按钮落在"否"） }
+    if MsgBox('检测到已安装【更新】的版本：' + PrevVersion + NL +
+              '本安装包是较旧的 {#MyAppVersion}。' + NL + NL +
+              '继续会用旧版程序文件覆盖当前安装（你的数据与已下载的模型不受影响），' +
+              '通常不是你想要的。' + NL + NL + msg + '仍要降级安装吗？',
+              mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then
+      Result := False;
+  end
+  else if rc = 0 then
+  begin
+    if MsgBox('检测到已安装同版本（' + PrevVersion + '）。' + NL + NL +
+              '继续将重新覆盖程序文件（可用于修复损坏的安装）；' +
+              '你的数据（data\）与已下载的模型会保留。' + NL + NL + msg +
+              '要重新安装吗？', mbConfirmation, MB_YESNO) <> IDYES then
+      Result := False;
+  end
+  else
+  begin
+    MsgBox('检测到已安装 {#MyAppVersion} 之前的版本：' + PrevVersion + NL +
+           '将升级到 {#MyAppVersion}。' + NL + NL +
+           '· 只覆盖程序文件，不会重新下载模型' + NL +
+           '· 你的数据保留：data\（云端 Key / 术语表 / DLNA 共享目录）' + NL +
+           '· 老版本放在 vendor\subtitle\ 或 %APPDATA% 的数据，首次运行会自动迁移过来' +
+           NL + NL + msg, mbInformation, MB_OK);
+  end;
+end;
+
+{ 用户数据（data\、cache\、logs\、models\）卸载时有意保留：Inno 默认只删除它安装过的文件。
+  ⚠ 这一行必须是 Pascal 注释（花括号），不能写 `;` —— [Code] 段之后 `;` 不再是注释，
+  它会当成新例程的开头并报 "'BEGIN' expected"（已实测踩过）。 }

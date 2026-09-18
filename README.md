@@ -255,6 +255,27 @@ dist-app\
 └── models\       ← 同上（8 GB）
 ```
 
+### 安装与升级
+
+生成安装包：`powershell -ExecutionPolicy Bypass -File build\build_installer.ps1`
+（内含 `build_exe`，会先清空 API Key、全树哨兵扫描、再调 ISCC；找不到 ISCC 时用
+`NEXUS_ISCC` 指定路径）。
+
+| 情形 | 行为 |
+|---|---|
+| **全新安装** | 向导里选目录。⚠ **选空间充足的盘**（模型 20 GB 起），别用系统盘 |
+| **升级安装** | 同一个 `AppId` ⇒ 认出已有安装并**沿用上次选的目录**，装成一份而不是两份；附加任务（桌面图标 / 开机自启）的选择也沿用 |
+| **覆盖了什么** | 只覆盖程序文件（`ui\ vendor\ tools\ runtime\` 与 exe，约 110 MB）。`data\`、`models\`、`cache\`、`logs\`、`vendor\llama` 一律不动 |
+| **同版本重装** | 弹窗确认后重新覆盖程序文件（可用来修复损坏的安装） |
+| **降级（装旧包）** | **默认拦下**：弹窗说明"已装的更新"，默认按钮是「否」。避免拿旧包静默覆盖新装 |
+| **运行中升级** | 宿主持有 `FunScriptCastNexusMutex`，安装器会要求先关闭程序 |
+| **装失败怎么查** | `%TEMP%\Setup Log*.txt`（`SetupLogging=yes`），里面有升级识别读到什么版本 |
+
+安装包 EXE 的文件属性带版本号（`VersionInfoVersion`），右键→详细信息即可确认手里是哪个包。
+
+**Inno 没有差分更新**：升级就是整包重下 + 覆盖程序文件。贵的部分（模型、llama 运行时、
+你的数据）不在安装范围内，所以不会被重下或清掉——这也是 `data\` 要跟代码分开的原因。
+
 不带 `.venv` 也能跑：DLNA、设备同步、术语表都正常，只有「启动字幕服务」会
 直接报 `ModuleNotFoundError: No module named 'uvicorn'` 这类可读错误。
 
