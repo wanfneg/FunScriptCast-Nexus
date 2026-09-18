@@ -118,28 +118,39 @@ FunScriptCast-Nexus\
 
 ## 用户数据在哪（升级 / 重装 / 复位）
 
-**安装目录里只有程序，没有你的数据。** 会变的东西全在 `%APPDATA%\FunScriptCast-Nexus\`：
+**一处、一个寿命、一个清理入口 —— 全在你选的那个安装目录里，C 盘一个字节都不落。**
+装到 D 盘就全在 D 盘；装进移动硬盘就整个带走（便携）。
 
-| 位置 | 内容 | 删掉会怎样 |
-|---|---|---|
-| `%APPDATA%\FunScriptCast-Nexus\` | `subtitle_config.json`（云端 key / 参数）、`glossary_*.json`（术语表）、`integrated_settings.json`（DLNA 共享目录等）、`logs\` | 等于**恢复出厂**：key、术语表、共享目录一起没 |
-| `%APPDATA%\VR-DLNA\` | DLNA 运行数据 | 同上（DLNA 侧） |
-| `%USERPROFILE%\.cache\huggingface\hub` | whisper 兜底模型（约 1.4 GB） | 下次用到时重新下载 |
-| `{安装目录}\` | 程序本体、`vendor\llama`（1.1 GB 运行时）、`models\` | 删掉重装，**数据不受影响** |
+```
+<安装目录>\
+├── FunScriptCast-Nexus.exe
+├── data\      ← 你的数据：subtitle_config.json（云端 key / 参数）、glossary_*.json（术语表）、
+│                integrated_settings.json（DLNA 共享目录等）、vr_dlna_*.json
+├── models\    ← 模型：ASR + 翻译 GGUF + hf-cache\（whisper 兜底模型约 1.4 GB）
+├── logs\      ← host.log（宿主）+ run_server.log（字幕服务）
+├── cache\     ← 字幕/翻译缓存（可再生）
+├── ui\ vendor\ tools\ runtime\     ← 程序
+└── vendor\llama\                   ← llama.cpp 运行时（约 1.1 GB，首次用到时下载）
+```
 
-由此：
+| 想要 | 怎么做 |
+|---|---|
+| **升级 / 覆盖安装** | 数据自动保留：`data\` 是运行期产物，安装包**不安装它、也不删它**，只在新装时铺一份出厂种子（`onlyifdoesntexist`） |
+| **彻底复位（恢复出厂）** | 关掉程序，删掉 `data\` 目录。这是唯一的复位入口 |
+| **备份 / 换机** | 拷走 `data\`（几十 KB 的 key、术语表、设置都在里面）；模型太大可不带 |
+| **老版本升上来** | 首次运行**自动迁移**：从 `%APPDATA%\FunScriptCast-Nexus\`（过渡版位置）或 `vendor\subtitle\`（最早的位置）把 key / 术语表 / 设置搬进 `data\`，日志打 `[paths] 已迁移用户数据：…` |
 
-- **升级 / 覆盖安装**：数据保留（安装包对这几样一律 `onlyifdoesntexist`，从不覆盖已有文件）。
-- **删掉安装目录再重装**：数据**仍然在**——这是设计如此，不是没删干净。
-- **真想复位**：关掉程序，删 `%APPDATA%\FunScriptCast-Nexus\`。这是唯一的复位入口。
-- **老版本升上来**：数据还在安装目录里的，首次运行会**自动迁移**到上面这个位置
-  （key 与术语表都带过去，原文件留在原处不动，日志打 `[paths] 已迁移用户数据：…`）。
+> ⚠️ **安装目录要选在空间充足的盘上**（模型 20 GB 起），别用系统盘。
+> 安装向导里可以改路径；升级时沿用你上次选的目录。
 
-配置请走界面改（AI 字幕 → 翻译设置 → 保存），或直接编辑上面那个 `subtitle_config.json`。
-安装目录里那份 `vendor\subtitle\config.json` 只是**出厂模板**（全新安装的种子），改它不影响运行。
+配置请走界面改（AI 字幕 → 翻译设置 → 保存），或直接编辑 `data\subtitle_config.json`。
+`vendor\subtitle\config.json` 只是**出厂模板 / 老版本迁移源**，改它不影响运行。
 
 > 一个必须记住的约定：用户配置是**首次运行时的快照**，之后不再随版本更新。
 > 所以新增配置键**必须在代码里带默认值**（`cfg.get("新键", 默认)`），不能指望模板传下去。
+
+> 路径规则**只写一份**：`vendor\subtitle\user_paths.py`（宿主与字幕服务共用），
+> DLNA 侧同规则在 `vendor\dlna\app_paths.py`。改数据位置只改这两处。
 
 ## 架构
 

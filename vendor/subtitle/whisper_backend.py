@@ -42,6 +42,19 @@ from pathlib import Path
 # 在 import 时读成常量，运行期改环境变量不再生效（审查 P2-2）。
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
+# 同理，**缓存位置**也必须在 import huggingface_hub 之前定下来：默认是
+# `%USERPROFILE%\.cache\huggingface`（C 盘），1.4GB 模型会压在 C 盘上——用户装到 D 盘
+# 也没用。这里指到安装目录 `models\hf-cache`（规则见 user_paths.py，与宿主同源）。
+import user_paths as _user_paths  # noqa: E402  （同目录）
+
+_HF_HOME = _user_paths.apply_hf_env()
+# **显式**缓存根，所有 WhisperModel 调用都传它。为什么不只靠上面的 HF_HOME：
+# huggingface_hub 的 HF_HUB_CACHE 是 import 时读成常量的，而本模块是**惰性导入**的
+# （server_app 里 asr_engine → transformers 早就把 hub 拉进来了）⇒ 那时环境变量已经
+# 来不及生效。实测踩中过：模型在安装目录、hub 常量却指着 C 盘，whisper 找不到模型后
+# **静默回落 audiocpp**。显式 download_root 与 import 顺序无关，是这里的正确做法。
+_HUB_DIR = _user_paths.hf_cache_dir() / "hub"
+
 from text_filters import (has_repetition_loop, is_latin_hallucination,
                           keep_segment, strip_wrap_quotes)
 
@@ -95,11 +108,15 @@ class WhisperBackend:
     def _ensure_locked(self) -> None:
         if self._model is not None:
             return
+        repo_dirname = "models--" + self.model_ref.replace("/", "--")
+        # 模型缓存必须在**安装目录**里（见模块顶部的 HF_HOME）：旧缓存（C 盘）里已经有
+        # 这一份的话，首次运行搬进来（只搬这一个仓——旧缓存是全局共享的，别的项目的
+        # 模型不能动，见 user_paths.adopt_legacy_hf_model）。
+        _user_paths.adopt_legacy_hf_model(repo_dirname)
         # 自愈历史损坏：refs/main 带换行会让 faster-whisper 解析出带换行的
         # snapshot 目录名而永远找不到模型（审查 P0-1 实测复现）
         try:
-            from huggingface_hub.constants import HF_HUB_CACHE
-            repo = Path(HF_HUB_CACHE) / ("models--" + self.model_ref.replace("/", "--"))
+            repo = _HUB_DIR / repo_dirname
             ref = repo / "refs" / "main"
             if ref.exists():
                 txt = ref.read_text(encoding="utf-8").strip()
@@ -107,34 +124,55 @@ class WhisperBackend:
                     ref.write_text(txt, encoding="utf-8")
         except Exception:
             pass
+
         t0 = time.perf_counter()
         from faster_whisper import WhisperModel
-        try:
-            self._model = WhisperModel(self.model_ref, device=self.device,
-                                       compute_type=self.compute_type,
-                                       local_files_only=True)
-        except Exception as cuda_err:
-            # 无 N 卡/驱动不全时自动降级 CPU（kotoba-whisper 本就有 CPU 兜底先例），
-            # 不能让"下了 1.4GB 模型却起不来"成为死胡同（审查 P1-2）
-            if str(self.device).startswith("cuda"):
-                print(f"[asr] CUDA 不可用（{type(cuda_err).__name__}），降级 CPU/int8 重试",
-                      flush=True)
-                self.device, self.compute_type = "cpu", "int8"
-                self._model = WhisperModel(self.model_ref, device=self.device,
-                                           compute_type=self.compute_type,
-                                           local_files_only=True)
-            else:
-                raise
+
+        # 两个缓存根依次试：① 安装目录（正常路径）② 旧位置（C 盘，搬迁失败/搬不动时的
+        # 兜底——识别绝不能因为"搬缓存"挂掉，1.4GB 重下会撞头显 180s readTimeout）。
+        legacy = _user_paths.legacy_hf_hub()
+        cache_roots: list = [None]
+        if (legacy / repo_dirname).is_dir():
+            cache_roots.append(legacy)
+        dev0, ct0 = self.device, self.compute_type
+        last_err: Exception | None = None
+        for root in cache_roots:
+            # 每个缓存根都从原始设备设置重来：上一轮为排障降级成 cpu/int8 不该带到下一轮
+            self.device, self.compute_type = dev0, ct0
+            if root is not None:
+                print(f"[asr] 安装目录缓存里没有，退回旧缓存读：{root}", flush=True)
+            kw = {"download_root": str(root)} if root else {"download_root": str(_HUB_DIR)}
+            for attempt in (0, 1):
+                try:
+                    self._model = WhisperModel(self.model_ref, device=self.device,
+                                               compute_type=self.compute_type,
+                                               local_files_only=True, **kw)
+                    break
+                except Exception as err:
+                    last_err = err
+                    # 无 N 卡/驱动不全时自动降级 CPU（kotoba-whisper 本就有 CPU 兜底先例），
+                    # 不能让"下了 1.4GB 模型却起不来"成为死胡同（审查 P1-2）
+                    if attempt == 0 and str(self.device).startswith("cuda"):
+                        print(f"[asr] CUDA 不可用（{type(err).__name__}），降级 CPU/int8 重试",
+                              flush=True)
+                        self.device, self.compute_type = "cpu", "int8"
+                        continue
+                    break
+            if self._model is not None:
+                break
+
         if self._model is None:
+            # 本地（两个位置都）没有。此前这一段是**死代码**（`self._model is None` 在
+            # 上面的 try 结构下永远不成立，且引用了作用域外的 `e`），于是
+            # `asr.whisper.allow_download=true` 从未生效过——审查 P1。
             if not self.allow_download:
                 raise RuntimeError(
-                    f"whisper 模型不在本地 HF 缓存（{self.model_ref}）："
-                    f"{type(e).__name__}: {e}。请先手工下载（huggingface.co/kotoba-tech/"
-                    "kotoba-whisper-v2.0-faster，约 1.4GB，国内可设 "
-                    "HF_ENDPOINT=https://hf-mirror.com），或显式配 "
+                    f"whisper 模型不在本地缓存（{self.model_ref}）："
+                    f"{type(last_err).__name__}: {last_err}。已查过安装目录 "
+                    f"（{_HF_HOME}）与旧缓存（{legacy}）。请先手工下载"
+                    "（huggingface.co/kotoba-tech/kotoba-whisper-v2.0-faster，约 1.4GB，"
+                    "国内可设 HF_ENDPOINT=https://hf-mirror.com），或显式配 "
                     "asr.whisper.allow_download=true 允许**启动时**联网下载")
-            if self.model_ref.startswith("kotoba-tech/") and not os.environ.get("HF_ENDPOINT"):
-                os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
             print(f"[asr] whisper 模型本地缺失，启动期下载 {self.model_ref}（约 1.4GB）",
                   flush=True)
             self._model = WhisperModel(self.model_ref, device=self.device,

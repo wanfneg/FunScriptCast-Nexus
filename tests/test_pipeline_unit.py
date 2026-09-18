@@ -306,19 +306,22 @@ def t_model_downloader():
     srv.shutdown()
 
 
-# 9 --------------------------------- 用户数据迁移（根治"删目录重装丢 key"）
+# 9 --------------------------------- 用户数据迁移（数据落在安装目录 data\，不写 C 盘）
 def t_user_data_migration():
-    """legacy 安装目录 → 用户数据目录的迁移：key 与词表都要带过去，且用户数据优先。
+    """迁移：历史位置 → `<安装目录>\\data\\`，key 与词表都要带过去，且现有数据优先。
 
-    这条守的是本次根治的根因（见 vendor/subtitle/user_paths.py 模块注释）：
-    用户数据放安装目录会同时造成"删目录重装丢 key / 升级安装覆盖 key 与词表 /
-    工具链一堆摘出回填特例"。测试覆盖四种情形：
-      ① 首次运行：legacy 的 key 与词表被迁移到用户目录；
-      ② 迁移后用户数据优先：改用户那份，不会被 legacy 覆盖回去；
-      ③ 全新安装：legacy 有模板 → 由模板建出用户配置；
-      ④ legacy 什么都没有：回退读 legacy 路径（不抛异常）；
-      ⑤ **删安装目录重装**：新装的出厂模板不得覆盖已有用户数据（用户实际报的场景）；
-      ⑥ 补救扫描：用户目录被空 key 模板播过种时，安装目录里的真实 key 仍要能进来（只跑一次）。
+    守的是这条设计（见 vendor/subtitle/user_paths.py 模块注释）：用户数据放安装目录的
+    `data\\` 子目录 —— 一处、一个寿命、一个清理入口，且**不写 C 盘**。历史位置有两个：
+      · `%APPDATA%\\FunScriptCast-Nexus\\`（R48 过渡版，文件名 subtitle_config.json）
+      · `<安装目录>\\vendor\\subtitle\\`（最早，配置叫 config.json，也是出厂模板）
+    覆盖七种情形：
+      ① 首次运行：从安装目录旧位置迁移 key 与词表；
+      ② 已有数据优先：改 data 那份，不会被历史位置覆盖回去；
+      ③ 全新安装：历史位置只有模板 → 由模板建出 data 配置；
+      ④ 哪儿都没有：回退到 data 路径且不抛异常；
+      ⑤ **删安装目录重装**：新装模板不得覆盖已有数据；
+      ⑥ 补救扫描：data 被空 key 模板播过种时，历史位置的真实 key 仍要能进来（只跑一次）；
+      ⑦ **R48 的 %APPDATA% 位置优先于安装目录旧位置**（新方案优先的迁移顺序）。
     """
     import json as _json
     import os as _os
@@ -326,29 +329,32 @@ def t_user_data_migration():
 
     import user_paths as up
 
-    legacy = Path(_tf.mkdtemp(prefix="nexus-legacy-"))
-    user = Path(_tf.mkdtemp(prefix="nexus-user-"))
-    (legacy / "config.json").write_text(
-        _json.dumps({"translate": {"openai": {"api_key": "sk-SECRET"}}}), encoding="utf-8")
-    (legacy / "glossary_ja_zh.json").write_text(
-        _json.dumps({"悠亜": "悠亚"}), encoding="utf-8")
-
-    old = _os.environ.get("NEXUS_USER_DIR")
-    _os.environ["NEXUS_USER_DIR"] = str(user)
+    old_user = _os.environ.get("NEXUS_USER_DIR")
+    old_appdata = _os.environ.get("APPDATA")
+    # APPDATA 也要隔离：它是"R48 历史位置"的根，不隔离就会读到真实机器上的目录
+    _os.environ["APPDATA"] = _tf.mkdtemp(prefix="nexus-appdata-")
     try:
+        legacy = Path(_tf.mkdtemp(prefix="nexus-legacy-"))
+        user = Path(_tf.mkdtemp(prefix="nexus-user-"))
+        (legacy / "config.json").write_text(
+            _json.dumps({"translate": {"openai": {"api_key": "sk-SECRET"}}}), encoding="utf-8")
+        (legacy / "glossary_ja_zh.json").write_text(
+            _json.dumps({"悠亜": "悠亚"}), encoding="utf-8")
+
+        _os.environ["NEXUS_USER_DIR"] = str(user)
         # ① 迁移：key 与词表都带过来
         cfg = up.load_config(legacy)
         assert cfg["translate"]["openai"]["api_key"] == "sk-SECRET", "迁移必须保住 key"
-        assert (user / "subtitle_config.json").is_file(), "配置应落到用户数据目录"
+        assert (user / "subtitle_config.json").is_file(), "配置应落到数据目录"
         g = up.glossary_path(legacy, "glossary_ja_zh.json")
-        assert g.parent == user and g.is_file(), "词表也要迁到用户数据目录"
+        assert g.parent == user and g.is_file(), "词表也要迁到数据目录"
 
-        # ② 用户数据优先：改用户那份，不会被 legacy 覆盖
+        # ② 已有数据优先：改 data 那份，不会被历史位置覆盖
         (user / "subtitle_config.json").write_text(
             _json.dumps({"translate": {"openai": {"api_key": "sk-NEW"}}}), encoding="utf-8")
         assert up.load_config(legacy)["translate"]["openai"]["api_key"] == "sk-NEW"
 
-        # ③ 全新安装：legacy 是模板 → 由它建出用户配置
+        # ③ 全新安装：历史位置是模板 → 由它建出 data 配置
         legacy2 = Path(_tf.mkdtemp(prefix="nexus-legacy2-"))
         (legacy2 / "config.json").write_text('{"server": {"port": 8756}}', encoding="utf-8")
         user2 = Path(_tf.mkdtemp(prefix="nexus-user2-"))
@@ -356,14 +362,14 @@ def t_user_data_migration():
         assert up.load_config(legacy2)["server"]["port"] == 8756
         assert (user2 / "subtitle_config.json").is_file()
 
-        # ④ legacy 什么都没有：回退到 legacy 路径，不抛
+        # ④ 哪儿都没有：返回 data 路径，不抛
         empty = Path(_tf.mkdtemp(prefix="nexus-empty-"))
-        _os.environ["NEXUS_USER_DIR"] = str(Path(_tf.mkdtemp(prefix="nexus-user3-")))
-        assert up.config_path(empty) == empty / "config.json"
+        user3 = Path(_tf.mkdtemp(prefix="nexus-user3-"))
+        _os.environ["NEXUS_USER_DIR"] = str(user3)
+        assert up.config_path(empty) == user3 / "subtitle_config.json"
 
-        # ⑤ 用户报的那个场景：**删掉整个安装目录再重装**。新装的 legacy 里只有出厂
-        #    模板（key 为空、词表为空），已有用户数据绝不能被这份模板覆盖回去——
-        #    这正是根治要保证的性质，也是「重装后数据还在」从"意外"变成"设计"的那一步。
+        # ⑤ 用户报过的场景：**删掉整个安装目录再重装**（数据在新方案里就在安装目录内，
+        #    所以只有"重装前先备份过 data"才谈得上保留；这里守的是"模板不得反向覆盖"）。
         user4 = Path(_tf.mkdtemp(prefix="nexus-user4-"))
         _os.environ["NEXUS_USER_DIR"] = str(user4)
         inst_a = Path(_tf.mkdtemp(prefix="nexus-instA-"))
@@ -378,14 +384,14 @@ def t_user_data_migration():
             _json.dumps({"translate": {"openai": {"api_key": ""}}}), encoding="utf-8")
         (inst_b / "glossary_ja_zh.json").write_text("{}", encoding="utf-8")
         assert up.load_config(inst_b)["translate"]["openai"]["api_key"] == "sk-KEEP", \
-            "重装后出厂模板不得覆盖用户数据目录里的 key"
+            "重装后出厂模板不得覆盖数据目录里的 key"
         g2 = up.glossary_path(inst_b, "glossary_ja_zh.json")
         assert g2.parent == user4 and _json.loads(g2.read_text(encoding="utf-8")) == {"悠亜": "悠亚"}, \
             "重装后出厂空词表不得覆盖用户已攒的词表"
 
-        # ⑥ 补救扫描（本机真实踩到过的情形）：用户目录已被**空 key 的模板**播过种，
-        #    安装目录里那份有真实 key。先到先得的迁移永远轮不到它 ⇒ 必须有一次性补救，
-        #    且被覆盖的那份要留备份；补救**只跑一次**，之后回到简单的先到先得。
+        # ⑥ 补救扫描（本机真实踩到过的情形）：data 已被**空 key 的模板**播过种，
+        #    历史位置里有真实 key。先到先得的迁移永远轮不到它 ⇒ 必须有一次性补救，
+        #    且被覆盖的要留备份；补救**只跑一次**，之后回到简单的先到先得。
         user5 = Path(_tf.mkdtemp(prefix="nexus-user5-"))
         _os.environ["NEXUS_USER_DIR"] = str(user5)
         (user5 / "subtitle_config.json").write_text(
@@ -394,20 +400,37 @@ def t_user_data_migration():
         (inst_c / "config.json").write_text(
             _json.dumps({"translate": {"openai": {"api_key": "sk-REAL"}}}), encoding="utf-8")
         assert up.load_config(inst_c)["translate"]["openai"]["api_key"] == "sk-REAL", \
-            "空 key 的用户配置必须被安装目录里的真实 key 补救"
-        assert (user5 / ".layout-v2").is_file(), "补救扫描要落标记"
-        assert (user5 / "subtitle_config.json.bak-layout-v2").is_file(), "覆盖前必须留备份"
+            "空 key 的现存配置必须被历史位置里的真实 key 补救"
+        assert (user5 / ".layout-v3").is_file(), "补救扫描要落标记"
+        assert (user5 / "subtitle_config.json.bak-layout-v3").is_file(), "覆盖前必须留备份"
 
         up._layout_checked.clear()          # 模拟进程重启
         (user5 / "subtitle_config.json").write_text(
             _json.dumps({"translate": {"openai": {"api_key": ""}}}), encoding="utf-8")
         assert up.load_config(inst_c)["translate"]["openai"]["api_key"] == "", \
             "补救只跑一次：有标记之后不再回头覆盖用户的当前配置"
+
+        # ⑦ 迁移顺序：R48 的 %APPDATA% 位置比安装目录旧位置**更新**，必须优先
+        app_root = Path(_os.environ["APPDATA"]) / "FunScriptCast-Nexus"
+        app_root.mkdir(parents=True, exist_ok=True)
+        (app_root / "subtitle_config.json").write_text(
+            _json.dumps({"translate": {"openai": {"api_key": "sk-R48"}}}), encoding="utf-8")
+        inst_d = Path(_tf.mkdtemp(prefix="nexus-instD-"))
+        (inst_d / "config.json").write_text(
+            _json.dumps({"translate": {"openai": {"api_key": "sk-OLDEST"}}}), encoding="utf-8")
+        user6 = Path(_tf.mkdtemp(prefix="nexus-user6-"))
+        _os.environ["NEXUS_USER_DIR"] = str(user6)
+        assert up.load_config(inst_d)["translate"]["openai"]["api_key"] == "sk-R48", \
+            "%APPDATA%（R48）位置应优先于安装目录旧位置被迁移"
     finally:
-        if old is None:
+        if old_appdata is None:
+            _os.environ.pop("APPDATA", None)
+        else:
+            _os.environ["APPDATA"] = old_appdata
+        if old_user is None:
             _os.environ.pop("NEXUS_USER_DIR", None)
         else:
-            _os.environ["NEXUS_USER_DIR"] = old
+            _os.environ["NEXUS_USER_DIR"] = old_user
 
 
 if __name__ == "__main__":
@@ -424,7 +447,7 @@ if __name__ == "__main__":
     check("keep_segment 跨块去重", t_keep_segment)
     check("术语表总开关（enabled 热更新/数据保留）", t_glossary_enabled_switch)
     check("模型下载器（进度/断点续传/原子替换）", t_model_downloader)
-    check("用户数据迁移（key/词表带过去，用户数据优先）", t_user_data_migration)
+    check("用户数据迁移（落在安装目录 data\\，多源迁移与补救）", t_user_data_migration)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

@@ -21,7 +21,12 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent
 PY = APP_DIR / ".venv" / "Scripts" / "python.exe"
-SETTINGS = Path(os.environ.get("APPDATA")) / "FunScriptCast-Nexus" / "integrated_settings.json"
+# 设置文件在**安装目录** data\ 下（不是 %APPDATA%！见 vendor/subtitle/user_paths.py）。
+# 直接问宿主要路径，别在这里抄一份——路径规则变了这里不该跟着改。
+sys.path.insert(0, str(APP_DIR))
+import host_server as H  # noqa: E402
+
+SETTINGS = Path(H.SETTINGS_FILE)
 BACKUP = SETTINGS.with_suffix(".json.bak-test")
 
 

@@ -6,10 +6,18 @@
 ; 产物：dist-installer\FunScriptCast-Nexus-Setup-<版本>.exe
 ;   · 向导：欢迎 → 选目录（默认 %LOCALAPPDATA%\Programs）→ 附加任务 → 安装 → 完成
 ;   · 附加任务：桌面快捷方式（默认不勾）、开机自启动（默认不勾）
-;   · 按用户安装（不需要管理员），自带卸载器；用户数据（cache\、models 配置）保留
+;   · 按用户安装（不需要管理员），自带卸载器
+;
+; ⚠️ **数据都在安装目录里**（用户自己选的那个文件夹）：`data\`（配置/术语表/设置/DLNA）、
+;    `models\`（模型 + HF 缓存）、`logs\`。装到 D 盘就全在 D 盘，C 盘一个字节不落。
+;    规则只写一份：`vendor\subtitle\user_paths.py`。因此：
+;      · `data\` 是运行期产物 —— 本脚本**不安装它、也不删它**（只在新装时铺一份出厂种子），
+;        升级安装自然保留用户的 key / 术语表 / 共享目录设置；
+;      · 卸载时它同样保留（Inno 只删自己装过的东西），用户想彻底清就删整个安装目录。
+;    ← 因为模型可能有 20GB+，**安装目录建议选在空间充足的盘上**（别用系统盘）。
 ;
 ; 自包含：runtime\ 内嵌官方 embeddable Python + 字幕服务依赖（见 build\make_runtime.ps1），
-; 安装后不借用任何外部 .venv。模型文件（大体积数据）不进安装包，由 config.json 指向。
+; 安装后不借用任何外部 .venv。模型文件（大体积数据）不进安装包，由界面一键下载。
 
 #define MyAppName "FunScriptCast-Nexus"
 #define MyAppPublisher "FunScriptCast"
@@ -49,13 +57,15 @@ Name: "autostart"; Description: "开机自动启动 FunScriptCast-Nexus（当前
 
 [InstallDelete]
 ; 升级安装必须清掉"上一版有、这一版不再分发"的旧文件（坑 #20 同族：Inno 只覆盖同名文件，
-; 从不删多余文件，于是升级完行为还是旧的）。**只删代码**，且显式避开运行数据：
-;   · {app}\vendor\subtitle 里混着用户在 UI 里攒出来的运行数据 —— config.json（含云端
-;     key）、glossary_*.json（术语表）、*.json.bak*（宿主自保备份）。整目录删除等于把
-;     词库和 key 一起清空（正是 P0-2 那类事故的安装包版本），所以这一层只逐项删代码文件。
-;   · cache\、logs\ 是运行产物，卸载时有意保留，这里同样不动。
-;   · vendor\llama 是 fetch_llama.ps1 下载的运行时二进制（约 1.1 GB，可能未随包分发或被
-;     用户自行升级/替换），不在删除范围——宁可留下旧 dll，也不删用户手里的运行时。
+; 从不删多余文件，于是升级完行为还是旧的）。**只删代码**：
+;   · `{app}\data`、`{app}\logs`、`{app}\models`、`{app}\cache` **一个字都不碰** ——
+;     那是运行数据与模型，删了就是把用户的 key / 术语表 / 共享目录 / 下好的模型清空。
+;     （所以这一节里永远不出现 data\、logs\、models\、cache\。）
+;   · `vendor\subtitle` 里只逐项删**代码**（*.py/*.pyc/*.md/*.txt/*.bat 与 docs/tools/
+;     __pycache__ 目录）：历史上配置与词表就跟 .py 混在这个目录里，整目录删除曾等于把
+;     词库和 key 一起清空（P0-2 事故的安装包版本）。R49 起数据已搬进 `data\`，这里更安全。
+;   · `vendor\llama` 是 fetch_llama 下载的运行时二进制（约 1.1 GB），不在删除范围——
+;     宁可留下旧 dll，也不删用户手里的运行时。
 Type: filesandordirs; Name: "{app}\runtime"
 Type: filesandordirs; Name: "{app}\ui"
 Type: filesandordirs; Name: "{app}\tools"
@@ -68,6 +78,8 @@ Type: files; Name: "{app}\vendor\subtitle\*.pyc"
 Type: files; Name: "{app}\vendor\subtitle\*.md"
 Type: files; Name: "{app}\vendor\subtitle\*.txt"
 Type: files; Name: "{app}\vendor\subtitle\*.bat"
+; 开发机留下的历史备份（含开发机路径），早期版本曾随包发出，升级时顺手清掉
+Type: files; Name: "{app}\vendor\subtitle\config.json.bak-prompt"
 
 [Files]
 Source: "..\dist-app\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -75,20 +87,21 @@ Source: "..\dist-app\runtime\*"; DestDir: "{app}\runtime"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-app\ui\*"; DestDir: "{app}\ui"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
+; ⚠ Excludes 里的 4 个数据文件是**老用户的迁移源**（R49 之前它们就住在这个目录里）：
+;   升级那一刻，用户的云端 key 与术语表还在这份文件里，[Files] 整树覆盖会把它换成打包机
+;   副本（key 为空）⇒ 首次迁移读到的就是空 key。所以这里排除掉，改由 data\ 那份种子负责。
+;   开发者垃圾（__pycache__ / *.pyc / *.log / *.json.bak* / *.json.tmp）也一并排除：
+;   "用户装到的是干净的"——包里不该有打包机的缓存、日志和历史备份。
 Source: "..\dist-app\vendor\*"; DestDir: "{app}\vendor"; \
-    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\glossary_ja_zh.json,subtitle\glossary_en_zh.json"; \
+    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\glossary_ja_zh.json,subtitle\glossary_en_zh.json,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
-; ⚠ 上面这条**必须** Excludes 掉这几样 —— 它们是「用户数据迁移源」：
-;   运行时的真身在 %APPDATA%\FunScriptCast-Nexus\（见 vendor\subtitle\user_paths.py），
-;   安装目录这份只是出厂模板/种子。但**升级那一刻**，老用户的云端 key 与词表还在旧位置的
-;   这份文件里，[Files] 整树覆盖会把它换成打包机副本（key 为空）⇒ 首次迁移就再也读不到
-;   key。所以下面单独铺一份，且 onlyifdoesntexist：全新安装有种子、升级不覆盖。
-;   （config.json.bak-prompt 是开发机的历史备份，含开发机路径，直接不发。）
-Source: "..\dist-app\vendor\subtitle\config.json"; DestDir: "{app}\vendor\subtitle"; \
+; 出厂种子：**只在新装时铺**（onlyifdoesntexist）。装了就不再动它——用户的 key、术语表、
+; 以及界面上调过的参数都在这三份文件里。配置在 data\ 里叫 subtitle_config.json。
+Source: "..\dist-app\vendor\subtitle\config.json"; DestDir: "{app}\data"; \
+    DestName: "subtitle_config.json"; Flags: onlyifdoesntexist
+Source: "..\dist-app\vendor\subtitle\glossary_ja_zh.json"; DestDir: "{app}\data"; \
     Flags: onlyifdoesntexist
-Source: "..\dist-app\vendor\subtitle\glossary_ja_zh.json"; DestDir: "{app}\vendor\subtitle"; \
-    Flags: onlyifdoesntexist
-Source: "..\dist-app\vendor\subtitle\glossary_en_zh.json"; DestDir: "{app}\vendor\subtitle"; \
+Source: "..\dist-app\vendor\subtitle\glossary_en_zh.json"; DestDir: "{app}\data"; \
     Flags: onlyifdoesntexist
 Source: "..\dist-app\tools\*"; DestDir: "{app}\tools"; \
     Flags: ignoreversion recursesubdirs createallsubdirs

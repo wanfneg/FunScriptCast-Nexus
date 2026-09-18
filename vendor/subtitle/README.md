@@ -43,6 +43,12 @@ curl http://127.0.0.1:8756/health
 
 ## 3. 配置与两个档位（`config.json`）
 
+> 📁 **配置实际在哪**：不在这里的 `config.json`（那份只是**出厂模板**），而在
+> **`<安装目录>\data\subtitle_config.json`** —— 术语表同样在 `data\`，模型缓存在
+> `<安装目录>\models\hf-cache`。规则只写一份：`user_paths.py`。
+> 老版本（配置还混在本目录里、或在 `%APPDATA%`）首次运行会**自动迁移**过来。
+> 详见仓库 README「用户数据在哪」。
+
 | 档位 | ASR | 翻译 | 显存 | 说明 |
 |---|---|---|---|---|
 | **离线档（默认）** | `models/Qwen3-ASR-0.6B` | `ollama` / qwen2.5:3b | 3.4 + 2.2 ≈ 5.6GB | 开箱即用，不联网 |

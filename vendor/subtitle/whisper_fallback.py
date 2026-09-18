@@ -11,7 +11,7 @@
 
 依赖（可选，未装时本类不可用，调用方跳过）：pip install faster-whisper
 模型首次使用时自动从 HF 下载（国内设 HF_ENDPOINT=https://hf-mirror.com），
-下载后会缓存到 HF 缓存目录，可离线。
+下载后缓存到**安装目录** `models\hf-cache`（不写 C 盘，见 user_paths.py），可离线。
 """
 from __future__ import annotations
 
@@ -19,6 +19,12 @@ import os
 import threading
 
 import numpy as np
+
+import user_paths as _user_paths
+
+# 显式缓存根：见 whisper_backend 同名常量的注释（hub 的缓存路径在 import 时冻结成常量，
+# 本模块又是惰性导入的，只靠环境变量会来不及）。
+_HUB_DIR = _user_paths.hf_cache_dir() / "hub"
 
 
 class WhisperFallback:
@@ -59,7 +65,8 @@ class WhisperFallback:
             try:
                 self._model = WhisperModel(self.model_ref, device=self.device,
                                            compute_type=self.compute_type,
-                                           local_files_only=True)
+                                           local_files_only=True,
+                                           download_root=str(_HUB_DIR))
                 return
             except Exception as e:
                 self.last_error = f"本地无缓存：{type(e).__name__}: {e}"
@@ -74,7 +81,8 @@ class WhisperFallback:
             print(f"[asr] whisper 兜底模型本地缺失，开始下载 {self.model_ref}"
                   f"（约 800MB，将阻塞本次识别请求）", flush=True)
             self._model = WhisperModel(self.model_ref, device=self.device,
-                                       compute_type=self.compute_type)
+                                       compute_type=self.compute_type,
+                                       download_root=str(_HUB_DIR))
 
     def transcribe(self, pcm_f32: np.ndarray, sr: int = 16000, lang: str = "ja") -> list:
         """pcm_f32: [-1,1] float32 单声道。返回 [{"start_ms","end_ms","text"}]（可能为空）。

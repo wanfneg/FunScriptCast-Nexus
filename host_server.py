@@ -183,14 +183,15 @@ def _video_identity(path: str) -> dict:
 
 
 # ---------------------------------------------------------------- 用户数据路径
-# 会变的用户数据（config.json / 术语表）一律落 `%APPDATA%\FunScriptCast-Nexus\`，与
-# integrated_settings.json 同处一个目录：**一处、一个寿命、一个清理入口**；安装目录里那份
-# 从此只是模板/出厂基线，升级覆盖它不再影响用户的 key 与词表。
+# 会变的用户数据（配置 / 术语表 / 设置 / DLNA 数据 / 日志 / 模型缓存）一律落
+# **安装目录**：`<安装目录>\data\`、`\models\`、`\logs\`。用户装到 D 盘就全在 D 盘，
+# C 盘一个字节都不落（`%APPDATA%`、`%USERPROFILE%\.cache` 都不用）。
 #
-# 为什么必须这样：用户数据放安装目录会同时造成三个症状——① 删目录重装丢 key 与词表，
-# 而 %APPDATA% 里的设置还在（用户看到"半重置"）；② 升级安装的 [Files] 整树覆盖把 key
-# 与词表换成打包机副本；③ sync_distapp / build_exe / build_installer 都得给这两样写
-# "摘出→回填"的特例。规则**只写一份**，在 `vendor\subtitle\user_paths.py`（服务端也 import 它）。
+# 为什么是安装目录而不是 `%APPDATA%`：两处寿命会造成"程序在 D 盘、数据在 C 盘"——
+# ① 大文件（模型缓存）照样压 C 盘；② 用户删掉安装目录却发现设置还在，看起来像没删干净；
+# ③ 便携/换机时只拷安装目录会丢配置。放 `data\` 子目录后与代码分离，于是升级安装不必
+# 再为运行数据写"摘出→回填"特例（安装器不安装、也不删 data\，自然保留）。
+# 规则**只写一份**，在 `vendor\subtitle\user_paths.py`（服务端也 import 它）。
 def _user_paths_mod():
     """懒加载 user_paths（服务端同款规则）。失败则回退安装目录，不影响宿主起来。"""
     try:
@@ -226,6 +227,41 @@ def subtitle_glossary_path(lang: str) -> "Path | None":
         except Exception:
             pass
     return SUBTITLE_DIR / fname
+
+
+# 运行数据目录：**安装目录下的 data\**（不是 %APPDATA%！装到 D 盘就全在 D 盘）。
+# 判据只有一份，在 vendor\subtitle\user_paths.py；这里问它，问不到才走同口径兜底
+# （打包版万一没带上 user_paths.py 时仍能起来）。
+def data_dir() -> Path:
+    up = _user_paths_mod()
+    if up is not None:
+        try:
+            return Path(up.user_dir())
+        except Exception:
+            pass
+    return Path(os.environ.get("NEXUS_USER_DIR") or (APP_DIR / "data"))
+
+
+DATA_DIR = data_dir()
+LOGS_DIR = APP_DIR / "logs"
+try:                                # 日志规则也只在 user_paths 里写一份
+    _up_logs = _user_paths_mod()
+    if _up_logs is not None:
+        LOGS_DIR = Path(_up_logs.logs_dir())
+except Exception:
+    pass
+
+# HF 缓存（whisper 兜底模型约 1.4GB）也必须在安装目录里，否则装到 D 盘也压 C 盘。
+# **必须在 import huggingface_hub 之前设**（hub 在 import 时把缓存路径读成常量）。
+# 子进程通过 env=dict(os.environ) 继承，服务端无需另行设置。
+HF_CACHE_DIR = None
+try:
+    _up_for_hf = _user_paths_mod()
+    HF_CACHE_DIR = Path(_up_for_hf.apply_hf_env()) if _up_for_hf is not None \
+        else Path(os.environ.setdefault("HF_HOME", str(MODELS_DIR / "hf-cache")))
+except Exception as _e:      # pragma: no cover - 环境异常时不拦住宿主启动
+    HF_CACHE_DIR = Path(os.environ.get("HF_HOME", ""))
+    log.warning("HF 缓存目录设置失败（忽略）：%s", _e)
 
 
 def _config_fingerprint() -> str:
@@ -438,7 +474,13 @@ def app_version() -> dict:
 
 
 # ================================================================ 设置
-SETTINGS_FILE = Path(os.environ.get("APPDATA") or str(Path.home())) / "FunScriptCast-Nexus" / "integrated_settings.json"
+# 设置也放**安装目录** `data\`（与 config.json / 术语表同处，见 DATA_DIR 的注释）。
+# 曾经在 `%APPDATA%\FunScriptCast-Nexus\`：那会造成"程序在 D 盘、数据在 C 盘"两处寿命，
+# 用户删掉安装目录后发现设置还在，看起来像没删干净（R48 用户实际报的就是这个观感）。
+SETTINGS_FILE = DATA_DIR / "integrated_settings.json"
+# R48 的旧位置：首次运行迁过来（见 _migrate_settings_location）
+_LEGACY_SETTINGS_FILE = (Path(os.environ.get("APPDATA") or str(Path.home()))
+                         / "FunScriptCast-Nexus" / "integrated_settings.json")
 
 # 设置/字幕配置是「读整个文件→改→写整个文件」，HTTP 服务又是多线程的（UI 连续
 # 单字段 POST 很常见），不加锁时后写者会拿旧快照覆盖先写者的字段。
@@ -496,6 +538,25 @@ def load_settings() -> dict:
     if isinstance(s.get("dlna_roots"), list):
         s["dlna_roots"] = [norm_path(x) for x in s["dlna_roots"] if norm_path(x)]
     return s
+
+
+def _migrate_settings_location() -> None:
+    """把 R48 放在 `%APPDATA%` 的设置迁到安装目录 `data\\`（只在新位置没有时）。
+
+    用户最容易察觉"数据丢没丢"的就是这里（DLNA 共享目录、主题、开机自启都在内），
+    所以迁移必须发生在**任何一次 save_settings 之前**——否则新位置会先被默认值写出来，
+    迁移就会因"目标已存在"而跳过，用户看到的是"设置全没了"。
+    """
+    try:
+        if SETTINGS_FILE.exists() or not _LEGACY_SETTINGS_FILE.exists():
+            return
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SETTINGS_FILE.with_suffix(".json.migrating")
+        shutil.copy2(_LEGACY_SETTINGS_FILE, tmp)
+        os.replace(tmp, SETTINGS_FILE)
+        log.info("已迁移设置：%s → %s", _LEGACY_SETTINGS_FILE, SETTINGS_FILE)
+    except Exception as e:
+        log.warning("设置迁移失败（继续用默认值）：%s", e)
 
 
 def _migrate_settings() -> None:
@@ -2849,7 +2910,7 @@ def _create_app_mutex() -> None:
 
 
 def _setup_file_logging() -> None:
-    """把宿主日志同时落到 `%APPDATA%\\FunScriptCast-Nexus\\logs\\host.log`。
+    """把宿主日志同时落到 `<安装目录>\\logs\\host.log`。
 
     打包版是 GUI 子系统程序（`build/nexus.spec`: `console=False`）——没有控制台，
     而 `logging` 此前只装了 stderr handler ⇒ `log.warning/error` **全部被丢弃**。
@@ -2858,7 +2919,7 @@ def _setup_file_logging() -> None:
     （`vendor/subtitle/run_server.py` tee 到 `logs/run_server.log`），宿主一直缺这一半。
     """
     try:
-        d = SETTINGS_FILE.parent / "logs"
+        d = LOGS_DIR
         d.mkdir(parents=True, exist_ok=True)
         fh = RotatingFileHandler(d / "host.log", maxBytes=2 * 1024 * 1024,
                                  backupCount=3, encoding="utf-8")
@@ -2872,19 +2933,21 @@ def run(open_window: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
     _setup_file_logging()
     _create_app_mutex()
+    _migrate_settings_location()  # 设置先搬进安装目录 data\，再谈读它
     _migrate_settings()          # 先把历史设置里带引号的路径修掉，再读
     s = load_settings()
-    # 用户数据迁移（legacy 安装目录 → %APPDATA%）**必须在任何读取之前显式跑一遍**：
-    # 宿主是安装后第一个起来的进程，此刻 dist-app 里的 config.json 还带着用户的云端 key；
-    # 一旦被谁先按"模板"读走并写出空 key 的用户配置，后续迁移就会因"目标已存在"而跳过，
+    # 用户数据迁移（历史位置 → 安装目录 data\）**必须在任何读取之前显式跑一遍**：
+    # 宿主是安装后第一个起来的进程，此刻旧位置里的 config.json 还带着用户的云端 key；
+    # 一旦被谁先按"模板"读走并写出空 key 的新配置，后续迁移就会因"目标已存在"而跳过，
     # key 就真丢了。
     try:
         up = _user_paths_mod()
         if up is not None:
             info = up.ensure_user_data(SUBTITLE_DIR)
             log.info("用户数据目录：%s（配置 %s）", info["dir"], info["config"].name)
+            log.info("HF 模型缓存：%s", HF_CACHE_DIR)
     except Exception as e:
-        log.warning("用户数据迁移失败（继续用安装目录）：%s", e)
+        log.warning("用户数据迁移失败（继续用历史位置）：%s", e)
 
     # 单实例：已经在跑就唤起它的窗口并退出，不再起第二个进程。
     #

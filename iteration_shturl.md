@@ -1416,3 +1416,76 @@ key、`glossary_*.json` 术语表）。一个设计问题撑起三个症状：
 **尚未做（留给下一轮）**：卸载时 `{app}\models`（本机 21.9 GB）与 `{app}\vendor\llama`
 （1.1 GB）不由 Inno 安装、因此卸载不清理，会留残留；清理与否是"残留 23 GB"与"重装重下
 23 GB"的取舍，且 installer 改动本机无法编译验证，故不在本轮混进来。
+
+## Round 49（2026-09-18）：数据全搬进安装目录（用户点名：装到哪就在哪，别写 C 盘）
+
+**用户要求**：「确保用户安装到的是干净的，所有文件都保留在用户设定的安装文件夹目录下，
+而不是保存到c盘」。这条**推翻了 R48 的方向**（R48 把数据搬去了 `%APPDATA%`），但两者要
+解决的是同一件事的两面：R48 治的是"数据与代码混在一起导致升级覆盖 / 工具链特例"，
+R49 追加的是"程序在 D 盘、数据在 C 盘"这种**两处寿命**——大文件照样压 C 盘，而且用户
+删掉安装目录却发现设置还在，看起来像没删干净。
+
+**最终形态**：数据一律落**安装目录**（用户自己选的那个文件夹），装到 D 盘就全在 D 盘：
+
+    <安装目录>\data\     配置 / 术语表 / 宿主设置 / DLNA 数据
+    <安装目录>\models\    模型 + hf-cache\（whisper 兜底模型）
+    <安装目录>\logs\      host.log + run_server.log
+    <安装目录>\cache\     字幕 / 翻译缓存
+
+于是 `data\` 既是"用户能一眼看见并自己备份"的东西，又与代码分离 —— 安装器不安装它、
+也不删它（新装只铺一份 `onlyifdoesntexist` 的出厂种子）；工具链的"摘出→回填"特例也不再
+需要（`sync_distapp` 的同步对里根本没有 data）。
+
+**改了四处会写 C 盘的地方**（不止 R48 那一处）：
+
+1. **配置 / 术语表 / 宿主设置** → `data\`。迁移源按"新方案优先"排：
+   ① `data\`（已迁过就跳过）② `%APPDATA%\FunScriptCast-Nexus\`（R48 过渡位置）
+   ③ `<安装目录>\vendor\subtitle\`（最早的位置，config.json 这个名字只在这里）。
+   `load_config` 里顺带把该迁的都迁一遍（漏迁词表就是静默半迁移，词表会凭空变空表）。
+2. **DLNA 数据**（含共享目录）→ `data\`。三个模块此前各抄了一份 `_app_data_dir()` 且
+   源码/exe 两套行为，现在规则单独成 `vendor\dlna\app_paths.py`（不 import 同目录任何
+   模块，避开 `vr_dlna → funscript_sync_ui → funscript_sync` 的循环）。
+3. **HF 缓存** → `models\hf-cache\`。旧的 `%USERPROFILE%\.cache\huggingface` 是**全局共享**
+   的（实测本机 1.8 GB 里只有 1.4 GB 是本项目的，另 374 MB 是别的项目的 CLIP / WD-tagger），
+   所以只搬本项目那一个仓，先 copytree 到 `.adopting` 临时目录再改名就位——中断只会留
+   临时目录，目标路径始终不出现（否则下次看到"目标已存在"就跳过，whisper 会读残模型）。
+4. **日志** → `logs\`（宿主与字幕服务共用一处）。
+
+**⚠️ 过程中抓到并修掉一个自己制造的静默降级（本轮最险的一处）**：把模型搬进安装目录后，
+服务实测 `asr_backend=audiocpp`——**配置写着 whisper，实际在跑 Qwen3**，而且不报错。
+根因是"靠 import 顺序设 `HF_HOME`"这个做法本身不成立：`huggingface_hub` 的缓存路径在
+import 时**冻结成常量**，而 `whisper_backend` 是**惰性导入**的（`server_app` 的
+`asr_engine` → transformers 早就把 hub 拉进来了），等它设环境变量时早已无效；模型找不到
+就走进 `_make_asr` 的回落分支。修法两层：所有 `WhisperModel` 调用**显式传
+`download_root`**（与 import 顺序无关），并把 `apply_hf_env()` 提到 `server_app` 的最顶部
+（重量级 import 之前）。顺带修好了 R45 遗留的 P1 死代码——`asr.whisper.allow_download`
+此前从未生效（`if self._model is None` 在那个 try 结构下永不成立，且引用了作用域外的 `e`），
+现在回落链与报错信息都是真实可达的。
+
+**工具链**：`build_exe.ps1` 原样删掉并重建 `dist-app`（`Remove-Item -Recurse`），必须给
+`dist-app\data` 加"摘出→回填"——否则每次重编都清空开发数据（比坑 #12 更狠：那次只丢 key，
+这次连 DLNA 共享目录和术语表一起没）。用整目录搬走再搬回而不是逐文件读字节，免得漏掉
+宿主的 `.bak` 自保备份；并处理"上次重编中途失败留下暂存"的恢复。
+
+**installer**：`[Files]` 对老位置那四个数据文件 `Excludes`（它们仍是老用户的迁移源），
+改由 `{app}\data\` 的 `onlyifdoesntexist` 种子负责（`config.json` → `subtitle_config.json`
+用 DestName 改名）；排除开发机垃圾（`__pycache__` / `*.pyc` / `*.log` / `*.json.bak*` /
+`*.json.tmp`）；`[InstallDelete]` 顺手清掉早期随包发出的 `config.json.bak-prompt`，
+并写明这一节里**永远不出现** `data\ logs\ models\ cache\`。
+
+**验证**：
+  · 单测 14 项全过，迁移测试扩到**七种情形**（新增"R48 的 %APPDATA% 位置优先于安装目录旧位置"）；
+  · 路径解析实测：宿主 / 字幕服务 / DLNA 三侧解析出的 12 个路径**全部落在安装目录**，无 C 盘路径；
+  · 真实机器迁移：配置（含 35 字符 key）、日术语表 2091 条、DLNA 五个 JSON
+    （共享目录 `O:\01-H-JVR`、`O:\H-Europe and America VR`、`F:\Funscript`、
+    `E:\testvideo`、`F:\strm` 一条不少）全部搬进 `data\`；
+  · 1.4 GB 模型缓存搬迁耗时 0.7s，C 盘 17.2 → 18.6 GB，无残留 `.adopting`，别的项目模型未动；
+  · whisper 从新位置加载成功（cuda/float16），起来后 `/health` 报 `asr_backend=whisper`；
+  · 服务端到端（隔离数据目录 + :8763）`asr_ready=true`、词表 2096/2170，`logs\run_server.log` 生成。
+
+**留给下一轮**：① 卸载不清理 `{app}\models` 与 `{app}\vendor\llama`（不由 Inno 安装），
+"残留 23 GB"与"重装重下 23 GB"的取舍；② 安装向导默认目录仍指向 `%LOCALAPPDATA%`（C 盘），
+数据既然跟着安装目录走，**默认落 C 盘会把 20GB+ 模型压上去**——理想是 `[Code]` 挑剩余空间
+最大的盘，但 installer 改动本机无法编译验证，故未动；③ `/health` 已如实报实际生效的
+后端，但 PC 界面不消费它——本轮那个"配置 whisper / 实跑 audiocpp"的静默降级，是**人眼
+看日志**才发现的。

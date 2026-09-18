@@ -354,16 +354,26 @@ PC（FunScriptCast-Nexus）
    `test_quit.py`/`test_tray_run.py` 会**把你的程序杀掉**、`test_frameless.py`/`test_tray_close.py`
    会同端口双绑（`allow_reuse_address=1`，Windows 允许双绑）。**现已全部补上 8790 占用预检**——
    但仍请记住：跑这些脚本前确认 8790 空闲。
-2. ~~**用户术语表是 dist-app 侧的运行数据**~~（**R48 已根治**）。此前术语表与 `config.json`
-   跟 `.py` 混在 `APP_DIR\vendor\subtitle` 里，一次 `sync_distapp` / `build_exe` 就可能用仓库
-   旧副本静默替换你在 UI 里保存的术语表（R42 做的是工具侧保护，没治根）。R48 起用户数据
-   整体搬到 `%APPDATA%\FunScriptCast-Nexus\`，安装目录那两份降级为「出厂模板 + 首次迁移源」，
-   工具侧保护从"唯一防线"退成"纵深防御"。见 README「用户数据在哪」。
-3. **模型不都在安装目录**：whisper 兜底（kotoba-whisper）的模型来自 HF 缓存
-   （`%USERPROFILE%\.cache\huggingface`）。R42 起该兜底**默认只用本地缓存、不在请求内联网下载**
-   （此前首次触发会在识别请求里拉约 800MB，可能直接超过头显 180s readTimeout）。
+2. ~~**用户术语表是 dist-app 侧的运行数据**~~（**R48 保护、R49 根治**）。此前术语表与
+   `config.json` 跟 `.py` 混在 `APP_DIR\vendor\subtitle` 里，一次 `sync_distapp` /
+   `build_exe` 就可能用仓库旧副本静默替换你在 UI 里保存的术语表（R42 做的是工具侧保护，
+   没治根）。R49 起**所有运行数据搬进 `<安装目录>\data\`**（配置 / 术语表 / 宿主设置 /
+   DLNA 数据），与代码彻底分离：安装器不安装也不删 `data\`，工具链也不必再为它写特例。
+   见 README「用户数据在哪」。
+3. **模型不都在安装目录**：whisper 兜底（kotoba-whisper）的模型来自 HF 缓存。
+   R42 起该兜底**默认只用本地缓存、不在请求内联网下载**（此前首次触发会在识别请求里拉
+   约 800MB，可能直接超过头显 180s readTimeout）。**R49 起缓存根改到
+   `<安装目录>\models\hf-cache`**，首次运行把旧位置（`%USERPROFILE%\.cache\huggingface`）
+   那一份搬过来——只搬本项目那个仓，旧缓存是全局共享的（实测本机 1.8 GB 里有 374 MB 是
+   别的项目的 CLIP / WD-tagger，不能动）。
+   ⚠️ 配套堵了一个**静默降级**：`whisper_backend` 是惰性导入的，等它设 `HF_HOME` 时
+   `huggingface_hub` 早已被 `asr_engine` 连带 import、缓存路径冻结成常量 ⇒ 模型找不到时
+   `server_app._make_asr` 会**静默回落 audiocpp**（配置写着 whisper、实际跑 Qwen3）。
+   现在所有 `WhisperModel` 调用**显式传 `download_root`**（与 import 顺序无关），并在
+   `server_app` 最顶部（重量级 import 之前）就设好 HF 缓存位置。
 4. 打包版宿主此前**没有任何文件日志**（`console=False` + 只有 stderr handler）⇒ `log.warning/error`
-   全部丢弃。R42 起写 `%APPDATA%\FunScriptCast-Nexus\logs\host.log`（2MB × 3 轮换）。
+   全部丢弃。R42 起写宿主日志（2MB × 3 轮换）；**R49 起宿主与字幕服务共用
+   `<安装目录>\logs\`**（`host.log` + `run_server.log`，排查只看一处）。
 
 **注意：宿主本体在 exe 里**——`host_server.py` 的这些改动**必须重编 exe 才生效**
 （`build\build_exe.ps1`）；`ui\` 与 `vendor\` 外置，同步后生效。本轮**没有**重编、也没有

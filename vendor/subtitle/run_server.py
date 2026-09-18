@@ -16,9 +16,12 @@ import uvicorn
 BASE = Path(__file__).resolve().parent
 
 # 文件日志：宿主拉起时 stdout 只在宿主内存里留 40 行，事后无法排查
-# （2026-09-16 排查"字幕少"时发现）。这里把输出同步落到 logs/run_server.log
+# （2026-09-16 排查"字幕少"时发现）。这里把输出同步落到 <安装目录>\logs\run_server.log
 # （追加、>5MB 轮换一次），谁拉起服务都能事后看到完整请求/错误轨迹。
-_log_dir = BASE / "logs"
+# 与宿主 host.log 同处一个 logs\ —— 数据一律在安装目录里，不写 C 盘（见 user_paths.py）。
+import user_paths as _user_paths
+
+_log_dir = Path(_user_paths.logs_dir())
 _log_dir.mkdir(exist_ok=True)
 _log_path = _log_dir / "run_server.log"
 try:

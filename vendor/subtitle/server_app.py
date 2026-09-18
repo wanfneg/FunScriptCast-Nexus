@@ -19,27 +19,42 @@
   - ASR 与翻译串行执行；ASR 占 GPU，翻译默认走 Ollama/云端（8GB 卡上两者不能同时驻留）
 """
 
-import asyncio
-import hashlib
-import json
 import os
-import threading
-import time
-from contextlib import asynccontextmanager
+import sys
 from pathlib import Path
 
-import numpy as np
-from fastapi import FastAPI, Request
-from starlette.concurrency import run_in_threadpool
-
-from asr_engine import AsrEngine
-from glossary import Glossary
-from whisper_fallback import WhisperFallback
-from translate_engine import Translator
-import user_paths
-
 BASE = Path(__file__).resolve().parent
-# 配置从**用户数据目录**读（首次运行自动从安装目录迁移，见 user_paths 模块注释）。
+if str(BASE) not in sys.path:
+    sys.path.insert(0, str(BASE))
+
+# ⚠️ **必须排在下面那批重量级 import 之前**：`asr_engine` / `translate_engine` 会连带
+# import transformers/torch，而它们又会 import huggingface_hub —— hub 的缓存路径是在
+# import 时**读成常量**的（HF_HUB_CACHE），之后再改环境变量一概无效。
+# 实测踩中：whisper_backend 是惰性导入的，等它设 HF_HOME 时 hub 早已冻结在
+# `%USERPROFILE%\.cache\huggingface`（C 盘），于是模型搬进安装目录后 whisper 找不到模型、
+# **静默回落 audiocpp**（配置写着 whisper，实际在跑 Qwen3）。
+# 缓存位置的规则只在 user_paths 里写一份；这里只负责"尽早执行"。
+import user_paths  # noqa: E402
+
+user_paths.apply_hf_env()
+
+import asyncio  # noqa: E402
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
+
+import numpy as np  # noqa: E402
+from fastapi import FastAPI, Request  # noqa: E402
+from starlette.concurrency import run_in_threadpool  # noqa: E402
+
+from asr_engine import AsrEngine  # noqa: E402
+from glossary import Glossary  # noqa: E402
+from whisper_fallback import WhisperFallback  # noqa: E402
+from translate_engine import Translator  # noqa: E402
+
+# 配置从**数据目录**读（首次运行自动从历史位置迁移，见 user_paths 模块注释）。
 # 安装目录里那份从此只是模板：升级覆盖它不再影响用户的 key/术语表。
 CFG = user_paths.load_config(BASE)
 # 术语表也按用户数据目录解析（config 的 glossary 段只写文件名，这里换 base_dir 即可）

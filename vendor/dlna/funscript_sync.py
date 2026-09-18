@@ -31,16 +31,13 @@ from pathlib import Path
 from typing import Callable, Optional
 
 def _sync_data_dir() -> Path:
-    """源码模式用脚本目录；exe 模式用 %APPDATA%\VR-DLNA，避免 onefile 临时目录丢配置。"""
-    if getattr(sys, "frozen", False):
-        base = Path(os.environ.get("APPDATA") or str(Path.home()))
-        d = base / "VR-DLNA"
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        return d
-    return Path(__file__).parent
+    """运行数据目录：`<安装目录>\\data`（规则只写一份，见 app_paths.py）。
+
+    曾经 exe 模式写 `%APPDATA%\\VR-DLNA`（源码模式写脚本目录，两套行为）；现在统一到
+    安装目录，程序与数据同一处寿命。旧位置首次运行自动迁移。
+    """
+    import app_paths
+    return app_paths.data_dir()
 
 
 CONFIG_FILE = _sync_data_dir() / "vr_dlna_funscript_config.json"

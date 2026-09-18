@@ -85,6 +85,27 @@ if (Test-Path $subtitleDst) {
     }
 }
 $cleanRemoved = -not (Test-Path $out)   # 目录本来就不存在 = 谈不上"清理失败"
+# R49 起用户数据住 `dist-app\data\`（配置 / 术语表 / 宿主设置 / DLNA 数据，见
+# vendor\subtitle\user_paths.py）。$out 是**整目录删除**后重建的，不先摘出来就每次重编
+# 清空一遍——比坑 #12 更狠：那次只丢云端 key，这次连 DLNA 共享目录与术语表一起没。
+# 用"整目录搬走再搬回"而不是逐文件读字节：这里可能有宿主的 .bak 自保备份与 .tmp，
+# 逐文件搬运会漏掉它们，而漏掉的正是用户的后悔药。
+$dataStash = Join-Path $root 'build\_dist-app-data'
+$distDataDir = Join-Path $out 'data'
+# 上一次重编中途失败会留下暂存（此时 dist-app\data 不在原位）：先回填，别让数据卡在暂存里
+if ((Test-Path $dataStash) -and -not (Test-Path $distDataDir)) {
+    New-Item -ItemType Directory -Path $out -Force | Out-Null
+    Move-Item $dataStash $distDataDir -Force
+    Write-Host "  发现上次重编遗留的数据暂存，已先回填 dist-app\data" -ForegroundColor Yellow
+}
+$stashedData = $false
+if (Test-Path $distDataDir) {
+    Remove-Item $dataStash -Recurse -Force -ErrorAction SilentlyContinue
+    Move-Item $distDataDir $dataStash -Force
+    $stashedData = $true
+    $nData = (Get-ChildItem $dataStash -Recurse -File -Force | Measure-Object).Count
+    Write-Host "  已摘出 dist-app\data（运行数据 $nData 个文件），组装完回填" -ForegroundColor DarkGray
+}
 if (Test-Path $out) {
     # 先摘除 junction（只删链接点本身）。PS5.1 的 Remove-Item -Recurse 会**跟随
     # junction 递归删除目标内容**（PowerShell#621）：dist-app 里的 models/.venv
@@ -155,6 +176,14 @@ foreach ($name in 'models', '.venv') {
         cmd /c mklink "/J" "$dstP" "$srcP" | Out-Null
         if (Test-Path $dstP) { Write-Host "  已重建 junction $name → $srcP" -ForegroundColor DarkGray }
     }
+}
+
+# 回填 dist-app\data（见上面"摘出"处的说明：用户的配置 / 术语表 / 设置 / DLNA 数据）
+if ($stashedData) {
+    $distDataDir = Join-Path $out 'data'
+    if (Test-Path $distDataDir) { Remove-Item $distDataDir -Recurse -Force -ErrorAction SilentlyContinue }
+    Move-Item $dataStash $distDataDir -Force
+    Write-Host "  已把 dist-app\data 回填（用户的配置 / 术语表 / 设置 / DLNA 数据）" -ForegroundColor DarkGray
 }
 
 # 回填术语表等运行数据（原样字节写回，不经过 JSON 往返，避免改动用户词库）。

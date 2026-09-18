@@ -17,10 +17,14 @@
 #    用仓库模板覆盖 = 抹掉 key 和词库（与 build_exe 的坑 #12 同族）。
 #    确要覆盖时显式给 -SyncConfig / -SyncGlossary。
 #
-# 🚫 **R48 之后这些排除仍然必须保留，别删**：用户数据的**真身**已经搬到
-#    %APPDATA%\FunScriptCast-Nexus\（见 vendor\subtitle\user_paths.py），dist-app 这两份
-#    看着像"没用的副本"了——但老用户升级那一刻，他真正的 key 与词表**还躺在这里**，
-#    这是首次迁移唯一的源。覆盖它 = 迁移读到空模板 = 静默丢 key。
+# 🚫 **R49 之后这些排除仍然必须保留，别删**：用户数据的**真身**现在在
+#    `<安装目录>\data\`（见 vendor\subtitle\user_paths.py），dist-app 这两份看着像
+#    "没用的副本"了——但它们还有两个用处：① 老用户升级那一刻，他真正的 key 与词表
+#    **还躺在这里**，这是首次迁移的源；② 安装包拿 dist-app 这份当**出厂种子**
+#    （setup.iss 的 onlyifdoesntexist）。覆盖它 = 迁移读到空模板 = 静默丢 key。
+#
+# 数据搬进 data\ 之后，本脚本要同步的仍然只有代码（ui / vendor），**不碰 data\** ——
+# 数据目录不在 $pairs 里，这正是"工具链不必再为运行数据写特例"的效果。
 param(
     [switch]$Check,
     [switch]$Restart,

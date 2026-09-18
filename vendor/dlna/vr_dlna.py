@@ -59,16 +59,13 @@ DLNA_FLAGS = "01700000000000000000000000000000"
 
 
 def _app_data_dir() -> Path:
-    """运行数据目录：源码模式用脚本目录；exe 模式用 %APPDATA%\VR-DLNA。"""
-    if getattr(sys, "frozen", False):
-        base = Path(os.environ.get("APPDATA") or str(Path.home()))
-        d = base / "VR-DLNA"
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        return d
-    return Path(__file__).parent
+    """运行数据目录：`<安装目录>\\data`（规则只写一份，见 app_paths.py）。
+
+    曾经 exe 模式写 `%APPDATA%\\VR-DLNA` —— 那会让"程序在 D 盘、数据在 C 盘"，且用户
+    删掉安装目录后发现设置还在。现在与 Nexus 其余数据同处安装目录，旧位置首次自动迁移。
+    """
+    import app_paths
+    return app_paths.data_dir()
 
 
 def _app_icon_path() -> Path:
