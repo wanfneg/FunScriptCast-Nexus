@@ -15,11 +15,20 @@ import uvicorn
 
 BASE = Path(__file__).resolve().parent
 
+# ⚠️ **必须在 import 同目录模块之前**补 sys.path。自包含安装跑的是 embeddable Python，
+# 它的 `._pth` 是封闭的、**不含脚本所在目录**，所以 `import user_paths` 会直接
+# ModuleNotFoundError 把服务挡在启动之前。
+# R49 实测踩中：这一句被写在了下面 import user_paths 的**后面**，于是打包版全新安装后
+# "启动字幕服务"永远失败（宿主事件日志：子进程退出 code 1 / No module named 'user_paths'）。
+# 仓库里用 .venv 测**测不出来**——普通 Python 运行脚本时会自动把脚本目录放进 sys.path。
+if str(BASE) not in sys.path:
+    sys.path.insert(0, str(BASE))
+
 # 文件日志：宿主拉起时 stdout 只在宿主内存里留 40 行，事后无法排查
 # （2026-09-16 排查"字幕少"时发现）。这里把输出同步落到 <安装目录>\logs\run_server.log
 # （追加、>5MB 轮换一次），谁拉起服务都能事后看到完整请求/错误轨迹。
 # 与宿主 host.log 同处一个 logs\ —— 数据一律在安装目录里，不写 C 盘（见 user_paths.py）。
-import user_paths as _user_paths
+import user_paths as _user_paths  # noqa: E402
 
 _log_dir = Path(_user_paths.logs_dir())
 _log_dir.mkdir(exist_ok=True)
@@ -64,6 +73,8 @@ sys.stdout = _Tee(sys.stdout, _log_file)
 sys.stderr = _Tee(sys.stderr, _log_file)
 # 自包含安装的 embeddable Python 用 ._pth 封闭 sys.path，不含脚本所在目录，
 # 这里显式补上，否则 uvicorn 找不到同目录的 server_app（实测 Not Found）。
+# （本文件顶部已经补过一次——那次是为了让 **import user_paths** 能用；这里保留是为了
+#  让"uvicorn 的字符串导入 server_app:app"这条路径也吃得到，两处都不能少。）
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 

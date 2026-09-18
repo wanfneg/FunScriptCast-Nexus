@@ -433,6 +433,52 @@ def t_user_data_migration():
             _os.environ["NEXUS_USER_DIR"] = old_user
 
 
+# 10 --------------------------- run_server.py 在封闭 sys.path 下必须能 import
+def t_run_server_embeddable_import():
+    """自包含安装跑的是 **embeddable Python**：它的 `._pth` 是封闭列表、**不含脚本所在
+    目录**，所以"脚本目录自动进 sys.path"这个普通 Python 的默认行为在这里**没有**。
+
+    实测事故（R49 引入、1.0.19 打包版踩中）：`run_server.py` 里为了取日志目录写了
+    `import user_paths`，而补 sys.path 的那段在它**后面** ⇒ 打包版全新安装后点"启动
+    字幕服务"永远失败（宿主事件日志：子进程退出 code 1 / No module named 'user_paths'）。
+    仓库里用 .venv 手测**测不出来**，所以必须有这条测试。
+
+    做法：起一个子进程，把**脚本目录**从 sys.path 里摘掉（模拟 ._pth 的封闭性），
+    cwd 也设在别处（否则 `python -c` 的 sys.path[0]='' 会把 cwd 带进来蒙对），
+    再把 run_server.py 当脚本 exec（`__name__='probe'` ⇒ 不会真的去起 uvicorn）。
+    """
+    import subprocess
+    import tempfile as _tf
+
+    sub = Path(__file__).resolve().parents[1] / "vendor" / "subtitle"
+    script = sub / "run_server.py"
+    assert script.is_file(), f"找不到 {script}"
+
+    cwd = Path(_tf.mkdtemp(prefix="nexus-runserver-"))
+    probe = (
+        "import os, sys\n"
+        f"target = os.path.abspath(r'{sub}')\n"
+        # 摘掉脚本目录（模拟 embeddable 的封闭 sys.path）
+        "sys.path[:] = [p for p in sys.path if os.path.abspath(p or '.') != target]\n"
+        f"src = open(r'{script}', encoding='utf-8').read()\n"
+        f"g = {{'__name__': 'probe', '__file__': r'{script}'}}\n"
+        "exec(compile(src, g['__file__'], 'exec'), g)\n"
+        # 走到这里说明 import 阶段没炸；再确认真的拿到了 user_paths 模块
+        "assert '_user_paths' in g, 'run_server 没有成功 import user_paths'\n"
+        "assert g['_log_dir'].name == 'logs', g['_log_dir']\n"
+        "print('EMBEDDABLE_IMPORT_OK')\n"
+    )
+    env = dict(os.environ)
+    env["NEXUS_USER_DIR"] = str(cwd)          # 别写到真实用户目录
+    env["PYTHONIOENCODING"] = "utf-8"
+    r = subprocess.run([sys.executable, "-c", probe], cwd=str(cwd), env=env,
+                       capture_output=True, text=True, timeout=120)
+    out = (r.stdout or "") + (r.stderr or "")
+    assert "EMBEDDABLE_IMPORT_OK" in out, (
+        "run_server.py 在封闭 sys.path（embeddable Python 的条件）下 import 失败——"
+        "打包版会表现为「启动字幕服务」永远失败。原始输出：\n" + out[-1500:])
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -448,6 +494,7 @@ if __name__ == "__main__":
     check("术语表总开关（enabled 热更新/数据保留）", t_glossary_enabled_switch)
     check("模型下载器（进度/断点续传/原子替换）", t_model_downloader)
     check("用户数据迁移（落在安装目录 data\\，多源迁移与补救）", t_user_data_migration)
+    check("run_server 在封闭 sys.path 下可 import（embeddable 条件）", t_run_server_embeddable_import)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
