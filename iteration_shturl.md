@@ -1564,3 +1564,82 @@ user_paths 不可用时的兜底 ×2、清理旧版本 `%TEMP%` 遗留 ×1、托
 （约 35MB，退出即删）。这是打包形态决定的，代码管不了——要彻底消掉得改成 onedir
 （`_internal\` 目录形态），会动 `nexus.spec` + `build_exe` 的组装列表 + `setup.iss` 的
 `[Files]`/`[InstallDelete]`，且必须重编才能验证，故未在本轮动手。
+
+## Round 52（2026-09-19）：卸载清装 → 重编发布 → 全新安装实测抓出致命 bug
+
+**用户要求**：把电脑上的卸载干净、产生的数据清理干净（模型要备份），重新构建打包并同步
+GitHub，然后交付安装包做全新安装测试。
+
+### 一、卸载与清理（先核实再删）
+
+- **确认 D 盘没有唯一副本**：逐文件比对，D 盘的 `Sakura-1.5B/7B` 与 `vendor\llama`（55 个
+  文件）与仓库**完全一致**（gguf 两边都是 4,250,298,208 字节）；模型真身在仓库，清理不碰。
+- 官方卸载器静默执行（退出码 0），注册表卸载项 / 开机自启 / 开始菜单**全清**。
+- **D 盘释放 6.22 GB、C 盘释放 1.71 GB**：含 255 项 %TEMP% 残留（1.66 GB，其中几十个是
+  PyInstaller 崩溃留下的 `_MEI*`）、7 份历史安装日志。
+- 先备份后删：`_ref\api_key_backup.txt`（三处副本一致）、`_ref\uninstall-backup\`
+  （含 DLNA 共享目录设置）。
+
+### 二、重编与发布
+
+- `build_installer.ps1` 退出码 0、可复现（跑了两次）。**第一次报的 1 是我外层 `2>&1`
+  包装的产物**，已用探针实验证伪合并流的影响——不能把包装产物当成构建失败。
+- 补了一个**只有发布时才需要**的东西：`llama-runtime-windows.zip`（626.5 MB，从
+  `vendor\llama` 打包，剔除开发机标记 `.fetch-ok`，**根目录扁平**——下载器检查
+  `dest_dir\llama-server.exe`）。**新 release 必须带上它**：应用内下载走
+  `releases/latest/download/` 这个固定链接，latest 换了 release 而资产没跟上就是 404。
+- 发布 v1.0.19 后验证 `gh` 报的资产摘要与本地文件**逐字节一致**，`latest/download` 302 指向
+  新 tag。
+
+### 三、⭐ 全新安装实测抓出致命 bug（本轮最重要的产出）
+
+用户装到 `D:\FunScriptCast-Nexus` 并启动后，点"启动字幕服务"**永远失败**：
+
+    子进程退出（code 1）：run_server.py line 22, in <module>
+      import user_paths as _user_paths
+    ModuleNotFoundError: No module named 'user_paths'
+
+**根因**：R49 为把日志目录收进安装目录，在 `run_server.py` 顶部加了 `import user_paths`
+（第 22 行），而"把脚本目录补进 sys.path"的那段在同一文件**第 64 行**。自包含安装跑的是
+embeddable Python，`python310._pth` 是封闭列表（`python310.zip` / `.` / `Lib\site-packages`），
+**不含脚本所在目录**；普通 Python 运行脚本时会自动加进去 —— **所以仓库里用 .venv 手测永远
+测不出来**（已用对照实验确认：runtime python 下 `脚本目录 in sys.path` = False）。
+
+**教训（已入档为规则）**：凡是"打包版才会跑"的代码路径（入口脚本、embeddable 环境、
+`._pth` 封闭性、runtime 里的依赖集合），**必须用 `dist-app\runtime\python.exe` 或实际安装
+实例验证**，`.venv` 通过不算通过。这条和 R47 的"发行资产落后两轮"是同一族问题：
+**验证环境与交付环境不一致**。
+
+**修法与防回归**：
+- 把 sys.path 修补提到文件顶部、所有同目录 import 之前（后半段那处保留，uvicorn 的
+  字符串导入 `server_app:app` 也要吃它）。
+- 新增 `tests/test_pipeline_unit.py::t_run_server_embeddable_import`：起子进程把**脚本目录**
+  从 sys.path 摘掉（cwd 也设在别处，否则 `python -c` 的 `sys.path[0]=''` 会把 cwd 带进来
+  蒙对），再把 `run_server.py` 当脚本 exec 并断言拿到了 `_user_paths`。
+- **实证这条测试有牙齿**：把 1.0.19 的原样文件喂给它 → 必然失败；喂修复版 → 通过；再用真实
+  embeddable runtime 复验通过。
+- 顺带审计其余模块的导入顺序（`server_app` 28<37 ✓、`stream_bridge` 61<66 ✓、
+  `whisper_backend`/`whisper_fallback` 只作为模块被导入、`llama_backend`/`audiocpp_backend`
+  是函数内 try 兜底）—— `run_server.py` 是唯一被"当脚本运行"的入口，所以只有它中招。
+
+### 四、收尾
+
+- 用户已装实例**就地修好**（`run_server.py` 是外置数据，不必重装）：服务起来后
+  `asr_backend=whisper` / `asr_ready=True` / `cuda:0` / 词表 ja=2096 en=2170 /
+  翻译 local(Sakura-7B)。
+- 重编 **1.0.20**（code 21）并发布，两个资产带上；**1.0.19 的 release 说明加了醒目警示**
+  （保留原内容不改写历史），并告知"覆盖 run_server.py 即可，不必重装"。
+- 按用户配置里**真正引用到的**模型搬进安装目录（共 8.35 GB）：whisper 缓存（1.4GB，
+  `asr.backend=whisper` 必需）、`Sakura-7B`（4.05GB，`translate.local` 引用的 gguf）、
+  `Qwen3-ASR-0.6B`（1.79GB，whisper 失败时的 audiocpp 回落）、`vendor\llama`（1.11GB，
+  省 626MB 下载）。**先搬到 `.incoming` 再改名就位**——应用正在运行，绝不能让它在半拷贝
+  状态下去读模型。用**已安装程序的 runtime** 真加载 D 盘那份 whisper 验证通过（4.3s），
+  并按应用自己的算法解析配置里的相对路径确认三处全部存在。
+
+### 五、全新安装的实地体检（都成立）
+
+`data\` 被播种（config + 两张词表 + `.layout-v3`）、WebView2 profile 落 `data\webview\`、
+`%APPDATA%\FunScriptCast-Nexus` 与 `VR-DLNA` **未被重新创建**、`~\.cache\huggingface`
+只剩别的项目的 374MB、出厂 config 的 key 为空、`logs\` 里有 `host.log` 与托盘诊断日志。
+宿主自己的日志也印证了规则生效：`用户数据目录：D:\FunScriptCast-Nexus\data`、
+`HF 模型缓存：D:\FunScriptCast-Nexus\models\hf-cache`。
