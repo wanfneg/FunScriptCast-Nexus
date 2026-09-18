@@ -1321,9 +1321,11 @@ MODELS_CATALOG = [
         "label": "翻译模型 · Sakura-1.5B（轻量）",
         "dest_dir": MODELS_DIR / "Sakura-1.5B-Qwen2.5-v1.0",
         "size_gb": 1.2,
+        # 量化文件在第三方镜像仓（官方 GGUF 仓只有 fp16）；远端文件名为大写 Q5KS，
+        # 已实测 206 且字节数与本地既有文件完全一致
         "files": [
             {"rel": "sakura-1.5b-qwen2.5-v1.0-q5ks.gguf",
-             "url": _HF_MIRROR + "/SakuraLLM/Sakura-1.5B-Qwen2.5-v1.0-GGUF/resolve/main/sakura-1.5b-qwen2.5-v1.0-q5ks.gguf"},
+             "url": _HF_MIRROR + "/shing3232/Sakura-1.5B-Qwen2.5-v1.0-GGUF-IMX/resolve/main/sakura-1.5b-qwen2.5-v1.0-Q5KS.gguf"},
         ],
     },
 ]
@@ -1332,18 +1334,21 @@ _MODEL_DL: dict = {}
 _DL_LOCK = threading.Lock()
 # 直连 hf-mirror（绕过系统代理：代理软件没开时 urllib 读注册表代理会 TLS 失败，
 # 与 fetch_llama / fetch_adb 的 NO_PROXY 教训同源）
-_DL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# 两条下载通道：直连 / 跟随系统代理（注册表，Clash 等）。
+# 教训合并：hf-mirror 在"系统配了代理但代理软件没开"时直连才通（走代理反而 TLS 失败）；
+# GitHub 则相反——本网络直连会被重置、走代理才通。所以按目标自动选通道并互相兜底。
+_DL_OPENER_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_DL_OPENER_SYSTEM = urllib.request.build_opener()
 
 
-def _download_to_file(url: str, dest: Path, prog=None) -> None:
-    """流式下载到 .part（断点续传 + 原子替换）。prog(done, total)。
+def _download_once(opener, url: str, dest: Path, prog=None) -> None:
+    """单通道流式下载到 .part（断点续传 + 原子替换）。prog(done, total)。
 
     两种必须防住的坏例（审查 P0-2 实测复现过）：
       · 发了 Range 服务器却回 200 全量 → 若继续追加会把文件写成"两份拼接"的
         静默损坏。判据：带 Range 请求时响应码必须是 206，否则推倒重下。
       · 416（.part 比服务器内容还长）→ 删 .part 全新重下一次。
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
     for restart in (0, 1):
         done = part.stat().st_size if part.exists() else 0
@@ -1352,7 +1357,7 @@ def _download_to_file(url: str, dest: Path, prog=None) -> None:
             headers["Range"] = "bytes=%d-" % done
         req = urllib.request.Request(url, headers=headers)
         try:
-            r = _DL_OPENER.open(req, timeout=60)
+            r = opener.open(req, timeout=60)
         except urllib.error.HTTPError as e:
             if e.code == 416 and part.exists() and restart == 0:
                 part.unlink()                # 坏 .part：推倒重来
@@ -1368,13 +1373,19 @@ def _download_to_file(url: str, dest: Path, prog=None) -> None:
                 if prog:
                     prog(done, total)
                 return
+            last_ok = time.time()
             with open(part, "ab" if done else "wb") as f:
                 while True:
+                    # 停滞看门狗：代理节点"涓流"时数据一直有但极慢，60s 超时永远
+                    # 不触发，通道切不出去。90 秒无字节进展就主动掐断换通道。
+                    if time.time() - last_ok > 90:
+                        raise RuntimeError("下载停滞超过 90 秒（通道无有效进展）")
                     chunk = r.read(1024 * 1024)
                     if not chunk:
                         break
                     f.write(chunk)
                     done += len(chunk)
+                    last_ok = time.time()
                     if prog:
                         prog(done, total)
         if done == 0:
@@ -1382,6 +1393,28 @@ def _download_to_file(url: str, dest: Path, prog=None) -> None:
         os.replace(part, dest)
         return
     raise RuntimeError("下载重试仍失败：" + url)
+
+
+def _download_to_file(url: str, dest: Path, prog=None) -> None:
+    """双通道下载：GitHub 类目标走系统代理优先（直连常被重置），
+    hf-mirror 等镜像类目标直连优先（系统代理没开会 TLS 失败）。
+    两条通道都以 .part 断点续传为基础，切换通道不丢已下载进度。"""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    import urllib.parse
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    github = host == "github.com" or host.endswith(".github.com")
+    channels = (([_DL_OPENER_SYSTEM, "系统代理"], [_DL_OPENER_DIRECT, "直连"]) if github
+                else ([_DL_OPENER_DIRECT, "直连"], [_DL_OPENER_SYSTEM, "系统代理"]))
+    last_err = None
+    for opener, label in channels:
+        try:
+            _download_once(opener, url, dest, prog)
+            return
+        except Exception as e:
+            last_err = e
+            print("[models] 下载通道（%s）失败：%s: %s → 切换下一通道（已下载进度保留）"
+                  % (label, type(e).__name__, e), flush=True)
+    raise last_err
 
 
 def _model_installed(e: dict) -> bool:
