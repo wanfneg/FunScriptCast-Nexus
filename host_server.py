@@ -1298,11 +1298,10 @@ MODELS_CATALOG = [
         "kind": "zip",
         "dest_dir": APP_DIR / "vendor" / "llama",
         "size_gb": 0.8,
+        # 单文件发行（公开发行仓库 llama-runtime-windows.zip，内容=官方两 zip 解压合并）
         "files": [
-            {"rel": "llama-b11000-bin-win-cuda-12.4-x64.zip",
-             "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11000/llama-b11000-bin-win-cuda-12.4-x64.zip"},
-            {"rel": "cudart-llama-bin-win-cuda-12.4-x64.zip",
-             "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11000/cudart-llama-bin-win-cuda-12.4-x64.zip"},
+            {"rel": "llama-runtime-windows.zip",
+             "url": "https://github.com/wanfneg/FunScriptCast-Nexus-Release/releases/latest/download/llama-runtime-windows.zip"},
         ],
     },
     {
