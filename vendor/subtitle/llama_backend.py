@@ -72,7 +72,14 @@ class LlamaBackend:
         self.ngl = int(cfg.get("ngl", 99))
         self.threads = int(cfg.get("threads", max(1, (os.cpu_count() or 4) // 2)))
         self.wait_s = float(cfg.get("start_timeout_sec", 180))
-        self._log = Path(tempfile.gettempdir()) / f"llama_server_{self.port}.log"
+        # 日志放**安装目录** logs\（与宿主 host.log / 服务 run_server.log 同处）。
+        # 原先落 %TEMP%：排查翻译问题时没人想得到去那儿翻，而且那在系统盘上。
+        try:
+            import user_paths
+            _log_dir = Path(user_paths.logs_dir())
+        except Exception:
+            _log_dir = Path(tempfile.gettempdir())
+        self._log = _log_dir / f"llama_server_{self.port}.log"
         self._proc: subprocess.Popen | None = None
         self._job_handle = None      # Windows Job Object 句柄（父进程崩溃时带走子进程）
         # RLock 而不是 Lock：ensure_server（持锁）超时收尾会调 stop_server（也拿锁），

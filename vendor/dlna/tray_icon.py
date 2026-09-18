@@ -63,12 +63,21 @@ HWND_MESSAGE = -3
 
 
 def _tray_log(msg: str) -> None:
-    """托盘诊断日志（临时）：统一写到 %TEMP%，排查「托盘不出现」时可查。"""
+    """托盘诊断日志：写 `<安装目录>\\logs\\nexus_tray_debug.log`，排查「托盘不出现」时可查。
+
+    原先写 `%TEMP%`：那在系统盘上，而且用户/维护者不会想到去那儿翻（日志都集中在
+    `<安装目录>\\logs\\`）。取不到安装目录时才退回 %TEMP%。
+    """
     try:
         import datetime
         import os
 
-        p = os.path.join(os.environ.get("TEMP", "."), "nexus_tray_debug.log")
+        try:
+            import app_paths
+            d = str(app_paths.logs_dir())
+        except Exception:
+            d = os.environ.get("TEMP", ".")
+        p = os.path.join(d, "nexus_tray_debug.log")
         with open(p, "a", encoding="utf-8") as f:
             f.write(f"{datetime.datetime.now():%H:%M:%S} [tray_icon] {msg}\n")
     except Exception:
@@ -322,15 +331,8 @@ class TrayIcon:
                 _user32.DispatchMessageW(ctypes.byref(msg))
         except Exception as e:
             # 原来是静默 pass：托盘线程一旦异常退出，图标就无声消失、无处可查。
-            # 排查「托盘不出现」时应能看到这里的原因。
-            try:
-                import datetime
-                import os
-                p = os.path.join(os.environ.get("TEMP", "."), "nexus_tray_debug.log")
-                with open(p, "a", encoding="utf-8") as f:
-                    f.write(f"{datetime.datetime.now():%H:%M:%S} _message_loop 异常: {type(e).__name__}: {e}\n")
-            except Exception:
-                pass
+            # 排查「托盘不出现」时应能看到这里的原因。走 _tray_log（同一处日志）。
+            _tray_log(f"_message_loop 异常: {type(e).__name__}: {e}")
         finally:
             self._running = False
             self._cleanup()

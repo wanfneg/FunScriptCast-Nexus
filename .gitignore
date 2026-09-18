@@ -21,6 +21,9 @@ _runtime/
 /data/
 # 日志（宿主 host.log + 字幕服务 run_server.log 同处一处）
 /logs/
+# 运行时临时文件（子进程配置、VAD 转储、设备同步临时包、WebView2 profile）
+# 注意 data/webview 在 /data/ 之下，已被上面那条覆盖。
+/run/
 
 # 字幕缓存（运行时生成，不入库）
 /cache/

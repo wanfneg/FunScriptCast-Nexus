@@ -1523,3 +1523,44 @@ import 时**冻结成常量**，而 `whisper_backend` 是**惰性导入**的（`
 
 **未做**：真正的差分/在线更新（只下变化文件）需要自建 updater，Inno 无此能力；本次只把
 "升级是整包覆盖、但不碰数据与模型"这件事说清楚并加上版本防呆。
+
+## Round 51（2026-09-18）：把最后几处写 C 盘的地方也收进安装目录
+
+**用户指示**：① 不做真·增量/在线更新；② "用户指定安装就所有都安装到哪"——不加自动选盘，
+但**所有文件都必须跟着用户指定的安装目录走**。于是把还没跟上的地方全找出来改掉。
+
+R49 搬走了配置 / 术语表 / 设置 / DLNA 数据 / 模型缓存 / 日志这六类，本轮补的是**运行时
+临时文件**——它们此前默认落 `%TEMP%`（系统盘），看起来"只是临时"所以一直没被当成问题：
+
+| 原位置 | 内容 | 现在 |
+|---|---|---|
+| `%TEMP%\llama_server_*.log` | 本地翻译 llama-server 的日志 | `<安装目录>\logs\`（与 host.log / run_server.log 同处） |
+| `%TEMP%\audiocpp_asr_*.json` | audiocpp 子进程的启动配置（含安装路径/端口） | `<安装目录>\run\`（并顺带清理老版本落在 %TEMP% 的那份） |
+| `%TEMP%\vad_in_*.wav` / `.chunks.json` | VAD 音频转储（可能很大） | `<安装目录>\run\` |
+| `%TEMP%\nexus_tray_debug.log` | 托盘诊断日志 | `<安装目录>\logs\` |
+| `%TEMP%\funscript_sync_*.zip` | 设备同步的临时压缩包（几十 MB） | `<安装目录>\run\` |
+| `%TEMP%\<id>--<file>.zip` | **模型与 llama 运行时的下载包**（627MB~几个 GB） | `<安装目录>\models\_download\` |
+| pywebview 默认推导 | WebView2 profile（缓存/Cookie/LocalStorage） | `<安装目录>\data\webview\` |
+
+两条最要紧的：
+
+1. **下载暂存放 %TEMP% 是实打实的故障源**：一个 627MB 的 llama 运行时包、几个 GB 的模型包
+   要先在系统盘占位——C 盘紧的机器**直接下载失败**，而 %TEMP% 清理工具还可能删掉半截包
+   白下一遍。改到 `models\_download\`（断点续传的文件名与语义不变），还与解压目标同卷。
+2. **WebView2 profile 此前不受控**：`webview.start()` 没传 `storage_path`，落点由 pywebview
+   自己推导（`cache_dir = storage_path or os.path.join(data_folder, 'pywebview')` ⇒ 系统盘），
+   而且随库版本可能变。现在显式指到 `data\webview\`。
+
+新增两个目录概念，判据仍只写一份（`user_paths.run_dir()/download_dir()`，DLNA 侧同规则在
+`app_paths.py`）：`run\`（运行时临时，可随时删）、`models\_download\`（下载暂存）。
+`[InstallDelete]` 的保护清单同步加上 `run\`；README 的目录表与 .gitignore 一并更新。
+
+**验证**：编译全过；真实解析出的 6 个新路径全部落在安装目录；服务端到端
+（隔离数据目录 + :8764）`asr_backend=whisper`、`asr_ready=true`、词表 2096/2170，
+`run\` 按需创建；单测 14 项全过。全仓搜索确认仍写 `%TEMP%` 的只剩 4 处**有意保留**：
+user_paths 不可用时的兜底 ×2、清理旧版本 `%TEMP%` 遗留 ×1、托盘兜底 ×1。
+
+**唯一剩下的系统盘写入**：PyInstaller **单文件** EXE 每次启动把自身解到 `%TEMP%\_MEIxxxx`
+（约 35MB，退出即删）。这是打包形态决定的，代码管不了——要彻底消掉得改成 onedir
+（`_internal\` 目录形态），会动 `nexus.spec` + `build_exe` 的组装列表 + `setup.iss` 的
+`[Files]`/`[InstallDelete]`，且必须重编才能验证，故未在本轮动手。

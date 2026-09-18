@@ -292,7 +292,11 @@ class FunscriptSyncEngine:
 
         pushed = 0
         if to_send:
-            zip_local = os.path.join(tempfile.gettempdir(), f"funscript_sync_{uuid.uuid4().hex}.zip")
+            # 临时包放**安装目录** run\，不放 %TEMP%：包可能几十 MB，而 %TEMP% 在系统盘上
+            # （装到 D 盘的用户往往正是 C 盘紧张）；同卷还能省一次跨盘拷贝。
+            import app_paths
+            zip_local = os.path.join(str(app_paths.run_dir()),
+                                     f"funscript_sync_{uuid.uuid4().hex}.zip")
             try:
                 self._emit("打包中（Fastest 压缩）...")
                 with _open_zip_fastest(zip_local) as zf:

@@ -49,6 +49,19 @@ AUDIOCPP_LANG = {"ja": "Japanese", "en": "English", "zh": "Chinese",
 STREAM_MODEL_ID = "qwen3-asr-stream"
 
 
+def _run_dir() -> Path:
+    """运行时临时目录 `<安装目录>\\run`（子进程配置、VAD 转储）。
+
+    原先一律落 `%TEMP%`——那在系统盘上，而 VAD 转储的 wav 可能很大（整块音频），
+    装到 D 盘的用户往往正是 C 盘紧张。规则见 user_paths.run_dir()；取不到才退回 %TEMP%。
+    """
+    try:
+        import user_paths
+        return Path(user_paths.run_dir())
+    except Exception:
+        return Path(tempfile.gettempdir())
+
+
 class AudioCppError(RuntimeError):
     pass
 
@@ -222,7 +235,7 @@ class AudioCppBackend:
             exe = self.exe_dir / "audiocpp_server.exe"
             if not exe.exists():
                 raise AudioCppError(f"找不到 audiocpp_server.exe：{exe}")
-            cfg_path = Path(tempfile.gettempdir()) / f"audiocpp_asr_{self.port}.json"
+            cfg_path = _run_dir() / f"audiocpp_asr_{self.port}.json"
             cfg_path.write_text(json.dumps({
                 "host": self.host, "port": self.port,
                 "backend": "cuda" if self.backend != "cpu" else "cpu",
@@ -379,13 +392,15 @@ class AudioCppBackend:
             # 真正关闭 Job 句柄（旧实现只是置 None → 每次启停泄漏一个内核句柄）。
             # 句柄是最后一个引用时 KILL_ON_JOB_CLOSE 生效，顺带保证子进程被带走。
             self._close_job_handle()
-            # 启动时写的 %TEMP%\audiocpp_asr_{port}.json 含安装路径/端口，旧实现
-            # 从不删除：长期残留，且换端口后每次多留一份。
-            try:
-                (Path(tempfile.gettempdir())
-                 / f"audiocpp_asr_{self.port}.json").unlink(missing_ok=True)
-            except OSError as e:
-                print(f"[asr] 清理临时配置失败（忽略）：{type(e).__name__}: {e}", flush=True)
+            # 启动时写的 audiocpp_asr_{port}.json 含安装路径/端口，旧实现从不删除：
+            # 长期残留，且换端口后每次多留一份。现在写在 <安装目录>\run\ 下，顺带把
+            # 老版本落在 %TEMP% 的那份也清掉（升级后不会自己消失）。
+            for _p in (_run_dir() / f"audiocpp_asr_{self.port}.json",
+                       Path(tempfile.gettempdir()) / f"audiocpp_asr_{self.port}.json"):
+                try:
+                    _p.unlink(missing_ok=True)
+                except OSError as e:
+                    print(f"[asr] 清理临时配置失败（忽略）：{type(e).__name__}: {e}", flush=True)
 
     # ------------------------------------------------------------ 错误脱敏
     @staticmethod
@@ -424,7 +439,7 @@ class AudioCppBackend:
         这个类别（全文含路径/用户名，见 _error_kind）。
         """
         exe = self.exe_dir / "audiocpp_cli.exe"
-        d = Path(tmpdir or tempfile.gettempdir())
+        d = Path(tmpdir) if tmpdir else _run_dir()
         # 临时文件名带线程 id：并发时同 pid 同毫秒会互覆
         wav_in = d / f"vad_in_{os.getpid()}_{threading.get_ident()}_{int(time.time()*1000)}.wav"
         out_json = wav_in.with_suffix(".chunks.json")
@@ -576,7 +591,7 @@ class AudioCppBackend:
         t0 = time.perf_counter()
         seg_cfg = seg_cfg or {}
         min_ms = int((vad_cfg or {}).get("min_speech_ms", self.min_speech_ms))
-        d = Path(tmpdir or tempfile.gettempdir())
+        d = Path(tmpdir) if tmpdir else _run_dir()
 
         spans = self.speech_spans(pcm, tmpdir=d)
         if spans is None:

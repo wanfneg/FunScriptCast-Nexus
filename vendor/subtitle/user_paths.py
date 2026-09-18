@@ -92,6 +92,38 @@ def logs_dir() -> Path:
     return _ROOT / "logs"
 
 
+def run_dir() -> Path:
+    """运行时临时目录：`<安装目录>\\run`（子进程配置、音频转储、同步临时包）。
+
+    **为什么不放 %TEMP%**：%TEMP% 在系统盘上。装到 D 盘的用户往往正是因为 C 盘紧张，
+    而这些临时文件可能很大（VAD 转储的 wav、设备同步的 zip）。放安装目录里还有个好处：
+    同一卷上 rename 是瞬时的，跨卷搬运要真拷一遍。
+    内容随时可删（进程停掉后没有需要保留的东西）。
+    """
+    d = _ROOT / "run"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def download_dir() -> Path:
+    """下载暂存目录：`<安装目录>\\models\\_download`。
+
+    模型与 llama 运行时的压缩包**先落这里再解压**。此前落 `%TEMP%`：一个 627MB 的
+    llama 运行时包、几个 GB 的模型包都要先在系统盘上占位——C 盘小的机器会直接下载失败，
+    而 %TEMP% 的清理工具还可能删掉半截包、白下。放目标盘上还与解压目标同卷。
+    支持断点续传：文件名固定（见 host_server 的 `id_--rel`），重启后接着下。
+    """
+    d = models_dir() / "_download"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
 def hf_cache_dir() -> Path:
     """HF 缓存根：`<安装目录>\\models\\hf-cache`。
 

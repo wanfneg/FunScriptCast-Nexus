@@ -125,13 +125,23 @@ FunScriptCast-Nexus\
 <安装目录>\
 ├── FunScriptCast-Nexus.exe
 ├── data\      ← 你的数据：subtitle_config.json（云端 key / 参数）、glossary_*.json（术语表）、
-│                integrated_settings.json（DLNA 共享目录等）、vr_dlna_*.json
+│                integrated_settings.json（DLNA 共享目录等）、vr_dlna_*.json、webview\（界面 profile）
 ├── models\    ← 模型：ASR + 翻译 GGUF + hf-cache\（whisper 兜底模型约 1.4 GB）
-├── logs\      ← host.log（宿主）+ run_server.log（字幕服务）
+│                _download\（下载暂存，装完可删）
+├── logs\      ← host.log（宿主）+ run_server.log（字幕服务）+ llama_server_*.log + 托盘诊断
 ├── cache\     ← 字幕/翻译缓存（可再生）
+├── run\       ← 运行时临时文件：子进程配置、VAD 转储、设备同步临时包（可随时删）
 ├── ui\ vendor\ tools\ runtime\     ← 程序
 └── vendor\llama\                   ← llama.cpp 运行时（约 1.1 GB，首次用到时下载）
 ```
+
+**C 盘一个字节都不落。** 连本该在 `%TEMP%` 的东西（子进程配置、VAD 转储、同步临时包、
+下载暂存、WebView2 界面 profile、llama 日志）都指到安装目录里——因为 `%TEMP%` 在系统盘上，
+而装到 D 盘的用户往往正是因为 C 盘紧张；模型/运行时的压缩包更是要先在这儿占几个 GB，
+落在系统盘会直接下载失败。放安装目录还有个好处：与解压目标同卷，省一次跨盘拷贝。
+
+> 唯一的例外是 **PyInstaller 单文件 EXE 每次启动往 `%TEMP%` 解包自己**（约 35 MB，退出即删）
+> ——那是打包形态决定的，不由代码控制。要彻底消掉需改成单目录（onedir）形态。
 
 | 想要 | 怎么做 |
 |---|---|

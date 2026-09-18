@@ -45,6 +45,29 @@ def data_dir() -> Path:
     return d
 
 
+def logs_dir() -> Path:
+    """日志目录 `<安装目录>\\logs`（与 Nexus 其余日志同处，规则同 user_paths.py）。"""
+    d = app_root() / "logs"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def run_dir() -> Path:
+    """运行时临时目录 `<安装目录>\\run`（设备同步用的临时 zip 等，随时可删）。
+
+    不放 `%TEMP%`：那在系统盘上，而同步包可能几十 MB；装到 D 盘的用户往往正是 C 盘紧张。
+    """
+    d = app_root() / "run"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
 def _migrate_legacy(dst_dir: Path) -> None:
     """旧位置 → `data\\`：只搬 `*.json`（设置与两个 sync 的配置），日志留在原地。
 

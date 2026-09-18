@@ -74,9 +74,9 @@ Name: "autostart"; Description: "开机自动启动 FunScriptCast-Nexus（当前
 [InstallDelete]
 ; 升级安装必须清掉"上一版有、这一版不再分发"的旧文件（坑 #20 同族：Inno 只覆盖同名文件，
 ; 从不删多余文件，于是升级完行为还是旧的）。**只删代码**：
-;   · `{app}\data`、`{app}\logs`、`{app}\models`、`{app}\cache` **一个字都不碰** ——
-;     那是运行数据与模型，删了就是把用户的 key / 术语表 / 共享目录 / 下好的模型清空。
-;     （所以这一节里永远不出现 data\、logs\、models\、cache\。）
+;   · `{app}\data`、`{app}\logs`、`{app}\models`、`{app}\cache`、`{app}\run` **一个字都不碰**
+;     —— 那是运行数据、模型与运行时临时文件，删了就是把用户的 key / 术语表 / 共享目录 /
+;     下好的模型清空。（所以这一节里永远不出现 data\、logs\、models\、cache\、run\。）
 ;   · `vendor\subtitle` 里只逐项删**代码**（*.py/*.pyc/*.md/*.txt/*.bat 与 docs/tools/
 ;     __pycache__ 目录）：历史上配置与词表就跟 .py 混在这个目录里，整目录删除曾等于把
 ;     词库和 key 一起清空（P0-2 事故的安装包版本）。R49 起数据已搬进 `data\`，这里更安全。

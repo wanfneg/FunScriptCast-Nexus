@@ -242,14 +242,28 @@ def data_dir() -> Path:
     return Path(os.environ.get("NEXUS_USER_DIR") or (APP_DIR / "data"))
 
 
+def _sub_path(fn: str, fallback: Path) -> Path:
+    """问 user_paths 要一个目录，问不到就用同口径兜底（打包版万一没带 user_paths.py）。"""
+    up = _user_paths_mod()
+    if up is not None:
+        try:
+            return Path(getattr(up, fn)())
+        except Exception:
+            pass
+    try:
+        fallback.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return fallback
+
+
+def _download_dir() -> Path:
+    """模型/运行时压缩包的暂存目录（见 user_paths.download_dir 的说明）。"""
+    return _sub_path("download_dir", MODELS_DIR / "_download")
+
+
 DATA_DIR = data_dir()
-LOGS_DIR = APP_DIR / "logs"
-try:                                # 日志规则也只在 user_paths 里写一份
-    _up_logs = _user_paths_mod()
-    if _up_logs is not None:
-        LOGS_DIR = Path(_up_logs.logs_dir())
-except Exception:
-    pass
+LOGS_DIR = _sub_path("logs_dir", APP_DIR / "logs")   # 日志规则也只在 user_paths 里写一份
 
 # HF 缓存（whisper 兜底模型约 1.4GB）也必须在安装目录里，否则装到 D 盘也压 C 盘。
 # **必须在 import huggingface_hub 之前设**（hub 在 import 时把缓存路径读成常量）。
@@ -1547,9 +1561,11 @@ def _model_dl_worker(e: dict) -> None:
             # 运行时形态：下载一个或多个 zip（进度按文件数折算，留 5% 给解压）→
             # 全部解压合并到目标目录 → 校验关键文件
             import zipfile
-            import tempfile
             n = max(1, len(e["files"]))
-            tmpdir = Path(tempfile.gettempdir())
+            # 暂存放**安装目录**（<安装目录>\models\_download），不放 %TEMP%：一个 627MB 的
+            # llama 运行时包、几个 GB 的模型包都要先在这儿占位，落系统盘会让 C 盘紧的机器
+            # 直接下载失败；放目标盘还与解压目标同卷。规则见 user_paths.download_dir()。
+            tmpdir = _download_dir()
             zpaths = []
             for i, f in enumerate(e["files"]):
                 tmp = tmpdir / (id_ + "--" + f["rel"])
@@ -3103,8 +3119,13 @@ def run(open_window: bool = True) -> None:
     else:
         log.warning("托盘启动失败，关闭窗口时将降级为最小化到任务栏")
 
+    # storage_path：**必须显式给**，不能让 pywebview 用它的默认值。WebView2 的用户数据
+    # 目录（profile：缓存/Cookie/LocalStorage）由它决定，默认推导出来是在系统盘的
+    # `%LOCALAPPDATA%\pywebview`（见 pywebview winforms 的
+    # `cache_dir = storage_path or os.path.join(data_folder, 'pywebview')`）——装到 D 盘
+    # 也照样往 C 盘写，而且落点随库版本变。指到安装目录下就与其它数据同一处寿命。
     try:
-        webview.start(debug=False)
+        webview.start(debug=False, storage_path=str(DATA_DIR / "webview"))
     except Exception as e:
         log.error("webview.start 失败：%s", e)
         raise
