@@ -65,7 +65,9 @@ if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
 if __name__ == "__main__":
-    cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+    # 与 server_app 同一个解析（用户数据目录优先），否则这里读到的端口可能与服务实际用的一致不了
+    import user_paths
+    cfg = user_paths.load_config(BASE)
     srv = cfg.get("server", {})
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default=srv.get("host", "0.0.0.0"))

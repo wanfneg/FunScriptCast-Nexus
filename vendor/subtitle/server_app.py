@@ -36,9 +36,16 @@ from asr_engine import AsrEngine
 from glossary import Glossary
 from whisper_fallback import WhisperFallback
 from translate_engine import Translator
+import user_paths
 
 BASE = Path(__file__).resolve().parent
-CFG = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+# 配置从**用户数据目录**读（首次运行自动从安装目录迁移，见 user_paths 模块注释）。
+# 安装目录里那份从此只是模板：升级覆盖它不再影响用户的 key/术语表。
+CFG = user_paths.load_config(BASE)
+# 术语表也按用户数据目录解析（config 的 glossary 段只写文件名，这里换 base_dir 即可）
+USER_DIR = user_paths.user_dir()
+for _n in user_paths.GLOSSARY_NAMES:
+    user_paths.glossary_path(BASE, _n)
 
 
 def _code_signature() -> str:
@@ -242,7 +249,7 @@ def _make_asr(cfg: dict, glossary):
 @asynccontextmanager
 async def lifespan(_app):
     _gl_cfg = CFG.get("glossary", {}) or {}
-    state["glossary"] = Glossary(_gl_cfg, base_dir=BASE, extra=_gl_cfg.get("extra"))
+    state["glossary"] = Glossary(_gl_cfg, base_dir=USER_DIR, extra=_gl_cfg.get("extra"))
     state["asr"] = _make_asr(CFG.get("asr", {}), state["glossary"])
     state["translator"] = Translator(CFG.get("translate", {}), state["glossary"])
     print(f"[server] 管线代码签名 code_sig={CODE_SIG}（陈旧实例排障用）", flush=True)
@@ -395,8 +402,17 @@ def glossary_reload():
     """
     g = state["glossary"]
     try:
-        cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+        # 走与启动同一个解析（用户数据目录优先），否则这里会读到安装目录的模板、
+        # 把用户刚存的开关值覆盖回默认
+        cfg = user_paths.load_config(BASE)
         g.set_enabled(bool((cfg.get("glossary") or {}).get("enabled", True)))
+    except Exception:
+        pass
+    # 流式路径有自己那份 Glossary 实例（懒加载，见 stream_bridge），开关必须显式同步过去
+    # ——否则"总开关关了、流式路径还在套术语"，同进程两套实例的既有设计留下的缝。
+    try:
+        from stream_bridge import sync_glossary_enabled
+        sync_glossary_enabled(g.enabled)
     except Exception:
         pass
     changed = g.reload(force=True)

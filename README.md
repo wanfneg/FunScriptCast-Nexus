@@ -107,7 +107,7 @@ FunScriptCast-Nexus\
 │   ├── translate_engine.py 翻译调度（local / ollama / openai 三种可插拔后端）
 │   ├── llama_backend.py    本地翻译模型：按需拉起并复用 llama-server（直读 GGUF）
 │   ├── glossary.py         术语表（mtime 热加载）
-│   └── config.json         ASR / VAD / 分段 / 翻译配置
+│   └── config.json         出厂模板（你的配置在 %APPDATA%，见下节）
 ├── vendor\llama\           llama.cpp（llama-server.exe + CUDA 运行时，约 1.1 GB）
 ├── models\                 安装目录模型：ASR 约 8 GB + 翻译 Sakura GGUF 约 5 GB
 ├── .venv\                  5.0 GB：torch(cu128) + transformers + fastapi + pywebview
@@ -115,6 +115,31 @@ FunScriptCast-Nexus\
 ├── tools\make_icon.py      生成托盘 / 窗口图标（icon.ico + png 多尺寸）
 └── tests\                  自动化测试（ui_check.js / test_tray_run.py / test_frameless.py）
 ```
+
+## 用户数据在哪（升级 / 重装 / 复位）
+
+**安装目录里只有程序，没有你的数据。** 会变的东西全在 `%APPDATA%\FunScriptCast-Nexus\`：
+
+| 位置 | 内容 | 删掉会怎样 |
+|---|---|---|
+| `%APPDATA%\FunScriptCast-Nexus\` | `subtitle_config.json`（云端 key / 参数）、`glossary_*.json`（术语表）、`integrated_settings.json`（DLNA 共享目录等）、`logs\` | 等于**恢复出厂**：key、术语表、共享目录一起没 |
+| `%APPDATA%\VR-DLNA\` | DLNA 运行数据 | 同上（DLNA 侧） |
+| `%USERPROFILE%\.cache\huggingface\hub` | whisper 兜底模型（约 1.4 GB） | 下次用到时重新下载 |
+| `{安装目录}\` | 程序本体、`vendor\llama`（1.1 GB 运行时）、`models\` | 删掉重装，**数据不受影响** |
+
+由此：
+
+- **升级 / 覆盖安装**：数据保留（安装包对这几样一律 `onlyifdoesntexist`，从不覆盖已有文件）。
+- **删掉安装目录再重装**：数据**仍然在**——这是设计如此，不是没删干净。
+- **真想复位**：关掉程序，删 `%APPDATA%\FunScriptCast-Nexus\`。这是唯一的复位入口。
+- **老版本升上来**：数据还在安装目录里的，首次运行会**自动迁移**到上面这个位置
+  （key 与术语表都带过去，原文件留在原处不动，日志打 `[paths] 已迁移用户数据：…`）。
+
+配置请走界面改（AI 字幕 → 翻译设置 → 保存），或直接编辑上面那个 `subtitle_config.json`。
+安装目录里那份 `vendor\subtitle\config.json` 只是**出厂模板**（全新安装的种子），改它不影响运行。
+
+> 一个必须记住的约定：用户配置是**首次运行时的快照**，之后不再随版本更新。
+> 所以新增配置键**必须在代码里带默认值**（`cfg.get("新键", 默认)`），不能指望模板传下去。
 
 ## 架构
 

@@ -61,11 +61,35 @@ if str(_SUB_DIR) not in sys.path:
     sys.path.insert(0, str(_SUB_DIR))
 
 CFG_PATH = _SUB_DIR / "config.json"
-CFG: dict = json.loads(CFG_PATH.read_text(encoding="utf-8")) if CFG_PATH.exists() else {}
+# 与 server_app 同源：用户数据目录优先（首次运行自动迁移），安装目录那份只是模板。
+# 两条路径若各读各的，用户在界面上改的配置对这条路径就不生效。
+import user_paths  # noqa: E402  （同目录，_SUB_DIR 已进 sys.path）
+
+CFG: dict = user_paths.load_config(_SUB_DIR)
+# 术语表 base_dir 也换到用户数据目录（config 的 glossary 段只写文件名）
+USER_DIR = user_paths.user_dir()
+for _n in user_paths.GLOSSARY_NAMES:
+    user_paths.glossary_path(_SUB_DIR, _n)
 
 _translator = None
 _glossary = None
 _translator_lock = threading.Lock()   # 并发首个请求同时懒加载时只建一份
+
+
+def sync_glossary_enabled(enabled: bool) -> None:
+    """把术语表总开关同步到本模块**自己那份** Glossary 实例。
+
+    `/glossary/reload` 原先只调 server_app 的 `state["glossary"]`，而流式路径懒加载的是
+    这里另一份实例，`enabled` 就冻结在首次流式翻译请求那一刻——用户在界面上把开关关掉，
+    离线路径立刻停注入，流式路径却继续套术语，直到重启服务。两边实例分开是既有设计
+    （懒加载 + 不拖慢启动），但开关必须显式同步过来。
+    """
+    g = _glossary
+    if g is not None:
+        try:
+            g.set_enabled(bool(enabled))
+        except Exception as exc:
+            print(f"[bridge] 同步术语表开关失败：{exc}", flush=True)
 
 
 def _get_translator():
@@ -78,7 +102,7 @@ def _get_translator():
             from glossary import Glossary          # type: ignore
             from translate_engine import Translator  # type: ignore
 
-            _glossary = Glossary(CFG.get("glossary", {}), base_dir=_SUB_DIR)
+            _glossary = Glossary(CFG.get("glossary", {}), base_dir=USER_DIR)
             _translator = Translator(CFG.get("translate", {}), _glossary)
             print("[bridge] translator ready", flush=True)
         except Exception as exc:  # 翻译不可用时也不能让字幕整段空白

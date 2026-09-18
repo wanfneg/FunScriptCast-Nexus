@@ -19,6 +19,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -105,6 +106,17 @@ def main() -> int:
     ap.add_argument("--video", choices=["sivr001", "sivr002"], default="sivr001")
     ap.add_argument("--keep-service", action="store_true")
     args = ap.parse_args()
+
+    # 用户数据隔离：字幕服务现在把 config.json / 术语表放在用户数据目录
+    # （%APPDATA%\FunScriptCast-Nexus，见 vendor/subtitle/user_paths.py），首次运行会从
+    # 安装目录"迁移"一份过去。评测**必须**用自己的临时目录，两个理由：
+    #   ① 评测要可复现 —— 读真实用户配置会让同一份代码测出不同结果；
+    #   ② 更危险的是顺序：评测若先跑，会拿仓库模板（api_key 为空）建出用户配置，
+    #      宿主之后再来迁移就会因"目标已存在"而跳过 —— 开发机真实的那把 key 就丢了。
+    # 子进程通过 env=dict(os.environ) 继承本变量。
+    _iso = Path(tempfile.mkdtemp(prefix="nexus-eval-"))
+    os.environ["NEXUS_USER_DIR"] = str(_iso)
+    print(f"[eval] 用户数据隔离目录：{_iso}")
 
     pcm_src = PCM if args.video == "sivr001" else PCM2
     srt_src = SRT if args.video == "sivr001" else SRT2

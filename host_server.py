@@ -182,6 +182,52 @@ def _video_identity(path: str) -> dict:
         return {"path": str(p), "size": 0, "mtime": 0}
 
 
+# ---------------------------------------------------------------- 用户数据路径
+# 会变的用户数据（config.json / 术语表）一律落 `%APPDATA%\FunScriptCast-Nexus\`，与
+# integrated_settings.json 同处一个目录：**一处、一个寿命、一个清理入口**；安装目录里那份
+# 从此只是模板/出厂基线，升级覆盖它不再影响用户的 key 与词表。
+#
+# 为什么必须这样：用户数据放安装目录会同时造成三个症状——① 删目录重装丢 key 与词表，
+# 而 %APPDATA% 里的设置还在（用户看到"半重置"）；② 升级安装的 [Files] 整树覆盖把 key
+# 与词表换成打包机副本；③ sync_distapp / build_exe / build_installer 都得给这两样写
+# "摘出→回填"的特例。规则**只写一份**，在 `vendor\subtitle\user_paths.py`（服务端也 import 它）。
+def _user_paths_mod():
+    """懒加载 user_paths（服务端同款规则）。失败则回退安装目录，不影响宿主起来。"""
+    try:
+        if str(SUBTITLE_DIR) not in sys.path:
+            sys.path.insert(0, str(SUBTITLE_DIR))
+        import user_paths
+        return user_paths
+    except Exception as e:
+        log.warning("用户数据路径模块不可用（回退安装目录）：%s", e)
+        return None
+
+
+def subtitle_cfg_path() -> Path:
+    """字幕服务配置文件：用户数据目录优先，缺失时是安装目录模板（只读兜底）。"""
+    up = _user_paths_mod()
+    if up is not None:
+        try:
+            return up.config_path(SUBTITLE_DIR)
+        except Exception:
+            pass
+    return SUBTITLE_DIR / "config.json"
+
+
+def subtitle_glossary_path(lang: str) -> "Path | None":
+    """术语表：用户数据目录优先（首次调用会从出厂基线迁移一份），缺失时回退安装目录。"""
+    fname = GLOSSARY_FILES.get(lang)
+    if not fname:
+        return None
+    up = _user_paths_mod()
+    if up is not None:
+        try:
+            return up.glossary_path(SUBTITLE_DIR, fname)
+        except Exception:
+            pass
+    return SUBTITLE_DIR / fname
+
+
 def _config_fingerprint() -> str:
     """ASR 模型 + 分段/VAD 配置 + 翻译配置 + 两张术语表 + **管线源码**的指纹。
 
@@ -190,7 +236,7 @@ def _config_fingerprint() -> str:
     "当基线加载"，且跨引擎换用的旧译文也不会失效。"""
     parts: list = []
     try:
-        cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+        cfg = json.loads(subtitle_cfg_path().read_text(encoding="utf-8"))
         parts.append(json.dumps({"asr": cfg.get("asr"), "vad": cfg.get("vad"),
                                  "segment": cfg.get("segment"),
                                  "translate": cfg.get("translate")},
@@ -206,7 +252,7 @@ def _config_fingerprint() -> str:
     except Exception:
         parts.append("code:missing")
     for lang, fname in GLOSSARY_FILES.items():
-        f = SUBTITLE_DIR / fname
+        f = subtitle_glossary_path(lang) or (SUBTITLE_DIR / fname)
         try:
             parts.append(f"{lang}:{hashlib.sha256(f.read_bytes()).hexdigest()[:16]}")
         except Exception:
@@ -887,7 +933,7 @@ def sub_start() -> dict:
             # 模型由 config.json 决定（服务端会把相对路径按自身目录解析），
             # 所以这里只在 config 完全没写模型时才兜底注入绝对路径。
             try:
-                _cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+                _cfg = json.loads(subtitle_cfg_path().read_text(encoding="utf-8"))
                 _m = str((_cfg.get("asr") or {}).get("model") or "").strip()
             except Exception:
                 _m = ""
@@ -1057,7 +1103,7 @@ def _kill_tree(pid: int) -> None:
 def _audiocpp_port() -> int:
     """audiocpp 后端端口，从字幕服务配置里读（读不到用 8083）。"""
     try:
-        cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+        cfg = json.loads(subtitle_cfg_path().read_text(encoding="utf-8"))
         return int((cfg.get("asr") or {}).get("audiocpp", {}).get("port") or 8083)
     except Exception:
         return 8083
@@ -1206,7 +1252,7 @@ def _configured_translate_backend() -> str:
     3 秒档的建议——那正是要防的那个结构性追不上的坑。
     """
     try:
-        cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+        cfg = json.loads(subtitle_cfg_path().read_text(encoding="utf-8"))
         return str((cfg.get("translate") or {}).get("backend") or "")
     except Exception:
         return ""
@@ -1508,7 +1554,7 @@ def _model_dl_worker(e: dict) -> None:
         # （闭环缺口：用户下了 1.5B 轻量版，config 仍指向 7B，翻译依旧"找不到文件"）
         if e.get("role") == "translate":
             try:
-                cfg = json.loads((SUBTITLE_DIR / "config.json").read_text(encoding="utf-8"))
+                cfg = json.loads(subtitle_cfg_path().read_text(encoding="utf-8"))
                 cur = str(((cfg.get("translate") or {}).get("local") or {}).get("model") or "")
                 cur_path = Path(cur)
                 if cur and not cur_path.is_absolute():
@@ -2035,7 +2081,7 @@ def subtitle_models() -> dict:
 
 
 def subtitle_config() -> dict:
-    cfg_file = SUBTITLE_DIR / "config.json"
+    cfg_file = subtitle_cfg_path()
     try:
         cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
     except Exception as e:
@@ -2051,7 +2097,7 @@ def save_subtitle_config(patch: dict) -> dict:
       会把同组的 api_key_env/temperature/max_tokens 一起覆盖掉。
     · 打码过的 api_key（空串或含 *）不会写回，避免把掩码存进配置。
     """
-    cfg_file = SUBTITLE_DIR / "config.json"
+    cfg_file = subtitle_cfg_path()
     try:
         patch = _strip_masked_keys(patch or {})
         with _SUBTITLE_FILE_LOCK:
@@ -2090,8 +2136,8 @@ GLOSSARY_FILES = {"ja": "glossary_ja_zh.json", "en": "glossary_en_zh.json"}
 
 
 def glossary_file(lang: str) -> "Path | None":
-    fname = GLOSSARY_FILES.get(lang)
-    return (SUBTITLE_DIR / fname) if fname else None
+    """术语表文件路径（用户数据目录优先；首次调用会从出厂基线迁移一份过来）。"""
+    return subtitle_glossary_path(lang)
 
 
 def glossary_payload() -> dict:
@@ -2828,6 +2874,17 @@ def run(open_window: bool = True) -> None:
     _create_app_mutex()
     _migrate_settings()          # 先把历史设置里带引号的路径修掉，再读
     s = load_settings()
+    # 用户数据迁移（legacy 安装目录 → %APPDATA%）**必须在任何读取之前显式跑一遍**：
+    # 宿主是安装后第一个起来的进程，此刻 dist-app 里的 config.json 还带着用户的云端 key；
+    # 一旦被谁先按"模板"读走并写出空 key 的用户配置，后续迁移就会因"目标已存在"而跳过，
+    # key 就真丢了。
+    try:
+        up = _user_paths_mod()
+        if up is not None:
+            info = up.ensure_user_data(SUBTITLE_DIR)
+            log.info("用户数据目录：%s（配置 %s）", info["dir"], info["config"].name)
+    except Exception as e:
+        log.warning("用户数据迁移失败（继续用安装目录）：%s", e)
 
     # 单实例：已经在跑就唤起它的窗口并退出，不再起第二个进程。
     #

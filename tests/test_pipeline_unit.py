@@ -297,6 +297,110 @@ def t_model_downloader():
     srv.shutdown()
 
 
+# 9 --------------------------------- 用户数据迁移（根治"删目录重装丢 key"）
+def t_user_data_migration():
+    """legacy 安装目录 → 用户数据目录的迁移：key 与词表都要带过去，且用户数据优先。
+
+    这条守的是本次根治的根因（见 vendor/subtitle/user_paths.py 模块注释）：
+    用户数据放安装目录会同时造成"删目录重装丢 key / 升级安装覆盖 key 与词表 /
+    工具链一堆摘出回填特例"。测试覆盖四种情形：
+      ① 首次运行：legacy 的 key 与词表被迁移到用户目录；
+      ② 迁移后用户数据优先：改用户那份，不会被 legacy 覆盖回去；
+      ③ 全新安装：legacy 有模板 → 由模板建出用户配置；
+      ④ legacy 什么都没有：回退读 legacy 路径（不抛异常）；
+      ⑤ **删安装目录重装**：新装的出厂模板不得覆盖已有用户数据（用户实际报的场景）；
+      ⑥ 补救扫描：用户目录被空 key 模板播过种时，安装目录里的真实 key 仍要能进来（只跑一次）。
+    """
+    import json as _json
+    import os as _os
+    import tempfile as _tf
+
+    import user_paths as up
+
+    legacy = Path(_tf.mkdtemp(prefix="nexus-legacy-"))
+    user = Path(_tf.mkdtemp(prefix="nexus-user-"))
+    (legacy / "config.json").write_text(
+        _json.dumps({"translate": {"openai": {"api_key": "sk-SECRET"}}}), encoding="utf-8")
+    (legacy / "glossary_ja_zh.json").write_text(
+        _json.dumps({"悠亜": "悠亚"}), encoding="utf-8")
+
+    old = _os.environ.get("NEXUS_USER_DIR")
+    _os.environ["NEXUS_USER_DIR"] = str(user)
+    try:
+        # ① 迁移：key 与词表都带过来
+        cfg = up.load_config(legacy)
+        assert cfg["translate"]["openai"]["api_key"] == "sk-SECRET", "迁移必须保住 key"
+        assert (user / "subtitle_config.json").is_file(), "配置应落到用户数据目录"
+        g = up.glossary_path(legacy, "glossary_ja_zh.json")
+        assert g.parent == user and g.is_file(), "词表也要迁到用户数据目录"
+
+        # ② 用户数据优先：改用户那份，不会被 legacy 覆盖
+        (user / "subtitle_config.json").write_text(
+            _json.dumps({"translate": {"openai": {"api_key": "sk-NEW"}}}), encoding="utf-8")
+        assert up.load_config(legacy)["translate"]["openai"]["api_key"] == "sk-NEW"
+
+        # ③ 全新安装：legacy 是模板 → 由它建出用户配置
+        legacy2 = Path(_tf.mkdtemp(prefix="nexus-legacy2-"))
+        (legacy2 / "config.json").write_text('{"server": {"port": 8756}}', encoding="utf-8")
+        user2 = Path(_tf.mkdtemp(prefix="nexus-user2-"))
+        _os.environ["NEXUS_USER_DIR"] = str(user2)
+        assert up.load_config(legacy2)["server"]["port"] == 8756
+        assert (user2 / "subtitle_config.json").is_file()
+
+        # ④ legacy 什么都没有：回退到 legacy 路径，不抛
+        empty = Path(_tf.mkdtemp(prefix="nexus-empty-"))
+        _os.environ["NEXUS_USER_DIR"] = str(Path(_tf.mkdtemp(prefix="nexus-user3-")))
+        assert up.config_path(empty) == empty / "config.json"
+
+        # ⑤ 用户报的那个场景：**删掉整个安装目录再重装**。新装的 legacy 里只有出厂
+        #    模板（key 为空、词表为空），已有用户数据绝不能被这份模板覆盖回去——
+        #    这正是根治要保证的性质，也是「重装后数据还在」从"意外"变成"设计"的那一步。
+        user4 = Path(_tf.mkdtemp(prefix="nexus-user4-"))
+        _os.environ["NEXUS_USER_DIR"] = str(user4)
+        inst_a = Path(_tf.mkdtemp(prefix="nexus-instA-"))
+        (inst_a / "config.json").write_text(
+            _json.dumps({"translate": {"openai": {"api_key": "sk-KEEP"}}}), encoding="utf-8")
+        (inst_a / "glossary_ja_zh.json").write_text(
+            _json.dumps({"悠亜": "悠亚"}), encoding="utf-8")
+        assert up.load_config(inst_a)["translate"]["openai"]["api_key"] == "sk-KEEP"
+
+        inst_b = Path(_tf.mkdtemp(prefix="nexus-instB-"))   # 重装后的安装目录
+        (inst_b / "config.json").write_text(
+            _json.dumps({"translate": {"openai": {"api_key": ""}}}), encoding="utf-8")
+        (inst_b / "glossary_ja_zh.json").write_text("{}", encoding="utf-8")
+        assert up.load_config(inst_b)["translate"]["openai"]["api_key"] == "sk-KEEP", \
+            "重装后出厂模板不得覆盖用户数据目录里的 key"
+        g2 = up.glossary_path(inst_b, "glossary_ja_zh.json")
+        assert g2.parent == user4 and _json.loads(g2.read_text(encoding="utf-8")) == {"悠亜": "悠亚"}, \
+            "重装后出厂空词表不得覆盖用户已攒的词表"
+
+        # ⑥ 补救扫描（本机真实踩到过的情形）：用户目录已被**空 key 的模板**播过种，
+        #    安装目录里那份有真实 key。先到先得的迁移永远轮不到它 ⇒ 必须有一次性补救，
+        #    且被覆盖的那份要留备份；补救**只跑一次**，之后回到简单的先到先得。
+        user5 = Path(_tf.mkdtemp(prefix="nexus-user5-"))
+        _os.environ["NEXUS_USER_DIR"] = str(user5)
+        (user5 / "subtitle_config.json").write_text(
+            _json.dumps({"translate": {"openai": {"api_key": ""}}}), encoding="utf-8")
+        inst_c = Path(_tf.mkdtemp(prefix="nexus-instC-"))
+        (inst_c / "config.json").write_text(
+            _json.dumps({"translate": {"openai": {"api_key": "sk-REAL"}}}), encoding="utf-8")
+        assert up.load_config(inst_c)["translate"]["openai"]["api_key"] == "sk-REAL", \
+            "空 key 的用户配置必须被安装目录里的真实 key 补救"
+        assert (user5 / ".layout-v2").is_file(), "补救扫描要落标记"
+        assert (user5 / "subtitle_config.json.bak-layout-v2").is_file(), "覆盖前必须留备份"
+
+        up._layout_checked.clear()          # 模拟进程重启
+        (user5 / "subtitle_config.json").write_text(
+            _json.dumps({"translate": {"openai": {"api_key": ""}}}), encoding="utf-8")
+        assert up.load_config(inst_c)["translate"]["openai"]["api_key"] == "", \
+            "补救只跑一次：有标记之后不再回头覆盖用户的当前配置"
+    finally:
+        if old is None:
+            _os.environ.pop("NEXUS_USER_DIR", None)
+        else:
+            _os.environ["NEXUS_USER_DIR"] = old
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -311,6 +415,7 @@ if __name__ == "__main__":
     check("keep_segment 跨块去重", t_keep_segment)
     check("术语表总开关（enabled 热更新/数据保留）", t_glossary_enabled_switch)
     check("模型下载器（进度/断点续传/原子替换）", t_model_downloader)
+    check("用户数据迁移（key/词表带过去，用户数据优先）", t_user_data_migration)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

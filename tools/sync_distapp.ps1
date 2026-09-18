@@ -16,6 +16,11 @@
 #    · *.json.bak / .tmp    宿主的自保备份、写入途中的临时文件
 #    用仓库模板覆盖 = 抹掉 key 和词库（与 build_exe 的坑 #12 同族）。
 #    确要覆盖时显式给 -SyncConfig / -SyncGlossary。
+#
+# 🚫 **R48 之后这些排除仍然必须保留，别删**：用户数据的**真身**已经搬到
+#    %APPDATA%\FunScriptCast-Nexus\（见 vendor\subtitle\user_paths.py），dist-app 这两份
+#    看着像"没用的副本"了——但老用户升级那一刻，他真正的 key 与词表**还躺在这里**，
+#    这是首次迁移唯一的源。覆盖它 = 迁移读到空模板 = 静默丢 key。
 param(
     [switch]$Check,
     [switch]$Restart,

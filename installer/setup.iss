@@ -76,7 +76,20 @@ Source: "..\dist-app\runtime\*"; DestDir: "{app}\runtime"; \
 Source: "..\dist-app\ui\*"; DestDir: "{app}\ui"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-app\vendor\*"; DestDir: "{app}\vendor"; \
+    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\glossary_ja_zh.json,subtitle\glossary_en_zh.json"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
+; ⚠ 上面这条**必须** Excludes 掉这几样 —— 它们是「用户数据迁移源」：
+;   运行时的真身在 %APPDATA%\FunScriptCast-Nexus\（见 vendor\subtitle\user_paths.py），
+;   安装目录这份只是出厂模板/种子。但**升级那一刻**，老用户的云端 key 与词表还在旧位置的
+;   这份文件里，[Files] 整树覆盖会把它换成打包机副本（key 为空）⇒ 首次迁移就再也读不到
+;   key。所以下面单独铺一份，且 onlyifdoesntexist：全新安装有种子、升级不覆盖。
+;   （config.json.bak-prompt 是开发机的历史备份，含开发机路径，直接不发。）
+Source: "..\dist-app\vendor\subtitle\config.json"; DestDir: "{app}\vendor\subtitle"; \
+    Flags: onlyifdoesntexist
+Source: "..\dist-app\vendor\subtitle\glossary_ja_zh.json"; DestDir: "{app}\vendor\subtitle"; \
+    Flags: onlyifdoesntexist
+Source: "..\dist-app\vendor\subtitle\glossary_en_zh.json"; DestDir: "{app}\vendor\subtitle"; \
+    Flags: onlyifdoesntexist
 Source: "..\dist-app\tools\*"; DestDir: "{app}\tools"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-app\version.json"; DestDir: "{app}"; Flags: ignoreversion
