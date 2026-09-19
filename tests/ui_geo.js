@@ -8,7 +8,7 @@ const { spawn } = require('child_process');
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const URL = 'http://127.0.0.1:8790/';
 const PORT = 9337;
-const PAGES = ['dashboard', 'dlna', 'subtitle', 'sync', 'glossary', 'settings'];
+const PAGES = ['dashboard', 'dlna', 'subtitle', 'sync', 'settings'];
 
 function get(p) {
   return new Promise((resolve, reject) => {

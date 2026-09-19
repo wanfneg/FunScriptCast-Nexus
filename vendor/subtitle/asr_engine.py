@@ -10,8 +10,7 @@ import time
 
 import numpy as np
 
-from glossary import context_with_keys
-from text_filters import (has_repetition_loop, is_glossary_echo, is_latin_hallucination,
+from text_filters import (has_repetition_loop, is_prompt_echo, is_latin_hallucination,
                           join_tokens, keep_segment)
 
 # torch / qwen_asr 只被 **PyTorch 回退引擎** 用到（audiocpp 主路径完全不需要，
@@ -45,13 +44,12 @@ class AsrEngine:
     # /health 的 asr_ready 靠它区分"真引擎"与"未就绪兜底"
     backend_kind = "pytorch"
 
-    def __init__(self, cfg: dict, glossary):
+    def __init__(self, cfg: dict):
         if not _HEAVY_DEPS_OK:
             raise RuntimeError(
                 "PyTorch 引擎依赖未安装（torch / qwen_asr）。轻量运行时只支持 audiocpp 后端；"
                 "要使用 PyTorch 引擎请安装完整依赖（约 5 GB）。")
         self.cfg = cfg
-        self.glossary = glossary
         # /transcribe 走 FastAPI 线程池，可能并发进来。共享模型上每次请求都要
         # 改 max_new_tokens、silero VAD 带内部状态（LSTM）——并发调用会互相
         # 覆盖预算/污染状态，GPU 上并发 forward 还会显存翻倍。串行化整个转写。
@@ -278,19 +276,8 @@ class AsrEngine:
         else:
             pcm_asr, tmap = pcm, (lambda t: t)   # VAD 不可用时保持原行为
 
-        context = ""
-        context_keys: list = []
-        if self.cfg.get("use_glossary_context", True):
-            # 同时取回"真正进提示词的键"：复读判据只认这批键，不能拿整张术语表。
-            # max_chars 必须和 audiocpp 后端同源（asr.context_max_chars）：此前这里
-            # 吃默认值 0，同一份 config.json 在两个后端的热词长度不一致（audiocpp
-            # 会补领域词、PyTorch 不补），复读判据用的键集也跟着漂移。
-            context, context_keys = context_with_keys(
-                self.glossary, lang_key,
-                int(self.cfg.get("context_max_chars", 0) or 0))
-        if extra_context:
-            # 上一句转写结果作为热词补充（与 audiocpp 后端同策略，治跨块人名听错）
-            context = (context + " " + extra_context).strip()
+        # 热词只剩"上一句原文"（与 audiocpp 后端同策略，治跨块人名听错）。
+        context = (extra_context or "").strip()
 
         # 按送进去的音频时长收紧生成上限：退化生成不会再跑满全局上限
         self.model.max_new_tokens = self._budget_tokens(len(pcm_asr))
@@ -333,18 +320,17 @@ class AsrEngine:
             segs = [s for s in segs
                     if keep_segment(s["start_ms"], s["end_ms"], keep_from_ms)]
 
-        # 幻觉过滤：非语音段（音乐/静音）时模型会把热词表当台词吐出来。
-        # 先整块判定（合并文本覆盖率过高 → 整块丢弃），再单句判定。
-        # **没开热词/热词为空时不做这个判定**：判据与 context 无关，关掉热词
-        # 也照丢句子（正常领域句被整块丢光），且这时提示词里根本没有可复读的东西。
+        # 回显过滤：非语音段（音乐/静音）时模型会把热词（上一句原文）当台词吐出来。
+        # 先整块判定（合并文本 ≈ prompt → 整块丢弃），再单句判定。判据与
+        # audiocpp 后端同一实现（text_filters.is_prompt_echo）；**没带热词时不做
+        # 这个判定**——此时提示词里没有可复读的东西，判了只会误伤正常短句。
         if context:
             joined = "".join(s["text"] for s in segs)
-            if self._is_glossary_echo(joined, context_keys):
-                print(f"[asr] 疑似热词表幻觉，整块丢弃 {len(segs)} 段", flush=True)
+            if is_prompt_echo(joined, context):
+                print(f"[asr] 疑似热词回显，整块丢弃 {len(segs)} 段", flush=True)
                 segs = []
             else:
-                segs = [s for s in segs
-                        if not self._is_glossary_echo(s["text"], context_keys)]
+                segs = [s for s in segs if not is_prompt_echo(s["text"], context)]
         # 重复退化过滤：小模型偶发 "才才才才才才…" 这类死循环（判据与
         # audiocpp 后端共用，见 text_filters.has_repetition_loop）
         before = len(segs)
@@ -361,12 +347,3 @@ class AsrEngine:
 
         return {"language": r.language, "segments": segs,
                 "asr_ms": round((time.perf_counter() - t0) * 1000, 1), "skipped": False}
-
-    def _is_glossary_echo(self, text: str, keys: list) -> bool:
-        """判定该文本是否只是把热词表复读出来（判据见 text_filters.is_glossary_echo，
-        与 audiocpp 后端共用同一实现，避免两边漂移）。
-
-        `keys` 必须是调用方从 context_with_keys 拿到的"真正进了提示词的键"，
-        不再是 glossary.keys()（整张术语表当判据会把正常台词误杀）。
-        """
-        return is_glossary_echo(text, keys)

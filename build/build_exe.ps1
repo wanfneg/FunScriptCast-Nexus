@@ -70,24 +70,10 @@ $preservedKey = ''
 if (Test-Path $distCfgPath) {
     try { $preservedKey = [string]((Get-Content $distCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json).translate.openai.api_key) } catch { }
 }
-# 术语表和 key 一样是**运行数据**：host_server.glossary_file() 指向 SUBTITLE_DIR
-# （即 dist-app 侧），UI 保存/CSV 导入写的都是这里。此前只摘 config.json 的 key，
-# vendor 整体删掉再用仓库副本覆盖 → 用户的词库被仓库旧表静默替换，宿主自保备份
-# glossary_*.json.bak 连同目录一起消失（换表期间等于把几个月的成果一次抹掉）。
-$runDataNames = @('glossary_ja_zh.json', 'glossary_en_zh.json')
-$preservedData = @{}
-if (Test-Path $subtitleDst) {
-    Get-ChildItem $subtitleDst -File -Force | Where-Object {
-        ($runDataNames -contains $_.Name) -or ($_.Name -like 'glossary_*.json.bak*')
-    } | ForEach-Object { $preservedData[$_.Name] = [IO.File]::ReadAllBytes($_.FullName) }
-    if ($preservedData.Count) {
-        Write-Host ("  已摘出 dist-app 运行数据 {0} 个：{1}" -f $preservedData.Count, (($preservedData.Keys | Sort-Object) -join ', ')) -ForegroundColor DarkGray
-    }
-}
 $cleanRemoved = -not (Test-Path $out)   # 目录本来就不存在 = 谈不上"清理失败"
-# R49 起用户数据住 `dist-app\data\`（配置 / 术语表 / 宿主设置 / DLNA 数据，见
+# R49 起用户数据住 `dist-app\data\`（配置 / 宿主设置 / DLNA 数据，见
 # vendor\subtitle\user_paths.py）。$out 是**整目录删除**后重建的，不先摘出来就每次重编
-# 清空一遍——比坑 #12 更狠：那次只丢云端 key，这次连 DLNA 共享目录与术语表一起没。
+# 清空一遍——比坑 #12 更狠：那次只丢云端 key，这次连 DLNA 共享目录一起没。
 # 用"整目录搬走再搬回"而不是逐文件读字节：这里可能有宿主的 .bak 自保备份与 .tmp，
 # 逐文件搬运会漏掉它们，而漏掉的正是用户的后悔药。
 $dataStash = Join-Path $root 'build\_dist-app-data'
@@ -178,22 +164,12 @@ foreach ($name in 'models', '.venv') {
     }
 }
 
-# 回填 dist-app\data（见上面"摘出"处的说明：用户的配置 / 术语表 / 设置 / DLNA 数据）
+# 回填 dist-app\data（见上面"摘出"处的说明：用户的配置 / 设置 / DLNA 数据）
 if ($stashedData) {
     $distDataDir = Join-Path $out 'data'
     if (Test-Path $distDataDir) { Remove-Item $distDataDir -Recurse -Force -ErrorAction SilentlyContinue }
     Move-Item $dataStash $distDataDir -Force
-    Write-Host "  已把 dist-app\data 回填（用户的配置 / 术语表 / 设置 / DLNA 数据）" -ForegroundColor DarkGray
-}
-
-# 回填术语表等运行数据（原样字节写回，不经过 JSON 往返，避免改动用户词库）。
-# 只回填 glossary_*：config.json 仍走下面的"只补 key"，好让仓库模板里的新参数
-# 能生效；config.json 的 .bak/.bak-prompt/.tmp 是宿主自保备份、可再生，且可能带
-# key（会被 build_installer 的哨兵拦下），因此有意不搬。
-foreach ($name in @($preservedData.Keys)) {
-    $dstData = Join-Path $subtitleDst $name
-    [IO.File]::WriteAllBytes($dstData, $preservedData[$name])
-    Write-Host "  已把 dist-app 原有的运行数据回填：$name" -ForegroundColor DarkGray
+    Write-Host "  已把 dist-app\data 回填（用户的配置 / 设置 / DLNA 数据）" -ForegroundColor DarkGray
 }
 
 # 回填用户 key（坑 #12 就此关闭）。注意 PS5.1 的 UTF8 必须无 BOM——

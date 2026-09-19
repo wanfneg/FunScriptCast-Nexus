@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""翻译引擎：批量 JSON + 键校验纠错 + 分层缓存 + 免费后端兜底。
+"""翻译引擎：批量 JSON + 键校验纠错 + 免费后端兜底。
 
 与旧版（逐条调用）的差别——思路参考 VideoCaptioner（WEIFENG2333/VideoCaptioner）：
 
@@ -8,11 +8,7 @@
      逐条调用 → 批量调用，LLM 请求数直接降 10 倍。
   2. **键校验 + 纠错循环**：返回的键必须与输入完全一致，缺/多键就把错误
      反馈回去让它重试（最多 max_steps 轮）。这一步能消掉「漏翻整段」。
-  3. **分层缓存**：L1 进程内字典 + L2 磁盘（`cache/translate/`）。
-     缓存键 = sha256(后端 + 端点 + 模型 + 目标语言 + 本批原文)。
-     之所以必须落盘：每个视频都会新建一个 Translator 实例，纯实例级内存缓存
-     在真实流程里永远命中不了，等于没开。
-  4. **免费兜底**：**某一批** LLM 调用失败就立刻用 Bing/Google 补齐这一批
+  3. **免费兜底**：**某一批** LLM 调用失败就立刻用 Bing/Google 补齐这一批
      （无需 Key、显存 0），保证字幕不整段空白；如果累计失败批数达到
      fallback.after_fail_batches，则判定该后端已挂，后续批次直接走免费后端，
      不再每批都白等一个超时。
@@ -20,14 +16,16 @@
      后端而已）。而且"后端级故障"（连不上/超时/熔断）必须与"内容不合格"
      （BatchPartial）分开——只有前者要跳过逐句补救，后者是健康后端在正常
      工作，逐句换提示词形态实测能救回大量句子。
-  5. **多线程**：批与批之间并行（thread_num）。
+  4. **多线程**：批与批之间并行（thread_num）。
+
+缓存与术语表（分层缓存、热词注入、译文修补）已按需求整体移除：
+每次翻译都真发请求，改提示词/模型/参数立即全部生效，不存在旧译文命中。
 
 对外接口保持 `translate_segments(segs, lang_key)` 不变。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -36,20 +34,9 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 from free_translators import make_free
 
-
-def _default_cache_dir() -> Path:
-    """翻译缓存目录：<APP_DIR>/cache/translate（vendor/ 与 EXE 同级，故 parents[2]）。
-
-    可用环境变量 NEXUS_CACHE_DIR 覆盖根目录（与 host_server 的字幕缓存同源）。
-    """
-    env = os.environ.get("NEXUS_CACHE_DIR")
-    if env:
-        return Path(env) / "translate"
-    return Path(__file__).resolve().parents[2] / "cache" / "translate"
 
 SYSTEM = ("你是专业的字幕翻译。译文要口语自然、简洁，符合中文字幕习惯；"
           "不要解释，不要添加原文没有的内容；保持人称和专有名词前后一致。")
@@ -80,22 +67,6 @@ SINGLE_PROMPT = "把下面的文本翻译成简体中文，只输出译文，不
 # 漏译检测用：假名（平假名 + 片假名）、连续拉丁字母
 _KANA = re.compile(r"[\u3041-\u309f\u30a0-\u30ff]")
 _LATIN = re.compile(r"[A-Za-z]{2,}")
-
-# 缓存版本：流程/判据改动后 +1，让旧的（可能不合格的）译文自动失效。
-# 只按「后端+模型+原文」做缓存键是不够的——提示词或判据一变，旧译文就是错的，
-# 而它看起来"命中了"，属于最难查的一类 bug。
-#   v3：加 JSON 归一化 + 术语表修补 + 历史最好一轮保全（v2 缓存里的空白译文必须作废）
-#   v4：空译文也算不合格（v3 把 `{"0":""}` 当合格存进了缓存，必须作废）
-#   v5：退化译文也算不合格（v4 把"啊啊啊啊…"当合格写进了 L1+L2，永不纠正）；
-#       同时缓存命名空间并入 mt_user_prefix（见 _cache_ns）
-_CACHE_VERSION = 5
-
-# 提示词指纹：改了 SYSTEM/BATCH/FIX/RETRY 任何一段，指纹就变，缓存自动失效。
-# ⚠️ 这里**盖不住** MT 实际发送的 `mt_user_prefix + text`（它不在上述任何一段里），
-# 所以那份输入由 _cache_ns() 单独并入哈希——否则改了这个配置键，缓存键不变，
-# 全部命中旧译文，现象就是"改了配置毫无效果"。
-_PROMPT_FP = hashlib.sha256(
-    (SYSTEM + BATCH_PROMPT + FIX_PROMPT + RETRY_PROMPT).encode("utf-8")).hexdigest()[:10]
 
 # ---------------------------------------------------------------- JSON 归一化
 # 小模型（qwen2.5:3b）经常输出"中文式 JSON"：引号是全角/弯引号，分隔符是全角逗号。
@@ -185,7 +156,7 @@ _BACKEND_ALIAS = {
 
 # ollama 分支的模型默认值。config.json 里发运的就是 `"model": ""`（键存在、值为
 # 空串），于是 `c.get("model", "qwen2.5:3b")` 这个默认值**永远拿不到**——空串会原样
-# 发进请求体（ollama 报 model not found），诊断与缓存键里显示的模型名也一直是空。
+# 发进请求体（ollama 报 model not found），诊断信息里显示的模型名也一直是空。
 _OLLAMA_DEFAULT_MODEL = "qwen2.5:3b"
 
 
@@ -200,9 +171,8 @@ def _local_backend(cfg: dict):
 
 
 class Translator:
-    def __init__(self, cfg: dict, glossary):
+    def __init__(self, cfg: dict):
         self.cfg = cfg or {}
-        self.glossary = glossary
         # 后端名归一：UI/旧配置里出现过 "dashscope"（云端）这个别名，而分支判断只认
         # "openai"/"local" —— 不归一的话选"云端"会被静默当成 ollama（走错后端、还不报错）。
         raw = str(self.cfg.get("backend", "ollama")).lower()
@@ -217,13 +187,11 @@ class Translator:
         self.batch_size = int(self.cfg.get("batch_size", 10))
         self.max_steps = int(self.cfg.get("max_steps", 3))      # 纠错循环轮数
         self.thread_num = int(self.cfg.get("thread_num", 4))
-        self.cache_enabled = bool(self.cfg.get("cache", True))
-        self.cache_dir = str(self.cfg.get("cache_dir") or _default_cache_dir())
         self.target = str(self.cfg.get("target_lang", "zh"))
 
         # 专攻翻译模型（如 Sakura 系）的逐句模式：mt_system 非空即启用。
         # 这类模型按"单文本 + 专用系统提示词"调优（日中galgame领域微调），
-        # 不服从 JSON 批量指令；逐句直翻 + 术语表修补 + 漏译/退化检查，
+        # 不服从 JSON 批量指令；逐句直翻 + 漏译/退化检查，
         # 失败句标记 error（头显跳过空行）。
         self.mt_system = str(self.cfg.get("mt_system", "") or "").strip()
         self.mt_user_prefix = str(self.cfg.get("mt_user_prefix", "") or "将下面的日文文本翻译成中文：")
@@ -258,14 +226,13 @@ class Translator:
         self.single_budget = max(1, int(self.cfg.get("single_rescue_max", 40)))
 
         self._lock = threading.Lock()
-        self._mem: dict = {}
-        self.stats = {"batches": 0, "cache_hits": 0, "cache_disk_hits": 0,
+        self.stats = {"batches": 0,
                       "fix_rounds": 0, "leak_rounds": 0, "degenerate_rounds": 0,
                       "fail_batches": 0,
                       "fail_kinds": {}, "skipped_batches": 0, "partial_batches": 0,
                       "fallback_batches": 0, "fallback_errors": 0,
                       "fallback_error": "", "degraded": False, "segments": 0,
-                      "leak_kept": 0, "glossary_repaired": 0,
+                      "leak_kept": 0,
                       "fatal_errors": 0, "fatal_error": "",
                       "single_fallbacks": 0, "single_capped": 0,
                       "single_fallback_errors": 0,
@@ -286,7 +253,7 @@ class Translator:
         except Exception:
             pass
 
-    # ------------------------------------------------------------ 缓存
+    # ------------------------------------------------------------ 配置
     def _backend_cfg(self) -> dict:
         # 后端名 → 配置段：local = 本地 llama.cpp（模型来自安装目录 models\ 下的 GGUF，
         # 不经过 Ollama；见 llama_backend.py）
@@ -296,93 +263,10 @@ class Translator:
     def _model_name(self) -> str:
         m = str(self._backend_cfg().get("model") or "").strip()
         # ollama 段允许 model 留空（空串按 _OLLAMA_DEFAULT_MODEL 发送，见 _chat_ollama），
-        # 诊断与缓存键必须显示**实际**发出的模型名，否则"空模型"和"默认模型"会共用
-        # 同一个缓存命名空间。
+        # 诊断信息必须显示**实际**发出的模型名，否则"空模型"和"默认模型"分不清。
         if not m and not self.disabled and self.backend not in ("openai", "local"):
             return _OLLAMA_DEFAULT_MODEL
         return m
-
-    def _cache_ns(self) -> str:
-        """命名空间：缓存版本 + 提示词指纹 + 后端 + 端点 + 模型 + 目标语言。"""
-        base = str(self._backend_cfg().get("base_url", "")).rstrip("/")
-        # mt_user_prefix 必须并进来：MT 实际发给模型的 user 消息是
-        # `mt_user_prefix + text`（见 _mt_once），它是 config.json 的正式键，
-        # 改它等于改模型输入。它既不在 _PROMPT_FP（只覆盖 SYSTEM/BATCH/FIX/RETRY）
-        # 也不在 _key 里——不并进来就会出现"改了配置、译文一字不变"。
-        upfx = hashlib.sha256(
-            (self.mt_user_prefix or "").encode("utf-8")).hexdigest()[:8]
-        return (f"v{_CACHE_VERSION}|{_PROMPT_FP}|{upfx}|{self.backend}|{base}|"
-                f"{self._model_name()}|{self.target}")
-
-    def _key(self, texts: list, system: str = "", lang_key: str = "") -> str:
-        """缓存键。system 里含着命中到的术语表条目，所以术语表变了键也变；
-        源语言也要并进去——术语表无命中时 system 相同，ja/en 的同形短文本
-        （如 "OK"）否则会串语言复用同一份译文。"""
-        gl = hashlib.sha256((system or "").encode("utf-8")).hexdigest()[:12]
-        raw = (self._cache_ns() + "|" + lang_key + "|" + gl + "\n"
-               + json.dumps(texts, ensure_ascii=False))
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-    def _cache_path(self, key: str) -> Path:
-        # 按前两位分桶，避免单目录堆几万个小文件
-        return Path(self.cache_dir) / key[:2] / (key + ".json")
-
-    def _cache_get(self, key: str, n: int):
-        """L1 内存 → L2 磁盘。返回与 texts 等长的译文列表，未命中返回 None。
-
-        命中统计在这里分层计数：cache_hits 只算 L1，cache_disk_hits 只算 L2，
-        两者相加才是总命中（调用方不再重复累加）。"""
-        if not self.cache_enabled:
-            return None
-        with self._lock:
-            hit = self._mem.get(key)
-        if hit is not None:
-            with self._lock:
-                self.stats["cache_hits"] += 1
-            return hit
-        try:
-            with open(self._cache_path(key), "r", encoding="utf-8") as f:
-                val = json.load(f)
-        except Exception:
-            return None
-        # 长度/类型不符说明文件损坏或被截断，当作未命中
-        if (not isinstance(val, list) or len(val) != n
-                or not all(isinstance(x, str) for x in val)):
-            return None
-        with self._lock:
-            self._mem[key] = val
-            self.stats["cache_disk_hits"] += 1
-        return val
-
-    def _cache_put(self, key: str, value: list) -> None:
-        if not self.cache_enabled:
-            return
-        with self._lock:
-            if len(self._mem) > 5000:
-                # 淘汰一半最旧的（dict 保插入序），整体 clear 会让长视频
-                # 周期性全冷、缓存命中率锯齿状抖动
-                for k in list(self._mem.keys())[:len(self._mem) // 2]:
-                    del self._mem[k]
-            self._mem[key] = value
-        tmp = None
-        try:
-            p = self._cache_path(key)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            # 原子写：多线程/多进程同时写同一批时不会读到半个文件
-            tmp = p.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(value, f, ensure_ascii=False)
-            os.replace(tmp, p)
-        except Exception:
-            # 缓存写失败不影响翻译结果，但**必须清掉自己的临时文件**：
-            # os.replace 失败（杀软/权限/跨设备）会留下 .tmp，而 host_server 的
-            # translate_cache_summary 是按目录统计的——残留会被算进缓存体积，
-            # 且这些文件永远不会被复用或清理。
-            if tmp is not None:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except Exception:
-                    pass
 
     # ------------------------------------------------------------ 后端调用
     def _post(self, url: str, payload: dict, headers: dict | None = None,
@@ -630,7 +514,7 @@ class Translator:
             return False, "；".join(parts)
         return True, ""
 
-    # ------------------------------------------------------------ 术语表
+    # ------------------------------------------------------------ 模式
     def _resolve_use_mt(self) -> bool:
         """逐句 MT 模式开关（见 __init__ 的注释）。
 
@@ -644,20 +528,15 @@ class Translator:
             return False
         return bool(self.mt_system) and self.backend != "openai"
 
-    def _system_with_glossary(self, lang_key: str, texts: list) -> str:
-        """批量模式的系统提示词 = 基础 SYSTEM + 附加规则 + 命中术语表。"""
+    def _build_system(self, texts: list) -> str:
+        """批量模式的系统提示词 = 基础 SYSTEM + 附加规则。"""
         base = SYSTEM
         # 附加规则：显式 system_extra 优先；否则在批量模式下沿用 mt_system 的正文
         # （那里面是"说话人用第一人称/如实翻译"这类领域规则，云端同样适用）。
         extra = self.system_extra or (self.mt_system if (self.mt_system and not self.use_mt) else "")
         if extra:
             base = base + "\n\n" + extra
-        joined = " ".join(texts)
-        hit = self.glossary.match(lang_key, joined) if self.glossary else {}
-        if not hit:
-            return base
-        return (base + "\n\n术语表（原文→译文，必须严格遵守；未出现的词不要套用）：\n"
-                + "\n".join(f"{k}→{v}" for k, v in hit.items()))
+        return base
 
     def _has_untranslated(self, src: str, tr: str) -> bool:
         """译文里残留原文 = 模型抄了原文没翻。
@@ -680,32 +559,6 @@ class Translator:
             return True
         return bool(_LATIN.search(tr)) and not _LATIN.search(src or "")
 
-    def _repair_with_glossary(self, lang_key: str, src: str, tr: str) -> str:
-        """术语表自动修补：译文里残留的**原文**术语直接换成术语表译文。
-
-        实测 `こんにちは、三上ゆあです。→ 你好，三上ゆあ。`——术语表里明明有
-        `三上ゆあ→三上悠亚` 并已注入 system，小模型就是不套用。让模型再改一轮
-        既不保证成功又慢，直接替换反而确定。长词优先，避免短词先吃掉长词的一部分。
-        """
-        tr = (tr or "").strip()
-        if not tr or not self.glossary:
-            return tr
-        try:
-            hit = self.glossary.match(lang_key, src or "")
-        except Exception:
-            return tr
-        if not hit:
-            return tr
-        repaired = False
-        for s, d in sorted(hit.items(), key=lambda kv: -len(kv[0])):
-            if s and d and s in tr:
-                tr = tr.replace(s, d)
-                repaired = True
-        if repaired:
-            with self._lock:
-                self.stats["glossary_repaired"] += 1
-        return tr
-
     # ------------------------------------------------------------ 单批翻译
     def _translate_batch(self, texts: list, indices: list, system: str,
                          lang_key: str = "", context: str = "") -> list:
@@ -720,8 +573,8 @@ class Translator:
            照着报错里的词 echo；而且提示词越长，它越倾向于放弃格式。
 
         context：上一块的原文/译文参考（剧情承接，治代词/场景断裂）。**只拼进
-        user 消息、绝不进 system**——缓存键含 system 哈希，上下文进 system 会让
-        键随剧情滚动、缓存永久失效（参考 realtime-subtitle 的 context carryover）。
+        user 消息、绝不进 system**——system 是稳定指令区，剧情上下文放进去会
+        让模型把它当翻译对象（参考 realtime-subtitle 的 context carryover）。
         """
         keys = [str(i) for i in indices]
         payload = json.dumps({str(i): t for i, t in zip(indices, texts)},
@@ -746,9 +599,6 @@ class Translator:
             leak: list = []
             if ok:
                 vals = [str(got[k]).strip() for k in keys]
-                # 术语表自动修补：模型抄原文没翻时，按术语表直接替换
-                vals = [self._repair_with_glossary(lang_key, t, v)
-                        for t, v in zip(texts, vals)]
                 got = dict(zip(keys, vals))
                 # 空值也算不合格！`{"0": "", "1": "..."}` 是**键齐全**的合法 JSON，
                 # 只看键就会判合格直接返回——实测漏掉过 `だから。→空`。
@@ -757,10 +607,9 @@ class Translator:
                 leak = [k for k, v, t in zip(keys, vals, texts)
                         if v and self._has_untranslated(t, v)]
                 # 退化译文（短句被放大成"啊啊啊啊…"）同样算不合格：只判空值和漏译时
-                # 它会一路当合格返回 → 被 _cache_put 写进 L1+L2 → 回填阶段才丢弃。
-                # 后果是这块每次都要多花一轮逐句补救，批量结果永远白算，而缓存里
-                # 那条退化译文**永远不会被纠正**（下次还命中它）。逐句路径
-                # （_single_translate / _mt_once）早就查了 _is_degenerate，这里补齐。
+                # 它会一路当合格返回。后果是这块要靠回填阶段才丢弃、多花一轮逐句
+                # 补救。逐句路径（_single_translate / _mt_once）早就查了
+                # _is_degenerate，这里补齐。
                 degen = [k for k, v, t in zip(keys, vals, texts)
                          if v and self._is_degenerate(t, v)]
                 if not blank and not leak and not degen:
@@ -853,26 +702,22 @@ class Translator:
         out = raw.strip().strip('"“”「」『』').strip()
         if not out or self._has_untranslated(text, out) or self._is_degenerate(text, out):
             return ""
-        return self._repair_with_glossary(lang_key, text, out)
+        return out
 
     def _translate_mt(self, todo: list, lang_key: str, context: str = "") -> None:
         """逐句专攻 MT（Sakura 系翻译特化模型）：单文本 + 专用系统提示词直翻。
 
-        与批量 JSON 模式并行不悖：mt_system 配置非空才启用。带缓存（逐句键）、
-        术语表修补、漏译/退化检查；并发 self.thread_num 路。失败句标记
-        translate_failed:mt_empty（头显跳过空译文行）。
+        与批量 JSON 模式并行不悖：mt_system 配置非空才启用。带漏译/退化检查；
+        并发 self.thread_num 路。失败句标记 translate_failed:mt_empty（头显跳过
+        空译文行）。
 
         context：上一块的译文（人称/语境衔接参考，Sakura v0.9 官方支持多行
-        上下文拼接）。只作为**参考前缀**拼在输入前（换行分隔），不进缓存键、
-        不进 system——实测能显著减少人称错位（她↔我）。"""
+        上下文拼接）。只作为**参考前缀**拼在输入前（换行分隔）、不进 system
+        ——实测能显著减少人称错位（她↔我）。"""
         from concurrent.futures import ThreadPoolExecutor
 
         def work1(s):
             text = (s.get("text") or "").strip()
-            key = self._key([text], self.mt_system, lang_key)
-            cached = self._cache_get(key, 1)
-            if cached is not None:
-                return cached[0]
             try:
                 out = self._mt_once(text, lang_key, context)
             except Exception as e:
@@ -881,8 +726,6 @@ class Translator:
                 # （整批标 fatal），一次瞬时网络抖动 = 一整块字幕全没。
                 print(f"[translate] MT 单句失败：{type(e).__name__}: {e}", flush=True)
                 out = ""
-            if out:
-                self._cache_put(key, [out])
             return out
 
         workers = max(1, min(self.thread_num, len(todo)))
@@ -958,7 +801,7 @@ class Translator:
         实测 `@0s` 整块就这么没了（起因只是兜底模块少了一行 import）。
         所以翻译层必须自己兜住所有异常，最坏情况留空译文照常返回。
 
-        context：上一块的原文/译文参考（可选）。只影响提示词，不影响缓存键。
+        context：上一块的原文/译文参考（可选）。只影响提示词。
         """
         try:
             self._translate_inner(segs, lang_key, context)
@@ -1030,19 +873,14 @@ class Translator:
         def work(batch):
             texts = [(s.get("text") or "").strip() for _, s in batch]
             indices = [i for i, _ in batch]
-            # system / key / 缓存读取也必须在 try 内：它们一样会抛（术语表要读盘、
-            # 缓存要建目录）。放在 try 外时，一条这样的异常会顺着下面 ex.map 的
-            # 消费循环炸穿 _translate_inner —— 整块（含其它批次**已经翻好的结果**）
-            # 全部作废，而 MT 路径早就做过单句加固，两边隔离度不对等。
+            # system 计算也必须在 try 内：放在 try 外时，一条这样的异常会顺着
+            # 下面 ex.map 的消费循环炸穿 _translate_inner —— 整块（含其它批次
+            # **已经翻好的结果**）全部作废，而 MT 路径早就做过单句加固，
+            # 两边隔离度不对等。
             # system 先置空：异常分支里的逐句补救会退回默认 SYSTEM 提示词。
             system = ""
             try:
-                # 先算 system：它包含命中到的术语表条目，要一起并进缓存键
-                system = self._system_with_glossary(lang_key, texts)
-                key = self._key(texts, system, lang_key)
-                cached = self._cache_get(key, len(texts))
-                if cached is not None:
-                    return indices, cached
+                system = self._build_system(texts)
                 with self._lock:
                     streak = self._fail_streak
                 # 熔断判据**与"是否配了免费兜底"解耦**：兜底关着时同样要停止撞
@@ -1054,7 +892,6 @@ class Translator:
                     # 抛 BackendDown（而非普通 RuntimeError）：下面据此跳过逐句补救
                     raise BackendDown(f"LLM 后端已连续 {streak} 批失败，跳过重试")
                 out = self._translate_batch(texts, indices, system, lang_key, context)
-                self._cache_put(key, out)
                 with self._lock:
                     self._fail_streak = 0
                     self.stats["degraded"] = False
@@ -1233,7 +1070,6 @@ class Translator:
             # /health 与诊断页上根本看不出后端是 none（与"选了关闭反而真去翻译"
             # 是同一类"静默走错后端"的坑）。
             return "已关闭（translate.backend = none，不发起任何 LLM 请求）"
-        cache = f"cache={'disk+mem' if self.cache_enabled else 'off'}"
         fb = self.fallback_kind or "off"
         used = int(self.stats.get("fallback_batches") or 0)
         if fb != "off" and used:
@@ -1246,4 +1082,4 @@ class Translator:
             fail_note += f" 熔断跳过={skipped}批"
         return (f"{self.backend}/{self._model_name()} batch={self.batch_size} "
                 f"threads={self.thread_num} mode={'mt逐句' if self.use_mt else 'batch批量'} "
-                f"{cache} fallback={fb}{fail_note}")
+                f"fallback={fb}{fail_note}")

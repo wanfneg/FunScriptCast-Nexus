@@ -106,7 +106,7 @@ SUBTITLE_VENV_PY = _subtitle_python()
 UI_API_PORT = int(os.environ.get("FS_HOST_PORT", "8790"))   # 前端 + API（仅环回）
 SUBTITLE_PORT = int(os.environ.get("FS_SUBTITLE_PORT", "8756"))
 # 头显（Quest/PICO）专用接口：绑 0.0.0.0，但只放开三个路由。
-# 为什么不把 8790 直接绑到局域网：那上面还有设置、术语表、设备同步、adb、退出……
+# 为什么不把 8790 直接绑到局域网：那上面还有设置、设备同步、adb、退出……
 # 单独一个端口 + 单独一个 Handler，按构造就不可能误暴露，而不是靠一处
 # "记得判断 client_address"的检查（漏一处就全开）。
 LAN_API_PORT = int(os.environ.get("FS_HOST_LAN_PORT", "8791"))
@@ -160,30 +160,8 @@ class Runtime:
 RT = Runtime()
 
 
-# ================================================================ 字幕缓存
-# 目标：同一视频看第二遍时不再重跑 ASR，直接读已生成的字幕。
-# 键 = 视频身份（路径/大小/mtime）+ 语言 + 配置指纹（ASR 模型 + 术语表内容），
-# 任何一项变了就自动失效，避免「换了术语表还在用旧字幕」。
-SUBTITLE_CACHE_DIR = Path(os.environ.get("NEXUS_CACHE_DIR", str(APP_DIR / "cache" / "subtitles")))
-
-# 翻译层磁盘缓存（键 = 后端+端点+模型+目标语言+原文，见 vendor/subtitle/translate_engine.py）。
-# 与上面的字幕缓存分开：字幕缓存按"整段视频"存，这个按"批次原文"存，
-# 作用是同一句话在别的视频里出现时也不用重新请求 LLM。
-TRANSLATE_CACHE_DIR = Path(os.environ.get("NEXUS_CACHE_DIR", str(APP_DIR / "cache"))) / "translate"
-
-
-def _video_identity(path: str) -> dict:
-    """视频身份：优先用绝对路径 + 大小 + mtime；文件不存在时退化为路径哈希。"""
-    p = Path(path)
-    try:
-        st = p.stat()
-        return {"path": str(p.resolve()), "size": st.st_size, "mtime": int(st.st_mtime)}
-    except Exception:
-        return {"path": str(p), "size": 0, "mtime": 0}
-
-
 # ---------------------------------------------------------------- 用户数据路径
-# 会变的用户数据（配置 / 术语表 / 设置 / DLNA 数据 / 日志 / 模型缓存）一律落
+# 会变的用户数据（配置 / 设置 / DLNA 数据 / 日志 / 模型缓存）一律落
 # **安装目录**：`<安装目录>\data\`、`\models\`、`\logs\`。用户装到 D 盘就全在 D 盘，
 # C 盘一个字节都不落（`%APPDATA%`、`%USERPROFILE%\.cache` 都不用）。
 #
@@ -213,20 +191,6 @@ def subtitle_cfg_path() -> Path:
         except Exception:
             pass
     return SUBTITLE_DIR / "config.json"
-
-
-def subtitle_glossary_path(lang: str) -> "Path | None":
-    """术语表：用户数据目录优先（首次调用会从出厂基线迁移一份），缺失时回退安装目录。"""
-    fname = GLOSSARY_FILES.get(lang)
-    if not fname:
-        return None
-    up = _user_paths_mod()
-    if up is not None:
-        try:
-            return up.glossary_path(SUBTITLE_DIR, fname)
-        except Exception:
-            pass
-    return SUBTITLE_DIR / fname
 
 
 # 运行数据目录：**安装目录下的 data\**（不是 %APPDATA%！装到 D 盘就全在 D 盘）。
@@ -278,200 +242,9 @@ except Exception as _e:      # pragma: no cover - 环境异常时不拦住宿主
     log.warning("HF 缓存目录设置失败（忽略）：%s", _e)
 
 
-def _config_fingerprint() -> str:
-    """ASR 模型 + 分段/VAD 配置 + 翻译配置 + 两张术语表 + **管线源码**的指纹。
-
-    源码签名是 2026-09-16 补上的关键洞：此前只指纹配置，判据/策略/引擎的代码
-    修复（如漏译隐藏、比例摊时）都不会改变缓存键——旧管线的差字幕会一直被
-    "当基线加载"，且跨引擎换用的旧译文也不会失效。"""
-    parts: list = []
-    try:
-        cfg = json.loads(subtitle_cfg_path().read_text(encoding="utf-8"))
-        parts.append(json.dumps({"asr": cfg.get("asr"), "vad": cfg.get("vad"),
-                                 "segment": cfg.get("segment"),
-                                 "translate": cfg.get("translate")},
-                                ensure_ascii=False, sort_keys=True))
-    except Exception:
-        parts.append("no-config")
-    try:
-        py_files = sorted(SUBTITLE_DIR.glob("*.py"), key=lambda f: f.name)
-        code_sig = hashlib.sha256("|".join(
-            f"{f.name}:{hashlib.sha256(f.read_bytes()).hexdigest()}"
-            for f in py_files).encode("utf-8")).hexdigest()[:16]
-        parts.append(f"code:{code_sig}")
-    except Exception:
-        parts.append("code:missing")
-    for lang, fname in GLOSSARY_FILES.items():
-        f = subtitle_glossary_path(lang) or (SUBTITLE_DIR / fname)
-        try:
-            parts.append(f"{lang}:{hashlib.sha256(f.read_bytes()).hexdigest()[:16]}")
-        except Exception:
-            parts.append(f"{lang}:missing")
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
-
-
-def subtitle_cache_key(video_path: str, lang: str) -> str:
-    ident = _video_identity(video_path)
-    raw = json.dumps({"v": ident, "lang": lang, "cfg": _config_fingerprint()},
-                     ensure_ascii=False, sort_keys=True)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
-
-
-def subtitle_cache_path(video_path: str, lang: str) -> Path:
-    return SUBTITLE_CACHE_DIR / f"{subtitle_cache_key(video_path, lang)}.json"
-
-
-def _resolve_video_path(video_path: str) -> str:
-    """VR 端传来的是设备侧路径（如 /sdcard/Movies/a.mp4）或 DLNA 流 URL，
-    PC 上并不存在。此时按**文件名**在已知媒体根里找同名文件，命中就用它的
-    身份算缓存键——这样头显和 PC 能共享同一份缓存。"""
-    p = Path(video_path)
-    if p.exists():
-        return str(p)
-    # DLNA 流 URL 常带查询串（`.../a.mp4?sid=1`）。必须先剥掉再取文件名，
-    # 否则 Path.name 会把 "a.mp4?sid=1" 整个当成文件名，永远找不到同名文件——
-    # 表现是"头显看第二遍仍然重跑 ASR"，没有任何报错，极难发现。
-    raw = video_path.split("?", 1)[0].split("#", 1)[0]
-    name = Path(raw).name or raw.rstrip("/").split("/")[-1]
-    if not name:
-        return video_path
-    roots = list(load_settings().get("dlna_roots") or [])
-    for key in ("video_folder", "script_folder"):
-        v = load_settings().get(key)
-        if v:
-            roots.append(v)
-    for root in roots:
-        try:
-            cand = Path(root) / name
-            if cand.exists():
-                return str(cand)
-        except Exception:
-            continue
-    # 找不到同名文件：至少返回剥掉查询串的形式。DLNA 每次播放可能带不同的
-    # sid/token，带着它算身份会让同一部片子每次都得到一个新缓存键，
-    # 命中率恒为 0——而且照样一声不响。
-    return raw
-
-
-def subtitle_cache_get(video_path: str, lang: str) -> dict:
-    resolved = _resolve_video_path(video_path)
-    f = subtitle_cache_path(resolved, lang)
-    if not f.exists():
-        return {"ok": True, "hit": False, "resolved": resolved}
-    try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-    except Exception as e:
-        return {"ok": False, "hit": False, "error": f"缓存损坏：{e}"}
-    return {"ok": True, "hit": True, "path": str(f), "resolved": resolved,
-            "count": len(data.get("segments") or []),
-            "cover_ms": data.get("cover_ms") or 0,
-            "created_at": data.get("created_at"),
-            "video": data.get("video"),
-            "lang": data.get("lang"),
-            "segments": data.get("segments") or []}
-
-
-def subtitle_cache_save(video_path: str, lang: str, segments: list,
-                        meta: dict | None = None) -> dict:
-    if not isinstance(segments, list):
-        return {"ok": False, "error": "segments 必须是数组"}
-    resolved = _resolve_video_path(video_path)
-    SUBTITLE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    f = subtitle_cache_path(resolved, lang)
-    # 覆盖到的时间点：调用方（头显）用它判断这份缓存是不是"看完整了"。
-    # 只看了前 20 分钟的缓存如果被当成命中，后 10 分钟就永远没有字幕——
-    # 所以这个字段是必需的，不是装饰。
-    cover_ms = 0
-    for s in segments:
-        try:
-            cover_ms = max(cover_ms, int(s.get("end_ms") or 0))
-        except Exception:
-            continue
-    payload = {
-        "video": _video_identity(resolved),
-        "requested": video_path,
-        "lang": lang,
-        "config_fingerprint": _config_fingerprint(),
-        "created_at": time.time(),
-        "count": len(segments),
-        "cover_ms": cover_ms,
-        "segments": segments,
-        "meta": meta or {},
-    }
-    tmp = None
-    try:
-        # tmp 名必须**唯一**（pid+线程）：同一 video+lang 的两次保存会并发——两台头显
-        # 播完同一部片、或客户端超时重发。固定名 `<key>.json.tmp` 会让两方互相踩：
-        # Windows 上 Python 的 open 不共享删除，先完成的一方 os.replace 会因另一方
-        # 仍持有该 tmp 而 WinError 32，这次保存直接失败（缓存丢了，"看第二遍不再重跑
-        # ASR"就成了空话）；交错发生在 replace 之前时，落盘还可能是两次写入的混合。
-        tmp = f.with_suffix(f".{os.getpid()}-{threading.get_ident()}.json.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, f)
-    except Exception as e:
-        try:
-            if tmp is not None:
-                tmp.unlink(missing_ok=True)   # 失败不留残骸（否则会被算进缓存体积）
-        except Exception:
-            pass
-        return {"ok": False, "error": str(e)}
-    RT.add_log(f"字幕已缓存（{lang} · {len(segments)} 段 → {f.name}）", "ok")
-    return {"ok": True, "path": str(f), "count": len(segments),
-            "cover_ms": cover_ms, "lang": lang}
-
-
-def subtitle_cache_summary() -> dict:
-    """缓存概览（给 /api/state 用，避免每次轮询都读全部字幕）。"""
-    return _dir_summary(SUBTITLE_CACHE_DIR, "*.json")
-
-
-def _dir_summary(root: Path, pattern: str) -> dict:
-    n = 0
-    total = 0
-    newest = 0.0
-    if root.exists():
-        for f in root.glob(pattern):
-            try:
-                st = f.stat()
-            except Exception:
-                continue
-            n += 1
-            total += st.st_size
-            newest = max(newest, st.st_mtime)
-    return {"count": n, "size_kb": round(total / 1024, 1),
-            "newest": newest, "dir": str(root)}
-
-
-def translate_cache_summary() -> dict:
-    """翻译缓存概览。翻译缓存按前两位哈希分桶，所以要递归统计。"""
-    root = TRANSLATE_CACHE_DIR
-    st = sub_translate_stats()
-    if st.get("cache_dir"):
-        root = Path(st["cache_dir"])   # 以服务端实际使用的目录为准
-    return _dir_summary(root, "**/*.json")
-
-
-def subtitle_cache_list() -> dict:
-    items = []
-    if SUBTITLE_CACHE_DIR.exists():
-        for f in sorted(SUBTITLE_CACHE_DIR.glob("*.json"),
-                        key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                d = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            v = d.get("video") or {}
-            items.append({
-                "key": f.stem,
-                "lang": d.get("lang"),
-                "count": d.get("count", 0),
-                "created_at": d.get("created_at"),
-                "size_kb": round(f.stat().st_size / 1024, 1),
-                "video_name": Path(str(v.get("path", ""))).name,
-                "video_path": v.get("path", ""),
-            })
-    return {"ok": True, "dir": str(SUBTITLE_CACHE_DIR), "items": items}
-
+# 字幕缓存（cache\subtitles，同一视频看第二遍不重跑 ASR）与翻译层磁盘缓存
+# （cache\translate）已按需求整体移除（Round 53）：每次播放都重新识别，
+# 改管线/改配置立即全部生效，不存在旧结果被"当基线加载"的问题。
 
 # ---------------------------------------------------------------- 版本
 def app_version() -> dict:
@@ -488,7 +261,7 @@ def app_version() -> dict:
 
 
 # ================================================================ 设置
-# 设置也放**安装目录** `data\`（与 config.json / 术语表同处，见 DATA_DIR 的注释）。
+# 设置也放**安装目录** `data\`（与 config.json 同处，见 DATA_DIR 的注释）。
 # 曾经在 `%APPDATA%\FunScriptCast-Nexus\`：那会造成"程序在 D 盘、数据在 C 盘"两处寿命，
 # 用户删掉安装目录后发现设置还在，看起来像没删干净（R48 用户实际报的就是这个观感）。
 SETTINGS_FILE = DATA_DIR / "integrated_settings.json"
@@ -499,7 +272,7 @@ _LEGACY_SETTINGS_FILE = (Path(os.environ.get("APPDATA") or str(Path.home()))
 # 设置/字幕配置是「读整个文件→改→写整个文件」，HTTP 服务又是多线程的（UI 连续
 # 单字段 POST 很常见），不加锁时后写者会拿旧快照覆盖先写者的字段。
 _SETTINGS_LOCK = threading.RLock()
-# config.json / glossary_*.json 的写锁（同一原因；与设置文件分开，互不阻塞）
+# config.json（字幕服务配置）的写锁（同一原因；与设置文件分开，互不阻塞）
 _SUBTITLE_FILE_LOCK = threading.RLock()
 # 非空 = 设置文件存在但解析失败（由 load_settings 写、save_settings 读）：
 # 此时内存里是默认值，绝不能拿它当基底整文件覆盖回去。
@@ -825,7 +598,7 @@ _tr_stats_cache = {"ts": 0.0, "data": {}}
 
 
 def sub_translate_stats() -> dict:
-    """翻译层累计统计（批量/缓存命中/纠错/兜底）。2s 缓存，避免轮询压力。"""
+    """翻译层累计统计（批量/纠错/兜底）。2s 缓存，避免轮询压力。"""
     now = time.time()
     if now - _tr_stats_cache["ts"] < 2.0:
         return _tr_stats_cache["data"]
@@ -841,7 +614,7 @@ def sub_translate_stats() -> dict:
 
 
 def sub_translate_selftest(text: str = "") -> dict:
-    """让字幕服务用当前配置真翻一句（UI「测试」按钮）。不缓存：每次都要真结果。
+    """让字幕服务用当前配置真翻一句（UI「测试」按钮）。
 
     超时给足（云端首字可能十几秒），但仍是有上限的探测，不会挂死。
     """
@@ -1273,7 +1046,7 @@ def sub_reclaim() -> dict:
 
     为什么需要：宿主被强杀（任务管理器 / 崩溃）时字幕服务子进程会活下来，
     下次启动端口就被它占着——而它加载的是**当时**的 config，之后改过的设置
-    （换模型、换翻译后端、改术语表）一律不生效，界面上却显示"就绪"。
+    （换模型、换翻译后端）一律不生效，界面上却显示"就绪"。
     唯一干净的做法是把它结束掉，再起一份按当前配置加载的。
     """
     f = foreign_service()
@@ -1299,8 +1072,8 @@ def _host_code_sig() -> str:
     """宿主自身身份签名（与字幕服务 /health 里的 code_sig 同一用途）。
 
     为什么需要这个：头显其实同时依赖**两个面**——8756 的识别/翻译管线，以及 8791
-    的宿主面（字幕缓存读写、请求拉起服务）。而字幕服务的 code_sig 只覆盖
-    `vendor/subtitle/*.py`，宿主侧改了（缓存格式、白名单路由、缓存键规则…）
+    的宿主面（字幕请求转发、请求拉起服务）。而字幕服务的 code_sig 只覆盖
+    `vendor/subtitle/*.py`，宿主侧改了（白名单路由、转发规则…）
     它完全看不出来。头显仓库的审查明确提出"无法回溯哪个 APK 配哪个服务端版本"，
     这里把两半都做成头显能读到、能记录的标识。
 
@@ -1797,9 +1570,7 @@ def state_payload() -> dict:
             "logs": dlna_logs,
         },
         "subtitle": sub_state(),
-        "subtitleCache": subtitle_cache_summary(),
         "translate": sub_translate_stats(),
-        "translateCache": translate_cache_summary(),
         "sync": SYNC.public(),
         "gpu": gpu_info(),
         "sys": sys_info(),
@@ -1845,7 +1616,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    # 请求体上限：本机 API 的合法请求（设置/配置/字幕缓存回存）都远小于 32MB；
+    # 请求体上限：本机 API 的合法请求（设置/配置）都远小于 32MB；
     # 无上限整读会被人一个请求打爆内存。
     MAX_BODY_BYTES = 32 * 1024 * 1024
 
@@ -1873,20 +1644,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/logs":
                 with RT.lock:
                     self._json({"ok": True, "logs": RT.logs[-300:]})
-            elif path == "/api/glossary":
-                self._json(glossary_payload())
             elif path == "/api/sync":
                 self._json({"ok": True, "sync": SYNC.public()})
-            elif path == "/api/subtitle/cache":
-                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                vp = (q.get("video") or [""])[0]
-                lg = (q.get("lang") or ["ja"])[0]
-                if not vp:
-                    self._json({"ok": False, "error": "缺少 video 参数"}, 400)
-                else:
-                    self._json(subtitle_cache_get(vp, lg))
-            elif path == "/api/subtitle/cache/list":
-                self._json(subtitle_cache_list())
             elif path == "/api/subtitle/config":
                 self._json(subtitle_config())
             elif path == "/api/subtitle/models":
@@ -1904,7 +1663,7 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         try:
             # CSRF 栅栏：浏览器发起的**跨站** POST 一定带 Origin 头；curl / 头显
-            # (OkHttp) / 本机脚本不带。8790 能退出应用、改设置、删缓存文件，
+            # (OkHttp) / 本机脚本不带。8790 能退出应用、改设置，
             # 不能放任用户浏览器里的任意网页对它发请求（PNA 只救得了新 Chrome）。
             origin = (self.headers.get("Origin") or "").strip()
             if origin:
@@ -1957,12 +1716,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(model_download_start(body))
             elif path == "/api/subtitle/translate-test":
                 self._json(sub_translate_selftest((body.get("text") or "").strip()))
-            elif path == "/api/glossary/save":
-                self._json(save_glossary(body))
-            elif path == "/api/glossary/export":
-                self._json(glossary_export_csv(body))
-            elif path == "/api/glossary/import":
-                self._json(glossary_import_csv(body))
             elif path == "/api/sync/devices":
                 self._json(SYNC.list_devices())
             elif path == "/api/sync/connect":
@@ -1973,31 +1726,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(SYNC.sync((body.get("kind") or "").strip()))
             elif path == "/api/sync/settings":
                 self._json({"ok": True, "settings": save_settings(body)})
-            elif path == "/api/subtitle/cache/save":
-                self._json(subtitle_cache_save((body.get("video") or "").strip(),
-                                               (body.get("lang") or "ja").strip(),
-                                               body.get("segments") or [],
-                                               body.get("meta")))
-            elif path == "/api/subtitle/cache/clear":
-                key = (body.get("key") or "").strip()
-                try:
-                    if key:
-                        # 缓存键是 24 位十六进制（subtitle_cache_key）。不校验的话
-                        # `..\..\xxx` 或绝对路径可以命中缓存目录之外的任意 .json
-                        # （设置、词库、config）并删除——路径遍历。
-                        if not re.fullmatch(r"[0-9a-f]{24}", key):
-                            self._json({"ok": False, "error": "非法的缓存键"}, 400)
-                            return
-                        f = SUBTITLE_CACHE_DIR / f"{key}.json"
-                        if f.exists():
-                            f.unlink()
-                    else:
-                        for f in SUBTITLE_CACHE_DIR.glob("*.json"):
-                            f.unlink()
-                except Exception as e:
-                    self._json({"ok": False, "error": str(e)})
-                    return
-                self._json({"ok": True})
             elif path == "/api/quit":
                 self._json({"ok": True})
                 request_quit()
@@ -2031,11 +1759,15 @@ class HeadsetHandler(BaseHTTPRequestHandler):
     **只放开这四个路由**，其余一律 403：
 
       GET  /api/headset/status        模型起来没有（头显轮询用）
-      GET  /api/subtitle/cache        查该视频的字幕缓存（命中就完全不用跑 ASR）
+      GET  /api/subtitle/cache        兼容桩（缓存功能已删）：恒回"未命中"
       POST /api/subtitle/start        请求 PC 拉起 ASR + 翻译服务
-      POST /api/subtitle/cache/save   播完把字幕存回来（否则缓存永远是空的）
+      POST /api/subtitle/cache/save   兼容桩（缓存功能已删）：只回 ok:false
 
-    设计取舍：8790 上挂着设置、术语表 CSV 导入导出、设备同步（会调 adb）、退出……
+    字幕缓存功能已移除（Round 53），但**已发布的头显 APK 仍会调这两个接口**——
+    路由保留成空壳，让旧版头显拿到 hit:false 走正常识别路径、存档失败被它
+    静默忽略，而不是撞 403/404 走异常分支（头显侧协议零改动）。
+
+    设计取舍：8790 上挂着设置、设备同步（会调 adb）、退出……
     把它绑到局域网就等于把这些全开了。所以这里另起一个端口、另写一个 Handler，
     白名单是"正向枚举"的——新增路由必须显式加进来，不可能因为漏了一处判断而
     意外暴露。头显是可信设备，但局域网不一定只有头显。
@@ -2082,13 +1814,9 @@ class HeadsetHandler(BaseHTTPRequestHandler):
             if path == "/api/headset/status":
                 self._json(headset_status())
             elif path == "/api/subtitle/cache":
-                q = self._query()
-                vp = (q.get("video") or [""])[0]
-                lg = (q.get("lang") or ["ja"])[0]
-                if not vp:
-                    self._json({"ok": False, "error": "缺少 video 参数"}, 400)
-                else:
-                    self._json(subtitle_cache_get(vp, lg))
+                # 兼容桩：缓存已删，恒回"未命中"——头显据此走正常识别路径
+                self._json({"ok": True, "hit": False, "resolved":
+                            (self._query().get("video") or [""])[0]})
             else:
                 self._deny(path)
         except Exception:
@@ -2110,15 +1838,8 @@ class HeadsetHandler(BaseHTTPRequestHandler):
                 RT.add_log(f"头显（{self.client_address[0]}）请求启动字幕服务", "info")
                 self._json(sub_start())
             elif path == "/api/subtitle/cache/save":
-                # 头显播完/看完整后把字幕存回来。没有这一条，缓存永远是空的——
-                # "同一视频看第二遍不再重跑 ASR"就只是个写在界面上的说法。
-                r = subtitle_cache_save((body.get("video") or "").strip(),
-                                        (body.get("lang") or "ja").strip(),
-                                        body.get("segments") or [],
-                                        body.get("meta") or {})
-                if r.get("ok"):
-                    RT.add_log(f"头显保存字幕缓存：{r.get('count')} 段", "ok")
-                self._json(r)
+                # 兼容桩：缓存已删，如实回失败——旧版头显会忽略它，照常继续
+                self._json({"ok": False, "error": "字幕缓存功能已移除"})
             else:
                 self._deny(path)
         except Exception:
@@ -2131,7 +1852,7 @@ class HeadsetHandler(BaseHTTPRequestHandler):
         log.info("[头显] %s %s", self.client_address[0], fmt % args)
 
 
-# ---------------------------------------------------------------- 字幕服务配置 / 术语表
+# ---------------------------------------------------------------- 字幕服务配置
 def subtitle_models() -> dict:
     """枚举安装目录 models\ 下的 GGUF（UI 本地翻译模型下拉的数据源）。
 
@@ -2168,7 +1889,7 @@ def subtitle_config() -> dict:
 
 
 def save_subtitle_config(patch: dict) -> dict:
-    """写回 config.json（asr/vad/segment/translate/glossary 分组）。
+    """写回 config.json（asr/vad/segment/translate 分组）。
 
     · translate 组做**一层深合并**：否则前端只回传 openai.{base_url,model,api_key} 时，
       会把同组的 api_key_env/temperature/max_tokens 一起覆盖掉。
@@ -2193,189 +1914,14 @@ def save_subtitle_config(patch: dict) -> dict:
             tmp = cfg_file.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(tmp, cfg_file)
-        # 术语表相关字段改动了 → 顺手让运行中的服务热同步（enabled 开关即时生效，
-        # 不用重启；服务没在跑就静默跳过，下次启动自然按新配置初始化）
-        if "glossary" in (patch or {}):
-            try:
-                req = urllib.request.Request(
-                    f"http://127.0.0.1:{SUBTITLE_PORT}/glossary/reload",
-                    method="POST", data=b"")
-                urllib.request.urlopen(req, timeout=2).read()
-            except Exception:
-                pass
         RT.add_log("字幕服务配置已保存（重启服务后生效）", "ok")
         return {"ok": True, "config": _mask_translate_secrets(cfg)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-GLOSSARY_FILES = {"ja": "glossary_ja_zh.json", "en": "glossary_en_zh.json"}
-
-
-def glossary_file(lang: str) -> "Path | None":
-    """术语表文件路径（用户数据目录优先；首次调用会从出厂基线迁移一份过来）。"""
-    return subtitle_glossary_path(lang)
-
-
-def glossary_payload() -> dict:
-    out = {"ok": True, "langs": {}}
-    for lang in GLOSSARY_FILES:
-        f = glossary_file(lang)
-        try:
-            out["langs"][lang] = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-        except Exception as e:
-            # 读失败**绝不能**伪装成"空表"：前端拿到 ok:true + 空表就认为"词库是空的"，
-            # 于是置 glossaryLoaded=true 放行保存；用户随后的常规操作（导入十几条新词
-            # 再保存）会用这十几条把几千条的词库整体覆盖。save_glossary 的空表防护
-            # 此时也判不出来——它读的是同一个坏文件。这里如实回 ok:false，
-            # 前端 loadGlossary 的 `if (!r.ok) return` 就会拒绝置位、保存被拦下。
-            out["langs"][lang] = {}
-            out["ok"] = False
-            out.setdefault("errors", {})[lang] = f"{type(e).__name__}: {e}"
-    return out
-
-
-def save_glossary(body: dict) -> dict:
-    lang = body.get("lang")
-    terms = body.get("terms")
-    f = glossary_file(lang)
-    if f is None or not isinstance(terms, dict):
-        return {"ok": False, "error": "参数错误"}
-    with _SUBTITLE_FILE_LOCK:
-        # 现有文件存在却**解析不了**时一律拒绝写入并先备份：此时 terms 很可能是
-        # 前端基于"读失败=空表"拼出来的残缺表（见 glossary_payload），
-        # 直接 os.replace 就等于把用户的词库替换成残缺版；而且下面那条
-        # "空表覆盖防护"的 existing 读的也是同一个坏文件，判不出来。
-        if f.exists():
-            try:
-                json.loads(f.read_text(encoding="utf-8"))
-            except Exception as e:
-                try:
-                    shutil.copy2(f, str(f) + ".bak")
-                    kept = f"（原文件已备份为 {f.name}.bak）"
-                except Exception:
-                    kept = "（备份失败，原文件未改动）"
-                return {"ok": False,
-                        "error": f"现有词表无法解析，已拒绝覆盖{kept}：{type(e).__name__}: {e}"}
-        # 空表覆盖防护：前端在术语表**加载失败/未完成**时内存里就是空 dict，
-        # 此时保存会把几千条词库整表清空且还报成功。真想清空的合法路径必须
-        # 显式带 allow_empty（前端在用户确认后补发）。
-        if not terms and not body.get("allow_empty"):
-            try:
-                existing = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-            except Exception:
-                existing = {}
-            if existing:
-                return {"ok": False, "needs_confirm": "empty",
-                        "error": "新表是空的而现有词表不为空——若确要清空，请二次确认"}
-        try:
-            tmp = f.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(terms, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(tmp, f)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-    # 通知服务端热重载（若在跑）。结果必须如实回显：此前异常被 pass 吞掉，
-    # 而成功文案无条件打印——字幕服务没在跑时用户会看到"已热重载"，
-    # 实际服务下次启动读的还是启动时的旧词表，改动无声失效。
-    try:
-        req = urllib.request.Request(f"http://127.0.0.1:{SUBTITLE_PORT}/glossary/reload", method="POST", data=b"")
-        urllib.request.urlopen(req, timeout=2).read()
-        reloaded = True
-    except Exception:
-        reloaded = False
-    if reloaded:
-        RT.add_log(f"术语表已保存并热重载（{lang} · {len(terms)} 条）", "ok")
-    else:
-        RT.add_log(f"术语表已保存（字幕服务当前未运行，重启服务后生效；{lang} · {len(terms)} 条）", "warn")
-    return {"ok": True, "count": len(terms), "reloaded": reloaded}
-
-
-# ---------------------------------------------------------------- 术语表 CSV
-def glossary_export_csv(body: dict) -> dict:
-    """导出术语表为 CSV（UTF-8 BOM，Excel 直接打开不乱码）。"""
-    lang = body.get("lang")
-    f = glossary_file(lang)
-    path = (body.get("path") or "").strip()
-    if f is None:
-        return {"ok": False, "error": "参数错误：lang"}
-    if not path:
-        return {"ok": False, "error": "未指定导出路径"}
-    try:
-        data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-    except Exception as e:
-        return {"ok": False, "error": f"读取术语表失败：{e}"}
-    try:
-        with open(path, "w", encoding="utf-8-sig", newline="") as fp:
-            w = csv.writer(fp)
-            w.writerow(["term", "translation"])
-            for k, v in data.items():
-                w.writerow([k, v])
-    except Exception as e:
-        return {"ok": False, "error": f"写入失败：{e}"}
-    RT.add_log(f"术语表已导出（{lang} · {len(data)} 条 → {path}）", "ok")
-    return {"ok": True, "count": len(data), "path": path}
-
-
-def glossary_import_csv(body: dict) -> dict:
-    """解析 CSV 并返回词条；写盘与热重载交给 /api/glossary/save，避免两套逻辑。
-
-    mode="replace" 时直接覆盖写盘（原有条目全部丢弃），用于整表替换。
-    """
-    path = (body.get("path") or "").strip()
-    lang = (body.get("lang") or "").strip()
-    replace = (body.get("mode") or "").strip().lower() == "replace"
-    if not path:
-        return {"ok": False, "error": "未指定导入路径"}
-    try:
-        with open(path, "r", encoding="utf-8-sig", newline="") as fp:
-            rows = list(csv.reader(fp))
-    except UnicodeDecodeError:
-        try:
-            with open(path, "r", encoding="gbk", newline="") as fp:
-                rows = list(csv.reader(fp))
-        except Exception as e:
-            return {"ok": False, "error": f"编码识别失败（试过 UTF-8 / GBK）：{e}"}
-    except Exception as e:
-        return {"ok": False, "error": f"读取失败：{e}"}
-
-    rows = [r for r in rows if any((c or "").strip() for c in r)]
-    if not rows:
-        return {"ok": False, "error": "文件是空的"}
-
-    # 首行是表头（term/translation 或 原文/译文）就跳过
-    head = [c.strip().lower() for c in rows[0][:2]]
-    header_words = {"term", "translation", "source", "target", "原文", "译文", "术语", "翻译"}
-    if head and (set(head) & header_words):
-        rows = rows[1:]
-
-    terms: dict = {}
-    skipped = 0
-    for r in rows:
-        if len(r) < 2:
-            skipped += 1
-            continue
-        k = (r[0] or "").strip()
-        v = (r[1] or "").strip()
-        if not k:
-            skipped += 1
-            continue
-        terms[k] = v
-    if not terms:
-        return {"ok": False, "error": "没有解析到有效词条（需要两列：原文, 译文）"}
-
-    # 整表替换：直接写盘 + 热重载
-    if replace:
-        if lang not in GLOSSARY_FILES:
-            return {"ok": False, "error": "参数错误：替换模式需要 lang"}
-        saved = save_glossary({"lang": lang, "terms": terms})
-        if not saved.get("ok"):
-            return {"ok": False, "error": saved.get("error") or "写入失败"}
-        RT.add_log(f"术语表已整体替换（{lang} · {len(terms)} 条）", "ok")
-        return {"ok": True, "terms": terms, "count": len(terms),
-                "skipped": skipped, "replaced": True}
-
-    return {"ok": True, "terms": terms, "count": len(terms), "skipped": skipped}
-
+# 术语表功能已整体移除（Round 53）：词表文件、热词注入、译文修补、CSV 导入导出与
+# /api/glossary* 接口全部删除。
 
 # ================================================================ 设备同步
 # 复用 vendor/dlna 的 funscript_sync / video_sync（两者接口一致：
@@ -2930,7 +2476,7 @@ def _setup_file_logging() -> None:
 
     打包版是 GUI 子系统程序（`build/nexus.spec`: `console=False`）——没有控制台，
     而 `logging` 此前只装了 stderr handler ⇒ `log.warning/error` **全部被丢弃**。
-    这正是"术语表读失败""设置文件解析失败""taskkill 失败"这类问题长期无声的直接原因：
+    这正是"设置文件解析失败""taskkill 失败"这类问题长期无声的直接原因：
     它们只写 log，用户看不见，事后也无从排查。字幕服务那边早有同类做法
     （`vendor/subtitle/run_server.py` tee 到 `logs/run_server.log`），宿主一直缺这一半。
     """
@@ -3033,7 +2579,7 @@ def run(open_window: bool = True) -> None:
         log.info("头显接口: http://%s:%d", lan_ip(), LAN_API_PORT)
         RT.add_log(f"头显接口已就绪：http://{lan_ip()}:{LAN_API_PORT}", "ok")
     except Exception as e:
-        log.warning("头显接口启动失败（%s: %s），头显将无法查询缓存/拉起模型", type(e).__name__, e)
+        log.warning("头显接口启动失败（%s: %s），头显将无法查询状态/拉起模型", type(e).__name__, e)
         RT.add_log(f"头显接口启动失败：{e}", "warn")
 
     # 按设置自动启动

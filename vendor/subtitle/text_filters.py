@@ -25,21 +25,9 @@ _LATIN_HALLUCINATION_MAX_CHARS = 16
 # 字幕行首尾的引号类符号：ASR 会带出（实测 …想让你看呢。"），字幕不需要
 _WRAP_QUOTES = "「」『』“”\"“”‘’'"
 
-# 复读判据里"算一个命中"的键最短长度。术语表里 1~2 字的键（乳/首/手/私/男、
-# 悠亜/ゆあ…）在几乎所有日文句里都能"命中"，并且键之间互相包含（乳首 vs 乳、
-# 手を繋いで vs 手），靠它们几乎必然凑够"≥3 个命中"的前置条件，判据随即失效。
-_ECHO_KEY_MIN_LEN = 3
-
-# 判定为热词复读所需的覆盖率：输出必须**近乎整段**就是热词表本身。
-# 旧阈值 0.6 的本意是"含不少热词"，但在领域词密集的台词上必然饱和。
-_ECHO_COVERAGE = 0.95
-
 # is_prompt_echo 的长度下限：短输出与 prompt 同尾是**正常对话**（"そうですね"
 # 之后的"ね"、"そうだね悠亜"之后的"悠亜"），不是回显。
 _ECHO_MIN_CHARS = 4
-
-# 标点/分隔符：只用来算"正文覆盖率"（整段是热词表时，多余的字只有顿号）
-_NON_BODY = re.compile(r"[\s、。，,.!！?？…‥・「」『』（）()\[\]【】ー〜~\-—:：;；]+")
 
 
 def count_kana(text: str) -> int:
@@ -156,48 +144,3 @@ def has_repetition_loop(text: str, max_run: int = 3, lenient_limit: int = 15) ->
         else:
             run = 1
     return False
-
-
-def is_glossary_echo(text: str, keys: list, threshold: float = _ECHO_COVERAGE) -> bool:
-    """判断一段 ASR 输出是否是"把热词表当台词复读"了。
-
-    ⚠️ `keys` 必须是**真正进了提示词的那批键**（glossary.asr_context_with_keys）。
-    旧实现传的是整张术语表：默认配置（context_max_chars=0）只有 5 个人名共
-    19 字符进提示词，判据却拿 2096 个键去衡量，键之间还互相包含（乳首/乳、
-    手を繋いで/手、整句键），并集覆盖率必然饱和到 0.9 —— 于是
-    「おっぱいが気持ちいい」0.90、「乳首が痛い、やめて」0.78、
-    「もっと気持ちよくしてほしい」1.00、「手を繋いでいい」1.00 全被判复读丢弃
-    （audiocpp 侧还会因此做一次无热词重试，再判一次必然又为真 → 整句消失）。
-
-    判据（三条同时成立才算复读）：
-      1. ≥3 个 **≥_ECHO_KEY_MIN_LEN 字**的键命中 —— 1~2 字键无判别力（见常量注释）；
-      2. 输出本身不是一条术语 —— 表里混着 `もっと気持ちよくしてほしい` 这类
-         整句键，正常台词正好等于它，那时"覆盖率 100%"毫无意义；
-      3. 命中字符的**并集**占正文（剔掉标点/顿号）的比例 > threshold。
-    覆盖率必须按并集算——把各命中词长度直接相加，遇到互相包含的键
-    （`マンコ`/`おマンコ`、`ケツ`/`ケツ穴`）会重复计数，覆盖率能算出 1.38 这种
-    超过 1 的值；正文口径则让"整段就是热词表 + 顿号"仍能被识别。
-
-    命中数只看长键，覆盖率却把短键也算进去：前置条件 1 已经确认这是"一串独立
-    长术语"，此时 2 字键（`悠亜`/`ゆあ`）是真实证据 —— 复读人名时全靠它们把
-    "整段就是热词表"补齐。
-    """
-    text = (text or "").strip()
-    if len(text) < 4:
-        return False
-    keyset = {k for k in (keys or []) if k}
-    if text in keyset:
-        return False
-    hits = [k for k in keyset if len(k) >= _ECHO_KEY_MIN_LEN and k in text]
-    if len(hits) < 3:
-        return False
-    covered: set = set()
-    for k in keyset:
-        i = text.find(k)
-        while i >= 0:
-            covered.update(range(i, i + len(k)))
-            i = text.find(k, i + 1)
-    body = {i for i, ch in enumerate(text) if not _NON_BODY.match(ch)}
-    if not body:
-        return False
-    return len(covered & body) / len(body) > threshold

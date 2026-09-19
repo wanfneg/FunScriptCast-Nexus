@@ -7,8 +7,6 @@
 目录，源码模式就是仓库根）。用户数据一律落 `<安装目录>\\data\\`：
 
     <安装目录>\\data\\subtitle_config.json     云端 key / ASR / 分段 / 翻译配置
-    <安装目录>\\data\\glossary_ja_zh.json      日语术语表
-    <安装目录>\\data\\glossary_en_zh.json      英语术语表
     <安装目录>\\data\\integrated_settings.json 宿主设置（DLNA 共享目录等）
     <安装目录>\\data\\vr_dlna_settings.json    DLNA 设置
     <安装目录>\\models\\                       模型（ASR / 翻译 / HF 缓存）
@@ -24,7 +22,7 @@
 早期两种做法都试过，各有各的病，这里是第三种、也是最终形态：
 
   · 数据全塞 `{app}\\vendor\\subtitle\\`（和 .py 混着）→ 升级安装的 `[Files]` 整树覆盖会
-    把用户的 key 与术语表换成打包机副本；工具链还要写"摘出→回填"特例。
+    把用户的 key 换成打包机副本；工具链还要写"摘出→回填"特例。
   · 数据搬 `%APPDATA%\\FunScriptCast-Nexus\\` → 不再被覆盖，但**装到别的盘也没用**，
     大文件（模型缓存）照样压 C 盘；而且"程序在 D 盘、数据在 C 盘"两处寿命，用户删了
     安装目录却发现设置还在，看起来像没删干净。
@@ -39,8 +37,8 @@
 老版本的数据在别处，首次运行时**按"新方案优先"的顺序找一个存在的迁过来**：
 
   1. `<安装目录>\\data\\…`        当前方案（已迁移过就什么都不做）
-  2. `%APPDATA%\\FunScriptCast-Nexus\\…`   R48 过渡版位置（subtitle_config.json / glossary_*.json）
-  3. `<安装目录>\\vendor\\subtitle\\…`     最早的位置（config.json / glossary_*.json，也是出厂模板）
+  2. `%APPDATA%\\FunScriptCast-Nexus\\…`   R48 过渡版位置（subtitle_config.json 等）
+  3. `<安装目录>\\vendor\\subtitle\\…`     最早的位置（config.json，也是出厂模板）
 
 **保存永远写 `data\\`**，第 3 条那份从此只是出厂模板（只读兜底）。
 
@@ -58,13 +56,9 @@ import shutil
 import threading
 from pathlib import Path
 
-# 术语表文件名（与 host_server.GLOSSARY_FILES 同源；config 的 glossary 段只写文件名）
-GLOSSARY_NAMES = ("glossary_ja_zh.json", "glossary_en_zh.json")
-
 CFG_NAME = "subtitle_config.json"
 
 # 安装目录：本文件在 <安装目录>\vendor\subtitle\ 下，所以上两级就是安装目录
-# （与 translate_engine._default_cache_dir 的 parents[2] 同一口径）。
 _ROOT = Path(__file__).resolve().parents[2]
 
 # R48 过渡版把用户数据放在这里；现在要迁回安装目录（见模块注释"首次运行迁移"）。
@@ -255,7 +249,7 @@ def _migrate_once(name: str, base_dir: Path) -> bool:
 # 先用空 key 模板播种，装好的程序里那份真实 key 再也迁不过来）。
 #
 # 所以补一次**只跑一次**的补救：在数据目录里落个标记，标记不存在时用
-# 「key 以有值者为准 / 术语表以条数多者为准」把所有历史源兜一遍（被覆盖的先备份）。
+# 「key 以有值者为准」把所有历史源兜一遍（被覆盖的先备份）。
 # 标记写完就不再回头——把这点"聪明"限制在升级过渡这一次。
 _LAYOUT_MARKER = ".layout-v3"
 _layout_checked: set = set()
@@ -268,14 +262,6 @@ def _openai_key(p: Path) -> "tuple[str, str]":
         return str(t.get("api_key") or "").strip(), str(t.get("api_key_env") or "").strip()
     except Exception:
         return "", ""
-
-
-def _entry_count(p: Path) -> int:
-    try:
-        j = json.loads(p.read_text(encoding="utf-8"))
-        return len(j) if isinstance(j, dict) else 0
-    except Exception:
-        return 0
 
 
 def _backup(p: Path) -> None:
@@ -311,22 +297,6 @@ def _recover_layout(base_dir: Path) -> None:
                         print(f"[paths] 补救：配置的 api_key 为空而 {src.parent} 里有值 "
                               f"→ 采纳它（原文件已备份 {dst.name}.bak-layout-v3）", flush=True)
                         break
-        for name in GLOSSARY_NAMES:
-            g_new = d / name
-            if not g_new.exists():
-                continue
-            n_new = _entry_count(g_new)
-            # 术语表只增不减地攒；条数最多的那份是更晚的状态（同样遍历所有历史源）
-            best, best_n = None, n_new
-            for src in _legacy_sources(name, base_dir):
-                n = _entry_count(src)
-                if n > best_n:
-                    best, best_n = src, n
-            if best is not None:
-                _backup(g_new)
-                shutil.copy2(best, g_new)
-                print(f"[paths] 补救：术语表 {name} {best.parent} 里 {best_n} 条 > "
-                      f"data 里 {n_new} 条 → 采纳它（原文件已备份）", flush=True)
         stamp.write_text("用户数据布局 v3（安装目录 data\\）：一次性补救扫描已完成\n",
                          encoding="utf-8")
     except Exception as e:
@@ -358,41 +328,20 @@ def config_path(base_dir: Path) -> Path:
     return legacy if legacy is not None else dst
 
 
-def glossary_path(base_dir: Path, name: str) -> Path:
-    """术语表路径（`data\\<name>`），首次运行时从历史位置迁一份过来。"""
-    base = Path(base_dir)
-    _check_layout(base)
-    dst = _ensure_dir() / name
-    if dst.exists():
-        return dst
-    if _migrate_once(name, base):
-        return dst
-    legacy = _legacy_source(name, base)
-    return legacy if legacy is not None else dst
-
-
 def ensure_user_data(base_dir: Path) -> dict:
     """把该迁的都迁一遍，返回解析结果（宿主启动时调一次即可）。
 
-    返回 {"dir", "config", "glossary": {name: path}, "migrated": [...]}。
+    返回 {"dir", "config", "migrated": [...]}。
     """
     base = Path(base_dir)
-    out = {"dir": _ensure_dir(), "config": config_path(base), "glossary": {}, "migrated": []}
-    for n in GLOSSARY_NAMES:
-        p = glossary_path(base, n)
-        out["glossary"][n] = p
-        if p.parent == out["dir"]:
-            out["migrated"].append(n)
-    return out
+    return {"dir": _ensure_dir(), "config": config_path(base), "migrated": []}
 
 
 def load_config(base_dir: Path) -> dict:
     """读配置（`data\\` 优先，缺失时迁/读历史位置）。解析失败抛异常，由调用方决定怎么办。
 
-    **顺带把该迁的都迁一遍**：迁移如果只挂在 config 上，调用方就得自己记得"迁了
-    config 还要迁词表"，漏一句就是一种静默的半迁移——config 到了新位置、词表还在
-    旧位置，而服务按数据目录找词表，于是**用户的词表凭空变成空表**（不报错）。
-    把迁移收进这一个入口，任何读配置的路径都拿到完整状态。
+    **顺带把该迁的都迁一遍**：把迁移收进这一个入口，任何读配置的路径都拿到
+    完整状态，不会出现"迁移只做了一半"的静默半迁移。
     """
     base = Path(base_dir)
     ensure_user_data(base)

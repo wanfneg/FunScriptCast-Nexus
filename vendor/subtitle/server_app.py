@@ -50,17 +50,12 @@ from fastapi import FastAPI, Request  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
 from asr_engine import AsrEngine  # noqa: E402
-from glossary import Glossary  # noqa: E402
 from whisper_fallback import WhisperFallback  # noqa: E402
 from translate_engine import Translator  # noqa: E402
 
 # 配置从**数据目录**读（首次运行自动从历史位置迁移，见 user_paths 模块注释）。
-# 安装目录里那份从此只是模板：升级覆盖它不再影响用户的 key/术语表。
+# 安装目录里那份从此只是模板：升级覆盖它不再影响用户的 key。
 CFG = user_paths.load_config(BASE)
-# 术语表也按用户数据目录解析（config 的 glossary 段只写文件名，这里换 base_dir 即可）
-USER_DIR = user_paths.user_dir()
-for _n in user_paths.GLOSSARY_NAMES:
-    user_paths.glossary_path(BASE, _n)
 
 
 def _code_signature() -> str:
@@ -83,7 +78,7 @@ def _code_signature() -> str:
 CODE_SIG = _code_signature()
 
 # config 缺段防御：宁可补空段也不能 import 即崩（裸 KeyError 报错信息极差）
-for _sec in ("asr", "translate", "server", "vad", "segment", "glossary"):
+for _sec in ("asr", "translate", "server", "vad", "segment"):
     if not isinstance(CFG.get(_sec), dict):
         CFG[_sec] = {}
 
@@ -114,7 +109,7 @@ if os.environ.get("TRANSLATE_BACKEND"):
 if os.environ.get("NEXUS_ASR_BACKEND"):
     CFG["asr"]["backend"] = os.environ["NEXUS_ASR_BACKEND"]
 
-state = {"asr": None, "translator": None, "glossary": None}
+state = {"asr": None, "translator": None}
 
 # 进程启动时刻：/health 回给宿主，用来识别"这是不是我刚拉起来的那个进程"
 _BOOT_TS = time.time()
@@ -207,7 +202,7 @@ class _AsrUnavailable:
                 "error": self.error}
 
 
-def _make_asr(cfg: dict, glossary):
+def _make_asr(cfg: dict):
     """按 asr.backend 选引擎。
 
     - "pytorch"（默认）：原来的 Qwen3-ASR + torch 实现
@@ -237,22 +232,17 @@ def _make_asr(cfg: dict, glossary):
 
             be = AudioCppBackend(
                 cfg.get("audiocpp", {}) or {},
-                glossary=glossary,
-                # 热词开关在 asr 段（与 PyTorch 引擎同源），不是 audiocpp 段的
-                use_context=bool(cfg.get("use_glossary_context", True)),
-                context_max_chars=int(cfg.get("context_max_chars", 0)),
-                # 拉丁幻觉过滤也在 asr 段（与热词开关同源），默认开
+                # 拉丁幻觉过滤在 asr 段（与引擎选择同源），默认开
                 drop_latin=bool(cfg.get("drop_latin_hallucination", True)),
             )
             be.ensure_server()
-            ctx = be._build_context("ja")
             print(f"[server] ASR 后端 = audiocpp（{be.backend}, {be.threads} 线程, "
-                  f"端口 {be.port}，热词 {len(ctx)} 字符）")
+                  f"端口 {be.port}）")
             return be
         except Exception as e:
             print(f"[server] audiocpp 不可用（{type(e).__name__}: {e}），回退 PyTorch")
     try:
-        engine = AsrEngine(cfg, glossary)
+        engine = AsrEngine(cfg)
         print(f"[server] ASR 后端 = pytorch（加载 {engine.load_s:.1f}s）")
         return engine
     except Exception as e:
@@ -263,13 +253,10 @@ def _make_asr(cfg: dict, glossary):
 
 @asynccontextmanager
 async def lifespan(_app):
-    _gl_cfg = CFG.get("glossary", {}) or {}
-    state["glossary"] = Glossary(_gl_cfg, base_dir=USER_DIR, extra=_gl_cfg.get("extra"))
-    state["asr"] = _make_asr(CFG.get("asr", {}), state["glossary"])
-    state["translator"] = Translator(CFG.get("translate", {}), state["glossary"])
+    state["asr"] = _make_asr(CFG.get("asr", {}))
+    state["translator"] = Translator(CFG.get("translate", {}))
     print(f"[server] 管线代码签名 code_sig={CODE_SIG}（陈旧实例排障用）", flush=True)
-    print(f"[server] 翻译后端={state['translator'].backend}，"
-          f"术语表 ja={state['glossary'].size('ja')} en={state['glossary'].size('en')}")
+    print(f"[server] 翻译后端={state['translator'].backend}")
     _reaper = asyncio.create_task(_idle_reaper())
     print(f"[server] 空闲回收：{_idle_release_min():.0f} 分钟无识别请求后释放模型"
           if _idle_release_min() > 0 else "[server] 空闲回收：已关闭（idle_release_min=0）")
@@ -287,7 +274,7 @@ app = FastAPI(title="VRFunScriptCast AI Subtitle Server", version="0.1", lifespa
 # ---------------------------------------------------------------- 局域网暴露面收紧
 # 8756 绑 0.0.0.0（头显要从局域网直接推音频），但这个进程的 config.json 里可能
 # 带着云端翻译的**明文 API Key**。头显只用到 /transcribe* 与 /health；
-# 其余接口（selftest / stats / glossary 读写 / reload）一律收紧到本机回环——
+# 其余接口（selftest / stats）一律收紧到本机回环——
 # 等于"把翻译额度开放给整个局域网"的口子被焊死，头显侧协议零改动。
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -351,17 +338,16 @@ def health():
         "gpu_used_gb": _gpu_used_gb(),
         "translate_backend": state["translator"].backend if state["translator"] else None,
         "translate": state["translator"].describe() if state["translator"] else None,
-        "glossary": {k: state["glossary"].size(k) for k in state["glossary"].langs()} if state["glossary"] else {},
     }
 
 
 @app.get("/translate/stats")
 def translate_stats():
-    """翻译层累计统计（批量/缓存命中/纠错轮数/兜底）。用于 PC 端诊断页。"""
+    """翻译层累计统计（批量/纠错轮数/兜底）。用于 PC 端诊断页。"""
     t = state["translator"]
     if t is None:
         return {"ready": False}
-    return {"ready": True, "describe": t.describe(), "cache_dir": t.cache_dir,
+    return {"ready": True, "describe": t.describe(),
             "stats": dict(t.stats)}
 
 
@@ -373,7 +359,7 @@ def translate_selftest(text: str = "こんにちは、いい天気ですね。")
     "空译文"，用户只看到没字幕，无从判断是 key 错、余额不足还是模型名错。这里分成两段报：
 
       · raw      —— 直接调 _chat（不经过批量/兜底），失败时把上游响应体带出来
-      · pipeline —— 走完整 translate_segments（含术语表/纠错/兜底），反映真实产出
+      · pipeline —— 走完整 translate_segments（含纠错/兜底），反映真实产出
     """
     t = state["translator"]
     if t is None:
@@ -399,40 +385,6 @@ def translate_selftest(text: str = "こんにちは、いい天気ですね。")
     out["ms"] = round((time.perf_counter() - t0) * 1000, 1)
     out["ok"] = bool((out["raw"] or out["pipeline"])) and not out["raw_error"]
     return out
-
-
-@app.get("/glossary")
-def glossary_get(lang: str = "ja"):
-    """查看当前术语表（PC 端管理程序/调试用）。"""
-    g = state["glossary"]
-    return {"lang": lang, "count": g.size(lang), "terms": g.raw(lang)}
-
-
-@app.post("/glossary/reload")
-def glossary_reload():
-    """强制重新读取术语表文件（正常情况下按 mtime 自动热加载，此接口用于手动触发）。
-
-    同时把 config.json 里的 `glossary.enabled` 总开关热同步进来——宿主保存
-    字幕配置时只要动了 glossary 段就会调这里，开关**即时生效**，无需重启服务。
-    """
-    g = state["glossary"]
-    try:
-        # 走与启动同一个解析（用户数据目录优先），否则这里会读到安装目录的模板、
-        # 把用户刚存的开关值覆盖回默认
-        cfg = user_paths.load_config(BASE)
-        g.set_enabled(bool((cfg.get("glossary") or {}).get("enabled", True)))
-    except Exception:
-        pass
-    # 流式路径有自己那份 Glossary 实例（懒加载，见 stream_bridge），开关必须显式同步过去
-    # ——否则"总开关关了、流式路径还在套术语"，同进程两套实例的既有设计留下的缝。
-    try:
-        from stream_bridge import sync_glossary_enabled
-        sync_glossary_enabled(g.enabled)
-    except Exception:
-        pass
-    changed = g.reload(force=True)
-    return {"changed": changed, "enabled": g.enabled,
-            "sizes": {k: g.size(k) for k in g.langs()}}
 
 
 @app.post("/transcribe")
@@ -538,8 +490,8 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
         # ② 块内碎片去重：同一响应里互为子串的段保留更长一条（重叠区前缀碎片，
         #    实测 "今日。"/"今日は。"——头显侧 LCS≥6 判据接不住这种短碎片）
         # ③ 整句复读置空：error=untranslated_leak 且译文假名 ≥2。判据必须是假名
-        #    计数而不是"有没有汉字"——术语表修补把人名换成汉字（悠亜→悠亚），
-        #    整句日文掺两个汉字就绕过了汉字判据（实测开头第一句天天上屏日文）
+        #    计数而不是"有没有汉字"——整句日文掺两个汉字（人名等）就绕过了
+        #    汉字判据（实测开头第一句天天上屏日文）
         from stream_bridge import _display_zh
         from text_filters import strip_wrap_quotes
         segs = result["segments"]

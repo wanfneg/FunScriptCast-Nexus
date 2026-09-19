@@ -83,40 +83,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       dragRegion: (document.querySelector('.titlebar') || {}).className,
     };
     if (navBtn) document.querySelector('button[data-page="dashboard"]').click();
-    // 切到「术语表」页，验证 CSV 导入/导出控件就位
-    const gBtn = document.querySelector('button[data-page="glossary"]');
-    if (gBtn) gBtn.click();
-    const glossaryPage = {
-      navExists: !!gBtn,
-      importBtn: !!document.querySelector('#glossImport'),
-      exportBtn: !!document.querySelector('#glossExport'),
-      langSeg: document.querySelectorAll('#glossSeg button').length,
-      total: t('#glossTotal'),
-      jaCount: t('#glossJaCount'),
-      enCount: t('#glossEnCount'),
-      replaceSwitch: !!document.querySelector('#glossReplace'),
-      // 界面不再渲染条目：这两者必须为 0
-      renderedRows: document.querySelectorAll('#page-glossary .term-row').length,
-      listBoxes: document.querySelectorAll('#page-glossary #jaList, #page-glossary #enList').length,
-      saveBtn: !!document.querySelector('#saveGloss'),
-    };
-    if (gBtn) document.querySelector('button[data-page="dashboard"]').click();
     return {
       title: document.title,
       pills: { dlna: t('#pillDlna'), sub: t('#pillSub'), gpu: t('#pillGpu') },
       rail: { dlna: t('#railDlnaD'), dlnaCls: cls('#railDlna'), sub: t('#railSubD'), gpu: t('#railGpuD'), gpuU: t('#railGpuU') },
-      metrics: { roots: t('#mRoots'), uptime: t('#mUptime'), terms: t('#mTerms'), gpuText: t('#gpuText') },
+      metrics: { roots: t('#mRoots'), uptime: t('#mUptime'), gpuText: t('#gpuText') },
       ringPct: t('#gpuRing .pct'),
       ringOffset: (document.querySelector('#gpuRing .fg') || {}).style ? document.querySelector('#gpuRing .fg').style.strokeDashoffset : null,
       dlnaPage: { badge: t('#dlnaBadge'), url: (document.querySelector('#dlnaUrl')||{}).value, roots: document.querySelectorAll('#rootList .row').length },
       subPage: { badge: t('#subBadge'), model: t('#subModel'), device: t('#subDevice') },
-      subtitleCache: {
-        badge: t('#cacheBadge'),
-        sub: t('#cacheSub'),
-        clearBtn: !!document.querySelector('#cacheClear'),
-      },
       syncPage: syncPage,
-      glossaryPage: glossaryPage,
       timeline: document.querySelectorAll('#timeline .tl-item').length,
       ver: t('#verLine'), aboutIp: t('#aboutIp'),
       settings: {

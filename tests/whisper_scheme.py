@@ -19,11 +19,10 @@ ASH 层换成 **Whisper 系**，切句不用定长块，而是**在静音处切�
 
 ## 用法
 
-    # 它的方案（默认：RMS 切句 + 幻觉过滤 + 热词与上一句作 prompt），跑完直接打分
+    # 它的方案（默认：RMS 切句 + 幻觉过滤 + 上一句作 prompt），跑完直接打分
     python tests/whisper_scheme.py --tag R43whisper --score
 
     # 消融：prompt 回传内容的影响（实测 both 会诱发 Whisper 的拉丁幻觉）
-    python tests/whisper_scheme.py --tag R43glossary --prompt-mode glossary --score
     python tests/whisper_scheme.py --tag R43noprompt --prompt-mode none --score
 
     # 切句方式对照：Whisper 自带 VAD 整片切（粗切，段长可达十几秒）
@@ -125,9 +124,9 @@ def main() -> int:
     ap.add_argument("--overlap-sec", type=int, default=1, help="--cut blocks 的重叠（生产=1）")
     ap.add_argument("--no-filter", action="store_true",
                     help="关掉幻觉过滤（复读/热词回显/拉丁幻觉），用于量化过滤的贡献")
-    ap.add_argument("--prompt-mode", default="both", choices=["none", "glossary", "both"],
-                    help="ASR prompt 回传内容：none=不给；glossary=只给热词；"
-                         "both=热词+上一句（它的做法）。实测 both 会诱发 Whisper 的"
+    ap.add_argument("--prompt-mode", default="none", choices=["none", "both"],
+                    help="ASR prompt 回传内容：none=不给（生产铁律）；"
+                         "both=上一句原文（热词机制）。实测 both 会诱发 Whisper 的"
                          "拉丁幻觉（`.`, `Thank`, `I`, `you`），none 则一段都没有")
     ap.add_argument("--score", action="store_true", help="跑完直接调 compare_with_reference.py 打分")
     args = ap.parse_args()
@@ -165,29 +164,22 @@ def main() -> int:
                          compute_type=args.compute_type, local_files_only=True)
     print(f"[3/5] 模型加载 {time.time()-t0:.1f}s  {args.model}", flush=True)
 
-    # 热词提示与"真正进提示词的键"——判据只能用这批键（见 text_filters.is_glossary_echo）
-    from glossary import Glossary, context_with_keys
+    # 术语表已整体移除（Round 53）：prompt 只剩"上一句原文"（--prompt-mode both）。
     CFG = json.loads((SUB / "config.json").read_text(encoding="utf-8"))
-    gl = Glossary(CFG.get("glossary", {}), base_dir=SUB, extra=CFG.get("glossary", {}).get("extra"))
-    ctx_terms, ctx_keys = context_with_keys(
-        gl, "ja", int((CFG.get("asr") or {}).get("context_max_chars", 0) or 0))
-    print(f"[3/5] 热词提示 {len(ctx_terms)} 字符 / {len(ctx_keys)} 个键", flush=True)
+    ctx_terms = ""
 
-    from text_filters import (has_repetition_loop, is_glossary_echo, is_latin_hallucination,
+    from text_filters import (has_repetition_loop, is_latin_hallucination,
                               is_prompt_echo, strip_wrap_quotes)
 
     t0 = time.time()
     segs: list[dict] = []
-    dropped = {"repetition": 0, "glossary_echo": 0, "prompt_echo": 0, "latin": 0}
+    dropped = {"repetition": 0, "prompt_echo": 0, "latin": 0}
     prev_text = ""          # 上一句终稿 → 作为 Whisper initial_prompt（它的 last_final_text）
 
     def transcribe_span(a: int, b: int, base_s: float):
         prompt = ""
-        if args.prompt_mode != "none":
-            bits = [ctx_terms] if ctx_terms else []
-            if args.prompt_mode == "both" and prev_text:
-                bits.append(prev_text)
-            prompt = " ".join(x for x in bits if x)[:200]
+        if args.prompt_mode == "both" and prev_text:
+            prompt = prev_text[:200]
         out, _ = model.transcribe(
             pcm[a:b], language="ja", beam_size=5,
             vad_filter=(args.cut != "rms"),
@@ -225,9 +217,6 @@ def main() -> int:
             if has_repetition_loop(t):
                 dropped["repetition"] += 1
                 continue
-            if is_glossary_echo(t, ctx_keys):
-                dropped["glossary_echo"] += 1
-                continue
             # ⚠ 只在**真的把 prev_text 当 prompt 发出去**时才判回显：--prompt-mode none
             # 时模型根本没看到它，拿它做判据会把"恰巧与上一句同尾"的正常短句丢掉
             # （audiocpp 侧犯过同一个错，R42 已修）。
@@ -246,7 +235,7 @@ def main() -> int:
             prev_text = t[:80]
     segs = kept
     print(f"[3/5] 转写 {asr_s:.1f}s → 保留 {len(segs)} 段；过滤丢弃 "
-          f"复读{dropped['repetition']} 热词回显{dropped['glossary_echo']} "
+          f"复读{dropped['repetition']} "
           f"prompt回显{dropped['prompt_echo']} 拉丁幻觉{dropped['latin']}", flush=True)
     if dropped["latin"]:
         print("      ⚠ initial_prompt 会诱发 Whisper 的英文幻觉（实测：给 prompt 约 6~7 段/片，"
@@ -256,7 +245,7 @@ def main() -> int:
     # 沿用生产同一套 Sakura MT（保持"翻译"这个变量不变，只变 ASR 与切句）
     from translate_engine import Translator
     from stream_bridge import _display_zh
-    tr = Translator(CFG.get("translate", {}), gl)
+    tr = Translator(CFG.get("translate", {}))
     batch = max(1, int((CFG.get("translate") or {}).get("batch_size", 10)))
     last_src = last_zh = ""
     t0 = time.time()

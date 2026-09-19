@@ -102,12 +102,11 @@ FunScriptCast-Nexus\
 │   ├── video_sync.py       视频文件夹同步
 │   └── tray_icon.py        托盘图标
 ├── vendor\subtitle\        AI 字幕服务（原 Subtitle Server，FastAPI）
-│   ├── server_app.py       /health /transcribe /glossary
+│   ├── server_app.py       /health /transcribe /translate/*
 │   ├── asr_engine.py       Qwen3-ASR + ForcedAligner
 │   ├── translate_engine.py 翻译调度（local / ollama / openai 三种可插拔后端）
 │   ├── llama_backend.py    本地翻译模型：按需拉起并复用 llama-server（直读 GGUF）
-│   ├── glossary.py         术语表（mtime 热加载）
-│   └── config.json         出厂模板（你的配置在 %APPDATA%，见下节）
+│   └── config.json         出厂模板（你的配置在 data\，见下节）
 ├── vendor\llama\           llama.cpp（llama-server.exe + CUDA 运行时，约 1.1 GB）
 ├── models\                 安装目录模型：ASR 约 8 GB + 翻译 Sakura GGUF 约 5 GB
 ├── .venv\                  5.0 GB：torch(cu128) + transformers + fastapi + pywebview
@@ -124,12 +123,11 @@ FunScriptCast-Nexus\
 ```
 <安装目录>\
 ├── FunScriptCast-Nexus.exe
-├── data\      ← 你的数据：subtitle_config.json（云端 key / 参数）、glossary_*.json（术语表）、
+├── data\      ← 你的数据：subtitle_config.json（云端 key / 参数）、
 │                integrated_settings.json（DLNA 共享目录等）、vr_dlna_*.json、webview\（界面 profile）
 ├── models\    ← 模型：ASR + 翻译 GGUF + hf-cache\（whisper 兜底模型约 1.4 GB）
 │                _download\（下载暂存，装完可删）
 ├── logs\      ← host.log（宿主）+ run_server.log（字幕服务）+ llama_server_*.log + 托盘诊断
-├── cache\     ← 字幕/翻译缓存（可再生）
 ├── run\       ← 运行时临时文件：子进程配置、VAD 转储、设备同步临时包（可随时删）
 ├── ui\ vendor\ tools\ runtime\     ← 程序
 └── vendor\llama\                   ← llama.cpp 运行时（约 1.1 GB，首次用到时下载）
@@ -147,8 +145,8 @@ FunScriptCast-Nexus\
 |---|---|
 | **升级 / 覆盖安装** | 数据自动保留：`data\` 是运行期产物，安装包**不安装它、也不删它**，只在新装时铺一份出厂种子（`onlyifdoesntexist`） |
 | **彻底复位（恢复出厂）** | 关掉程序，删掉 `data\` 目录。这是唯一的复位入口 |
-| **备份 / 换机** | 拷走 `data\`（几十 KB 的 key、术语表、设置都在里面）；模型太大可不带 |
-| **老版本升上来** | 首次运行**自动迁移**：从 `%APPDATA%\FunScriptCast-Nexus\`（过渡版位置）或 `vendor\subtitle\`（最早的位置）把 key / 术语表 / 设置搬进 `data\`，日志打 `[paths] 已迁移用户数据：…` |
+| **备份 / 换机** | 拷走 `data\`（几十 KB 的 key、设置都在里面）；模型太大可不带 |
+| **老版本升上来** | 首次运行**自动迁移**：从 `%APPDATA%\FunScriptCast-Nexus\`（过渡版位置）或 `vendor\subtitle\`（最早的位置）把 key / 设置搬进 `data\`，日志打 `[paths] 已迁移用户数据：…` |
 
 > ⚠️ **安装目录要选在空间充足的盘上**（模型 20 GB 起），别用系统盘。
 > 安装向导里可以改路径；升级时沿用你上次选的目录。
@@ -286,7 +284,7 @@ dist-app\
 **Inno 没有差分更新**：升级就是整包重下 + 覆盖程序文件。贵的部分（模型、llama 运行时、
 你的数据）不在安装范围内，所以不会被重下或清掉——这也是 `data\` 要跟代码分开的原因。
 
-不带 `.venv` 也能跑：DLNA、设备同步、术语表都正常，只有「启动字幕服务」会
+不带 `.venv` 也能跑：DLNA、设备同步都正常，只有「启动字幕服务」会
 直接报 `ModuleNotFoundError: No module named 'uvicorn'` 这类可读错误。
 
 ### 构建期踩到的坑（已修）
@@ -305,13 +303,6 @@ dist-app\
 | POST | `/api/dlna/start` `/api/dlna/stop` | 启停 DLNA |
 | POST | `/api/subtitle/start` `/api/subtitle/stop` | 启停字幕子进程 |
 | GET/POST | `/api/subtitle/config` | 读写字幕服务 `config.json` |
-| GET | `/api/glossary` | 读取术语表 |
-| POST | `/api/glossary/save` | 保存术语表并触发热重载 |
-| POST | `/api/glossary/export` | 导出为 CSV（UTF-8 BOM，Excel 直开不乱码） |
-| POST | `/api/glossary/import` | 解析 CSV（`mode=replace` 整表替换，否则合并） |
-
-> 术语表页**不渲染条目**——4000+ 条会把 DOM 撑到几千节点。界面只显示两张表的条数，
-> 维护走 CSV 导入/导出（或直接改 `vendor/subtitle/glossary_*.json`）。
 | GET | `/api/sync` | 同步状态（设备连接 / 两个槽位 / 日志） |
 | POST | `/api/sync/devices` | 扫描 adb 设备（含型号） |
 | POST | `/api/sync/connect` `/api/sync/disconnect` | 连接 / 断开设备 |
@@ -339,7 +330,6 @@ dist-app\
 | 前端 | 控制台错误 0；溢出 0×0；DOM 545 节点（预算 <1500） |
 | 窗口 | pywebview + WebView2；无原生标题栏 + 可缩放 + 圆角；关闭→隐藏、托盘→恢复 |
 | 设备同步 | 真机 Quest 3（`192.168.2.129:5555`）脚本同步：本地 1 / 设备 2707 / 推送 1 |
-| 术语表 CSV | 导入解析（跳过表头/空行）、导出 UTF-8 BOM；现为 2091 / 2170 条 |
 | 打包 EXE | 17.7 MB 单文件；DLNA `description.xml` 200；字幕服务 `ready` + `cuda:0` |
 | 显存回收 | 停止字幕服务后 5720 MB → 1736 MB |
 

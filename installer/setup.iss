@@ -8,11 +8,11 @@
 ;   · 附加任务：桌面快捷方式（默认不勾）、开机自启动（默认不勾）
 ;   · 按用户安装（不需要管理员），自带卸载器
 ;
-; ⚠️ **数据都在安装目录里**（用户自己选的那个文件夹）：`data\`（配置/术语表/设置/DLNA）、
+; ⚠️ **数据都在安装目录里**（用户自己选的那个文件夹）：`data\`（配置/设置/DLNA）、
 ;    `models\`（模型 + HF 缓存）、`logs\`。装到 D 盘就全在 D 盘，C 盘一个字节不落。
 ;    规则只写一份：`vendor\subtitle\user_paths.py`。因此：
 ;      · `data\` 是运行期产物 —— 本脚本**不安装它、也不删它**（只在新装时铺一份出厂种子），
-;        升级安装自然保留用户的 key / 术语表 / 共享目录设置；
+;        升级安装自然保留用户的 key / 共享目录设置；
 ;      · 卸载时它同样保留（Inno 只删自己装过的东西），用户想彻底清就删整个安装目录。
 ;    ← 因为模型可能有 20GB+，**安装目录建议选在空间充足的盘上**（别用系统盘）。
 ;
@@ -63,7 +63,7 @@ Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.i
 
 [Messages]
 ; 首页就把"升级会不会动我的数据"说清楚——这是用户最担心的点，也是本安装包最该讲清的规则。
-WelcomeLabel2=即将安装 [name/ver] 到你的电脑。%n%n· 升级安装：只覆盖程序文件，你的数据（data\ 目录：云端 Key、术语表、DLNA 共享目录）与已下载的模型都会保留，不会重新下载。%n· 全新安装：请选一个空间充足的目录 —— 模型可能占用 20GB 以上，建议不要装在系统盘。%n%n继续前请先关闭正在运行的程序。
+WelcomeLabel2=即将安装 [name/ver] 到你的电脑。%n%n· 升级安装：只覆盖程序文件，你的数据（data\ 目录：云端 Key、DLNA 共享目录）与已下载的模型都会保留，不会重新下载。%n· 全新安装：请选一个空间充足的目录 —— 模型可能占用 20GB 以上，建议不要装在系统盘。%n%n继续前请先关闭正在运行的程序。
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; \
@@ -75,11 +75,11 @@ Name: "autostart"; Description: "开机自动启动 FunScriptCast-Nexus（当前
 ; 升级安装必须清掉"上一版有、这一版不再分发"的旧文件（坑 #20 同族：Inno 只覆盖同名文件，
 ; 从不删多余文件，于是升级完行为还是旧的）。**只删代码**：
 ;   · `{app}\data`、`{app}\logs`、`{app}\models`、`{app}\cache`、`{app}\run` **一个字都不碰**
-;     —— 那是运行数据、模型与运行时临时文件，删了就是把用户的 key / 术语表 / 共享目录 /
+;     —— 那是运行数据、模型与运行时临时文件，删了就是把用户的 key / 共享目录 /
 ;     下好的模型清空。（所以这一节里永远不出现 data\、logs\、models\、cache\、run\。）
 ;   · `vendor\subtitle` 里只逐项删**代码**（*.py/*.pyc/*.md/*.txt/*.bat 与 docs/tools/
-;     __pycache__ 目录）：历史上配置与词表就跟 .py 混在这个目录里，整目录删除曾等于把
-;     词库和 key 一起清空（P0-2 事故的安装包版本）。R49 起数据已搬进 `data\`，这里更安全。
+;     __pycache__ 目录）：历史上配置就跟 .py 混在这个目录里，整目录删除曾等于把
+;     key 一起清空（P0-2 事故的安装包版本）。R49 起数据已搬进 `data\`，这里更安全。
 ;   · `vendor\llama` 是 fetch_llama 下载的运行时二进制（约 1.1 GB），不在删除范围——
 ;     宁可留下旧 dll，也不删用户手里的运行时。
 Type: filesandordirs; Name: "{app}\runtime"
@@ -103,22 +103,18 @@ Source: "..\dist-app\runtime\*"; DestDir: "{app}\runtime"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-app\ui\*"; DestDir: "{app}\ui"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
-; ⚠ Excludes 里的 4 个数据文件是**老用户的迁移源**（R49 之前它们就住在这个目录里）：
-;   升级那一刻，用户的云端 key 与术语表还在这份文件里，[Files] 整树覆盖会把它换成打包机
+; ⚠ Excludes 里的 config.json 是**老用户的迁移源**（R49 之前它就住在这个目录里）：
+;   升级那一刻，用户的云端 key 还在这份文件里，[Files] 整树覆盖会把它换成打包机
 ;   副本（key 为空）⇒ 首次迁移读到的就是空 key。所以这里排除掉，改由 data\ 那份种子负责。
 ;   开发者垃圾（__pycache__ / *.pyc / *.log / *.json.bak* / *.json.tmp）也一并排除：
 ;   "用户装到的是干净的"——包里不该有打包机的缓存、日志和历史备份。
 Source: "..\dist-app\vendor\*"; DestDir: "{app}\vendor"; \
-    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\glossary_ja_zh.json,subtitle\glossary_en_zh.json,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp"; \
+    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
-; 出厂种子：**只在新装时铺**（onlyifdoesntexist）。装了就不再动它——用户的 key、术语表、
-; 以及界面上调过的参数都在这三份文件里。配置在 data\ 里叫 subtitle_config.json。
+; 出厂种子：**只在新装时铺**（onlyifdoesntexist）。装了就不再动它——用户的 key、
+; 以及界面上调过的参数都在这份文件里。配置在 data\ 里叫 subtitle_config.json。
 Source: "..\dist-app\vendor\subtitle\config.json"; DestDir: "{app}\data"; \
     DestName: "subtitle_config.json"; Flags: onlyifdoesntexist
-Source: "..\dist-app\vendor\subtitle\glossary_ja_zh.json"; DestDir: "{app}\data"; \
-    Flags: onlyifdoesntexist
-Source: "..\dist-app\vendor\subtitle\glossary_en_zh.json"; DestDir: "{app}\data"; \
-    Flags: onlyifdoesntexist
 Source: "..\dist-app\tools\*"; DestDir: "{app}\tools"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist-app\version.json"; DestDir: "{app}"; Flags: ignoreversion
@@ -250,7 +246,7 @@ begin
     MsgBox('检测到已安装 {#MyAppVersion} 之前的版本：' + PrevVersion + NL +
            '将升级到 {#MyAppVersion}。' + NL + NL +
            '· 只覆盖程序文件，不会重新下载模型' + NL +
-           '· 你的数据保留：data\（云端 Key / 术语表 / DLNA 共享目录）' + NL +
+           '· 你的数据保留：data\（云端 Key / DLNA 共享目录）' + NL +
            '· 老版本放在 vendor\subtitle\ 或 %APPDATA% 的数据，首次运行会自动迁移过来' +
            NL + NL + msg, mbInformation, MB_OK);
   end;

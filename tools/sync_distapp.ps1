@@ -4,7 +4,6 @@
 #   powershell -ExecutionPolicy Bypass -File tools\sync_distapp.ps1 -Restart     # 同步后重启字幕服务
 #   powershell -ExecutionPolicy Bypass -File tools\sync_distapp.ps1 -Check       # 只报告差异（有差异 exit 1，可做门禁）
 #   powershell -ExecutionPolicy Bypass -File tools\sync_distapp.ps1 -SyncConfig  # 连 config.json 一起覆盖（默认排除！）
-#   powershell -ExecutionPolicy Bypass -File tools\sync_distapp.ps1 -SyncGlossary # 连术语表一起覆盖（默认排除！）
 #
 # 背景：Nexus 打包版（dist-app\FunScriptCast-Nexus.exe）拉起的服务跑 dist-app 里的
 # 独立快照（ui\ 与 vendor\）——仓库改动不同步过去就完全无效
@@ -12,10 +11,9 @@
 #
 # ⚠️ 运行数据默认**排除**：dist-app 侧不是"仓库的副本"，而是用户正在用的实例——
 #    · config.json          UI 里填的云端 API Key / 本地调过的参数（仓库那份只是模板）
-#    · glossary_*.json      用户在 UI 或 CSV 导入攒出来的术语表（几个月的成果）
 #    · *.json.bak / .tmp    宿主的自保备份、写入途中的临时文件
-#    用仓库模板覆盖 = 抹掉 key 和词库（与 build_exe 的坑 #12 同族）。
-#    确要覆盖时显式给 -SyncConfig / -SyncGlossary。
+#    用仓库模板覆盖 = 抹掉 key（与 build_exe 的坑 #12 同族）。
+#    确要覆盖时显式给 -SyncConfig。
 #
 # 🚫 **R49 之后这些排除仍然必须保留，别删**：用户数据的**真身**现在在
 #    `<安装目录>\data\`（见 vendor\subtitle\user_paths.py），dist-app 这两份看着像
@@ -29,8 +27,7 @@ param(
     [switch]$Check,
     [switch]$Restart,
     [switch]$ClearCache,
-    [switch]$SyncConfig,
-    [switch]$SyncGlossary
+    [switch]$SyncConfig
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,11 +45,10 @@ $pairs = @(
     @{ src = 'vendor\subtitle'; dst = 'vendor\subtitle' },
     @{ src = 'vendor\dlna';     dst = 'vendor\dlna' }
 )
-# 运行数据名单（见文件头 ⚠️ 说明）：术语表和 config.json 同等对待，
-# 它们和 .py 混在同一个目录里，只保护 config.json 是 R41 的遗留漏洞。
-$skipNames = @('config.json', 'glossary_ja_zh.json', 'glossary_en_zh.json')
+# 运行数据名单（见文件头 ⚠️ 说明）。术语表功能已删（Round 53），词表文件不再排除
+# ——它们会作为"快照多余（仓库已删）"从快照里清掉。
+$skipNames = @('config.json')
 if ($SyncConfig)   { $skipNames = @($skipNames | Where-Object { $_ -ne 'config.json' }) }
-if ($SyncGlossary) { $skipNames = @($skipNames | Where-Object { $_ -notlike 'glossary_*' }) }
 Write-Host ("[sync] 运行数据不参与比对/覆盖（要覆盖请显式给开关）：{0}" -f ($skipNames -join '、')) -ForegroundColor DarkGray
 
 # 排除规则只此一份，src 与 dst **共用**：此前两侧各写一遍，dst 侧一旦漏了
@@ -64,7 +60,7 @@ function Test-Excluded([string]$name, [string[]]$seg) {
     if ($seg -contains 'logs') { return $true }
     if ($name -like '*.log') { return $true }
     if ($skipNames -contains $name) { return $true }
-    # 派生文件：宿主的 .bak 自保备份、save_glossary 写入途中的 .json.tmp
+    # 派生文件：宿主的 .bak 自保备份、写入途中的 .json.tmp
     #（同步删掉 .tmp 会撞上正在进行的保存，删掉 .bak 就是删用户的后悔药）
     if ($name -like '*.json.bak*' -or $name -like '*.json.tmp') { return $true }
     return $false
@@ -101,7 +97,7 @@ foreach ($p in $pairs) {
     Get-ChildItem $dstDir -Recurse -File | ForEach-Object {
         $rel = $_.FullName.Substring((Get-Item $dstDir).FullName.Length + 1)
         # dst 侧套用**同一个** Test-Excluded（见它的注释）：漏掉运行数据会删用户的
-        # config.json / 术语表，漏掉 *.log 会把日志当"快照多余"来回删。
+        # config.json，漏掉 *.log 会把日志当"快照多余"来回删。
         if (-not (Test-Excluded $_.Name ($rel -split '\\'))) { $dstMap[$rel] = $_ }
     }
 

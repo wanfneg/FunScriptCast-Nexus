@@ -51,8 +51,8 @@ def t_llama_lock_reentrant():
 def t_mt_single_failure_isolated():
     from translate_engine import Translator
     t = Translator({"backend": "local", "mode": "mt",
-                    "mt_system": "测试系统提示词", "cache": False,
-                    "local": {"model": "dummy"}}, glossary=None)
+                    "mt_system": "测试系统提示词",
+                    "local": {"model": "dummy"}})
     calls = {"n": 0}
 
     def fake_chat(system, user):
@@ -73,8 +73,8 @@ def t_mt_single_failure_isolated():
 # 3 --------------------------------------- 逐句补救失败留痕
 def t_single_translate_error_counted():
     from translate_engine import Translator
-    t = Translator({"backend": "local", "mode": "batch", "cache": False,
-                    "local": {"model": "dummy"}}, glossary=None)
+    t = Translator({"backend": "local", "mode": "batch",
+                    "local": {"model": "dummy"}})
 
     def boom(system, user):
         raise RuntimeError("后端挂了")
@@ -101,8 +101,8 @@ def t_jsonish_and_validate():
         '{"0": “米粒呢”，“1”: “嗯。”，“2”: “哦。”}')
     assert d == {"0": "米粒呢", "1": "嗯。", "2": "哦。"}, d
     assert _normalize_jsonish('{0: "x", 1: "y",}').startswith('{"0": "x"')
-    t = Translator({"backend": "local", "cache": False,
-                    "local": {"model": "dummy"}}, glossary=None)
+    t = Translator({"backend": "local",
+                    "local": {"model": "dummy"}})
     ok, _ = t._validate({"1": "a", "0": "b"}, ["0", "1"])
     assert ok
     ok, err = t._validate({"0": "b"}, ["0", "1"])
@@ -116,8 +116,8 @@ def t_degenerate_and_leak():
     from translate_engine import Translator
     assert Translator._is_degenerate("あ", "啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊")
     assert not Translator._is_degenerate("あ", "啊。")
-    t = Translator({"backend": "local", "target_lang": "zh", "cache": False,
-                    "local": {"model": "dummy"}}, glossary=None)
+    t = Translator({"backend": "local", "target_lang": "zh",
+                    "local": {"model": "dummy"}})
     assert t._has_untranslated("あこれすごい。", "あこれ好厉害。")
     assert not t._has_untranslated("すごい。", "好厉害。")
     assert not t._has_untranslated("", "")
@@ -219,35 +219,6 @@ def t_keep_segment():
     assert not keep_segment(4000, 4700, 4500)   # 整句基本都在重叠区：丢
 
 
-# 11 ------------------------------ 术语表总开关（glossary.enabled）
-def t_glossary_enabled_switch():
-    """关闭后：热词/翻译注入/键查询全部走空，但词表数据保留、重开即恢复。"""
-    import json, tempfile
-    from glossary import Glossary
-    d = Path(tempfile.mkdtemp())
-    f = d / "g.json"
-    f.write_text(json.dumps({"悠亜": "悠亚", "乳首": "乳首"}, ensure_ascii=False), encoding="utf-8")
-
-    def mk(enabled):
-        return Glossary({"ja": str(f), "enabled": enabled}, base_dir=d,
-                        extra={"ja": {"ゆあ": "悠亚"}})
-
-    g = mk(True)
-    assert g.match("ja", "悠亜は…"), "开启时必须命中术语"
-    assert g.asr_context("ja") != "", "开启时热词非空"
-    assert "ゆあ" in g.keys("ja"), "extra 词条在 keys 里"
-    g.set_enabled(False)
-    assert g.match("ja", "悠亜は…") == {}, "关闭后翻译注入必须为空"
-    assert g.asr_context("ja") == "" and g.asr_context_with_keys("ja") == ("", [])
-    assert g.keys("ja") == [], "关闭后键查询为空（复读判据自然无判据可用）"
-    assert g.size("ja") == 3, "关闭只是不注入，数据必须原样保留（2 条词表 + 1 条 extra）"
-    g.set_enabled(True)
-    assert g.match("ja", "悠亜は…"), "重开即恢复"
-    # 缺省 enabled = True：旧配置文件没有这个键也不能变成关
-    g2 = Glossary({"ja": str(f)}, base_dir=d)
-    assert g2.enabled is True and g2.match("ja", "悠亜"), "缺省必须视为开启"
-
-
 # 12 ------------------------------ 模型下载器（进度/断点续传/原子替换）
 def t_model_downloader():
     import tempfile, threading, http.server
@@ -308,14 +279,14 @@ def t_model_downloader():
 
 # 9 --------------------------------- 用户数据迁移（数据落在安装目录 data\，不写 C 盘）
 def t_user_data_migration():
-    """迁移：历史位置 → `<安装目录>\\data\\`，key 与词表都要带过去，且现有数据优先。
+    """迁移：历史位置 → `<安装目录>\\data\\`，key 要带过去，且现有数据优先。
 
     守的是这条设计（见 vendor/subtitle/user_paths.py 模块注释）：用户数据放安装目录的
     `data\\` 子目录 —— 一处、一个寿命、一个清理入口，且**不写 C 盘**。历史位置有两个：
       · `%APPDATA%\\FunScriptCast-Nexus\\`（R48 过渡版，文件名 subtitle_config.json）
       · `<安装目录>\\vendor\\subtitle\\`（最早，配置叫 config.json，也是出厂模板）
     覆盖七种情形：
-      ① 首次运行：从安装目录旧位置迁移 key 与词表；
+      ① 首次运行：从安装目录旧位置迁移 key；
       ② 已有数据优先：改 data 那份，不会被历史位置覆盖回去；
       ③ 全新安装：历史位置只有模板 → 由模板建出 data 配置；
       ④ 哪儿都没有：回退到 data 路径且不抛异常；
@@ -338,16 +309,12 @@ def t_user_data_migration():
         user = Path(_tf.mkdtemp(prefix="nexus-user-"))
         (legacy / "config.json").write_text(
             _json.dumps({"translate": {"openai": {"api_key": "sk-SECRET"}}}), encoding="utf-8")
-        (legacy / "glossary_ja_zh.json").write_text(
-            _json.dumps({"悠亜": "悠亚"}), encoding="utf-8")
 
         _os.environ["NEXUS_USER_DIR"] = str(user)
-        # ① 迁移：key 与词表都带过来
+        # ① 迁移：key 要带过来
         cfg = up.load_config(legacy)
         assert cfg["translate"]["openai"]["api_key"] == "sk-SECRET", "迁移必须保住 key"
         assert (user / "subtitle_config.json").is_file(), "配置应落到数据目录"
-        g = up.glossary_path(legacy, "glossary_ja_zh.json")
-        assert g.parent == user and g.is_file(), "词表也要迁到数据目录"
 
         # ② 已有数据优先：改 data 那份，不会被历史位置覆盖
         (user / "subtitle_config.json").write_text(
@@ -375,19 +342,13 @@ def t_user_data_migration():
         inst_a = Path(_tf.mkdtemp(prefix="nexus-instA-"))
         (inst_a / "config.json").write_text(
             _json.dumps({"translate": {"openai": {"api_key": "sk-KEEP"}}}), encoding="utf-8")
-        (inst_a / "glossary_ja_zh.json").write_text(
-            _json.dumps({"悠亜": "悠亚"}), encoding="utf-8")
         assert up.load_config(inst_a)["translate"]["openai"]["api_key"] == "sk-KEEP"
 
         inst_b = Path(_tf.mkdtemp(prefix="nexus-instB-"))   # 重装后的安装目录
         (inst_b / "config.json").write_text(
             _json.dumps({"translate": {"openai": {"api_key": ""}}}), encoding="utf-8")
-        (inst_b / "glossary_ja_zh.json").write_text("{}", encoding="utf-8")
         assert up.load_config(inst_b)["translate"]["openai"]["api_key"] == "sk-KEEP", \
             "重装后出厂模板不得覆盖数据目录里的 key"
-        g2 = up.glossary_path(inst_b, "glossary_ja_zh.json")
-        assert g2.parent == user4 and _json.loads(g2.read_text(encoding="utf-8")) == {"悠亜": "悠亚"}, \
-            "重装后出厂空词表不得覆盖用户已攒的词表"
 
         # ⑥ 补救扫描（本机真实踩到过的情形）：data 已被**空 key 的模板**播过种，
         #    历史位置里有真实 key。先到先得的迁移永远轮不到它 ⇒ 必须有一次性补救，
@@ -491,7 +452,6 @@ if __name__ == "__main__":
     check("拉丁幻觉判据（不误杀正常日语/片假名）", t_latin_hallucination)
     check("whisper 后端过滤与接口（懒加载/铁律）", t_whisper_backend_filters)
     check("keep_segment 跨块去重", t_keep_segment)
-    check("术语表总开关（enabled 热更新/数据保留）", t_glossary_enabled_switch)
     check("模型下载器（进度/断点续传/原子替换）", t_model_downloader)
     check("用户数据迁移（落在安装目录 data\\，多源迁移与补救）", t_user_data_migration)
     check("run_server 在封闭 sys.path 下可 import（embeddable 条件）", t_run_server_embeddable_import)

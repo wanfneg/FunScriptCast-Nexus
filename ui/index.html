@@ -182,13 +182,8 @@
           <svg class="ic"><use href="#i-smartphone"/></svg>
           <span class="nav-label">设备同步</span>
         </button>
-        <button data-page="glossary">
-          <span class="nav-ix">05</span>
-          <svg class="ic"><use href="#i-book-a"/></svg>
-          <span class="nav-label">术语表</span>
-        </button>
         <button data-page="settings">
-          <span class="nav-ix">06</span>
+          <span class="nav-ix">05</span>
           <svg class="ic"><use href="#i-settings"/></svg>
           <span class="nav-label">设置</span>
         </button>
@@ -279,10 +274,6 @@
           <div class="panel card metric">
             <div class="metric-lab">运行时长</div>
             <div class="metric-val"><span class="num" id="mUptime">0</span><span class="unit">分</span></div>
-          </div>
-          <div class="panel card metric">
-            <div class="metric-lab">术语表条目</div>
-            <div class="metric-val"><span class="num" id="mTerms">0</span><span class="unit">条</span></div>
           </div>
         </div>
 
@@ -406,7 +397,6 @@
             <div class="kv"><div class="eyebrow">ASR Model</div><div class="mono kv-v" id="subModel">—</div></div>
             <div class="kv"><div class="eyebrow">Device</div><div class="mono kv-v" id="subDevice">—</div></div>
             <div class="kv"><div class="eyebrow">Translate</div><div class="mono kv-v" id="subMt">—</div></div>
-            <div class="kv"><div class="eyebrow">Glossary</div><div class="mono kv-v" id="subGloss">—</div></div>
           </div>
           <div class="notice warn top-3" id="subForeignNotice" style="display:none">
             <svg class="ic"><use href="#i-triangle-alert"/></svg>
@@ -493,18 +483,6 @@
             </div>
             <div class="notice top-3" id="mtTestResult" style="display:none"></div>
             <div class="stack" id="modelDl"></div>
-        </div>
-
-        <div class="panel card stack">
-          <div class="panel-head">
-            <div>
-              <div class="eyebrow">Subtitle Cache</div>
-              <h2>字幕缓存 <span class="badge acc" id="cacheBadge">0 个</span></h2>
-            </div>
-            <button class="btn ghost" id="cacheClear"><svg class="ic"><use href="#i-trash-2"/></svg><span>清空缓存</span></button>
-          </div>
-          <div class="sub" id="cacheSub">—</div>
-          <div class="sub" id="cacheTrSub">—</div>
         </div>
       </section>
 
@@ -608,75 +586,6 @@
             </div>
           </div>
           <div class="logbox" id="syncLogBox"><div class="inner" id="syncLogInner"></div></div>
-        </div>
-      </section>
-
-      <!-- ---------------------------- 术语表 ---------------------------- -->
-      <section class="page" id="page-glossary">
-        <div class="page-head">
-          <div class="ph-text">
-            <div class="eyebrow">Lexicon</div>
-            <h1>术语表</h1>
-            <p>提升专有名词识别与翻译质量 · 保存后自动热重载</p>
-          </div>
-          <div class="actions">
-            <label class="switch" title="术语表总开关">
-              <input type="checkbox" id="glossEnabled" checked>
-              <span class="track"></span><span class="knob"></span>
-            </label>
-            <span class="hint" id="glossEnabledState">已启用</span>
-            <span class="hint">CSV 目标</span>
-            <div class="seg" id="glossSeg">
-              <span class="seg-thumb" id="glossThumb"></span>
-              <button data-glang-opt="ja" aria-selected="true">日语表</button>
-              <button data-glang-opt="en">英语表</button>
-            </div>
-            <button class="btn ghost" id="glossImport"><svg class="ic"><use href="#i-upload"/></svg><span>导入</span></button>
-            <button class="btn ghost" id="glossExport"><svg class="ic"><use href="#i-download"/></svg><span>导出</span></button>
-            <button class="btn primary" id="saveGloss"><svg class="ic"><use href="#i-save"/></svg><span>保存术语表</span></button>
-          </div>
-        </div>
-
-        <div class="grid g2b">
-          <div class="panel card">
-            <div class="panel-head">
-              <div>
-                <div class="eyebrow">Entries</div>
-                <h2>词库 <span class="badge" id="glossTotal">0 条</span></h2>
-              </div>
-            </div>
-            <div class="row flush top-3">
-              <svg class="ic muted"><use href="#i-languages"/></svg>
-              <div class="grow">
-                <div class="name">日语 <svg class="ic inline-ic"><use href="#i-arrow-right"/></svg> 中文</div>
-              </div>
-              <span class="badge acc" id="glossJaCount">0 条</span>
-            </div>
-            <div class="row flush">
-              <svg class="ic muted"><use href="#i-languages"/></svg>
-              <div class="grow">
-                <div class="name">英语 <svg class="ic inline-ic"><use href="#i-arrow-right"/></svg> 中文</div>
-              </div>
-              <span class="badge acc" id="glossEnCount">0 条</span>
-            </div>
-          </div>
-
-          <div class="panel card">
-            <div class="panel-head">
-              <div>
-                <div class="eyebrow">Import Mode</div>
-                <h2>导入方式</h2>
-              </div>
-            </div>
-            <div class="row flush top-1">
-              <div class="grow">
-                <div class="name">整体替换</div>
-                <div class="sub">导入后原有条目全部丢弃，只保留 CSV 里的内容</div>
-              </div>
-              <label class="switch"><input type="checkbox" id="glossReplace" checked><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="hint">关掉这个开关则改为合并：同名词条覆盖、新词条追加。</div>
-          </div>
         </div>
       </section>
 

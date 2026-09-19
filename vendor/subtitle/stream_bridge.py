@@ -55,7 +55,7 @@ import uvicorn
 
 from text_filters import has_repetition_loop, count_kana, strip_wrap_quotes   # 与离线路径共用同一判据
 
-# ---- 复用现有翻译器（与 server_app.py 同一套配置与术语表）------------------
+# ---- 复用现有翻译器（与 server_app.py 同一套配置）--------------------------
 _SUB_DIR = Path(__file__).resolve().parent
 if str(_SUB_DIR) not in sys.path:
     sys.path.insert(0, str(_SUB_DIR))
@@ -66,44 +66,21 @@ CFG_PATH = _SUB_DIR / "config.json"
 import user_paths  # noqa: E402  （同目录，_SUB_DIR 已进 sys.path）
 
 CFG: dict = user_paths.load_config(_SUB_DIR)
-# 术语表 base_dir 也换到用户数据目录（config 的 glossary 段只写文件名）
-USER_DIR = user_paths.user_dir()
-for _n in user_paths.GLOSSARY_NAMES:
-    user_paths.glossary_path(_SUB_DIR, _n)
 
 _translator = None
-_glossary = None
 _translator_lock = threading.Lock()   # 并发首个请求同时懒加载时只建一份
-
-
-def sync_glossary_enabled(enabled: bool) -> None:
-    """把术语表总开关同步到本模块**自己那份** Glossary 实例。
-
-    `/glossary/reload` 原先只调 server_app 的 `state["glossary"]`，而流式路径懒加载的是
-    这里另一份实例，`enabled` 就冻结在首次流式翻译请求那一刻——用户在界面上把开关关掉，
-    离线路径立刻停注入，流式路径却继续套术语，直到重启服务。两边实例分开是既有设计
-    （懒加载 + 不拖慢启动），但开关必须显式同步过来。
-    """
-    g = _glossary
-    if g is not None:
-        try:
-            g.set_enabled(bool(enabled))
-        except Exception as exc:
-            print(f"[bridge] 同步术语表开关失败：{exc}", flush=True)
 
 
 def _get_translator():
     """懒加载翻译器（首次请求才建，避免启动即占资源）。失败则退化为不翻译。"""
-    global _translator, _glossary
+    global _translator
     with _translator_lock:
         if _translator is not None:
             return _translator
         try:
-            from glossary import Glossary          # type: ignore
             from translate_engine import Translator  # type: ignore
 
-            _glossary = Glossary(CFG.get("glossary", {}), base_dir=USER_DIR)
-            _translator = Translator(CFG.get("translate", {}), _glossary)
+            _translator = Translator(CFG.get("translate", {}))
             print("[bridge] translator ready", flush=True)
         except Exception as exc:  # 翻译不可用时也不能让字幕整段空白
             print(f"[bridge] translator unavailable: {exc}", flush=True)
@@ -142,8 +119,8 @@ def _display_zh(seg: dict) -> str:
     """该段最终下发显示的中文。
 
     引擎多轮纠错/逐条兜底后译文仍夹假名的，会标记 error=untranslated_leak。
-    隐藏判据用**假名计数 ≥2**，不能用"有没有汉字"——术语表修补会替换人名
-    （悠亜→悠亚），整句日文被掺进两个汉字就绕过了汉字判据（实测开头第一句
+    隐藏判据用**假名计数 ≥2**，不能用"有没有汉字"——整句日文被掺进两个汉字
+    （人名等）就绕过了汉字判据（实测开头第一句
     'こんにちは、三上悠亚です。今日。'因此天天上屏，真机用户反复看到）。
     ≥2 个假名＝实质未翻，置空让头显跳过；恰好 1 个假名的夹字句保留
     （"你家って真的很香"尚可读）。判据在 text_filters.count_kana，离线路径同用。

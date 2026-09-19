@@ -32,8 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-from glossary import context_with_keys
-from text_filters import (has_repetition_loop, is_glossary_echo, is_latin_hallucination,
+from text_filters import (has_repetition_loop, is_latin_hallucination,
                           is_prompt_echo, join_tokens, keep_segment)
 
 SR = 16000
@@ -72,8 +71,7 @@ class AudioCppBackend:
     # /health 的 asr_ready 靠它区分"真引擎"与"未就绪兜底"（缺属性会被误判为未就绪）
     backend_kind = "audiocpp"
 
-    def __init__(self, cfg: dict, glossary=None, use_context: bool = True,
-                 context_max_chars: int = 0, drop_latin: bool = True):
+    def __init__(self, cfg: dict, drop_latin: bool = True):
         self.dir = Path(cfg.get("dir") or AUDIOCPP_DIR)
         self.backend = str(cfg.get("backend", "cpu"))          # cpu | cuda
         self.threads = int(cfg.get("threads", max(1, (os.cpu_count() or 4) - 1)))
@@ -93,17 +91,9 @@ class AudioCppBackend:
         self.min_speech_ms = int(cfg.get("min_speech_ms", 250))
         # 单段最长秒数：超过此长度的语音段先切开再送 ASR（防退化）
         self.max_span_sec = float(cfg.get("max_span_sec", 8.0))
-        # 热词/上下文偏置。
-        #
-        # ⚠️ 这里曾经是**死配置**：`asr.use_glossary_context` 只写在 PyTorch 引擎的
-        # `AsrEngine.transcribe(context=...)` 里，而 server_app 走 audiocpp 时调的是
-        # `AudioCppBackend.transcribe(...)`，`transcribe_wav` 的请求体只有
-        # {model, audio, language}——热词从来没发出去过。实测确认 audiocpp **支持**
-        # `context`（解码确定：同一请求三次哈希一致；带 context 时输出稳定地不同；
-        # 而 `prompt`/`hotwords` 是被忽略的），所以这里补上转发。
-        self.glossary = glossary
-        self.use_context = bool(use_context)
-        self.context_max_chars = int(context_max_chars)
+        # 热词/上下文偏置只保留"上一句原文"（transcribe 的 extra_context）。
+        # audiocpp 只认 `context` 这个字段名：`prompt`/`hotwords` 都被静默忽略
+        # （同一段音频、同一份解码设置下输出逐字节相同）。
         # 拉丁幻觉过滤（判据见 text_filters.is_latin_hallucination）：日语音频里
         # "一个日文字符都没有"的短输出直接丢。实测 Whisper 会吐 `.`/`Thank`/`I`/`you`
         # 并当台词上屏；日语外来语写片假名不写拉丁字母，所以这类短输出不可能是真实台词。
@@ -121,38 +111,6 @@ class AudioCppBackend:
         # 回给客户端的**错误类别**（last_vad_error 的全文含绝对路径/用户名，
         # 只能进本地日志——见 _error_kind / _vad_fail 的说明）
         self.last_vad_error_kind = ""
-
-    def _context_with_keys(self, lang_key: str) -> tuple:
-        """返回 (本语言的 ASR 热词提示, 真正进了提示词的键)。未启用/无术语表 → ("", [])。
-
-        键必须和提示词一起拿回来：复读判据要判"输出是不是把**这次发出去的**
-        提示词复读了"，拿整张术语表当判据与提示词完全对不上（见 _is_glossary_echo）。
-        """
-        if not self.use_context or self.glossary is None:
-            return "", []
-        try:
-            return context_with_keys(self.glossary, lang_key, self.context_max_chars)
-        except Exception as e:
-            print(f"[asr] 热词提示构建失败（忽略）：{type(e).__name__}: {e}", flush=True)
-            return "", []
-
-    def _build_context(self, lang_key: str) -> str:
-        """本语言的 ASR 热词提示；未启用/无术语表时返回空串。"""
-        return self._context_with_keys(lang_key)[0]
-
-    def _is_glossary_echo(self, text: str, keys: list) -> bool:
-        """热词表被当台词复读的检测。
-
-        判据统一在 text_filters.is_glossary_echo（与 PyTorch 引擎共用同一实现，
-        此前两边各写一份已出现单向漂移：覆盖率重复计数的旧算法在一边修掉了、
-        另一边还留着，嵌套键能把覆盖率算出 >1 而误杀正常句子）。
-
-        `keys` 由调用方从 _context_with_keys 传入（= 这次真的发出去的键）；
-        旧实现这里自己取 glossary.keys()，拿到的是整张表 2096 条 —— 默认配置里
-        进提示词的只有 5 个人名 19 字符，判据却按整张表算，覆盖率必然饱和，
-        正常台词被成片判成复读后丢弃（还白烧一次无热词重试）。
-        """
-        return is_glossary_echo(text, keys)
 
     # ---- 与 PyTorch 引擎对齐的属性（server_app 的 /health 会读）----
     @property
@@ -495,46 +453,33 @@ class AudioCppBackend:
                     pass
 
     # ------------------------------------------------------------- 转写
-    def _transcribe_span(self, wav, context: str, keys: list, lang_key: str,
+    def _transcribe_span(self, wav, context: str, lang_key: str,
                          echo_ref: str = "", timeout: float = 600.0) -> str:
         """转写单个语音段；热词导致复读时**改用无热词重试一次**。
 
         `timeout` 由调用方按本段音频时长收紧后传入（见 transcribe；默认 600s
         只用于不关心时长的直接调用）。
         为什么必须重试而不是丢弃：audiocpp 的 Qwen3-ASR 在喘息/气声这类
-        非清晰语音上，有相当高的概率把 `context` 整段复读出来当结果
-        （实测 5 个窗口里 3 个中招，输出就是 `ゆあ、女子アナ、ソープ嬢、…`）。
-        直接丢弃的后果是**整块字幕凭空消失**（实测 92-117s / 299-322s /
-        506-529s 三块全没了，全片 205 段掉到 190 段）。改成无热词重试，
-        热词就变成"有收益就吃、有副作用就退回去"的纯增益开关。
+        非清晰语音上，有相当高的概率把 `context`（上一句原文）整段复读出来
+        当结果（静音/音乐段尤甚）。直接丢弃的后果是**整块字幕凭空消失**
+        （实测 92-117s / 299-322s / 506-529s 三块全没了，全片 205 段掉到 190 段）。
+        改成无热词重试，热词就变成"有收益就吃、有副作用就退回去"的纯增益开关。
 
-        回显判定有两路：`_is_glossary_echo`（术语表复读，keys = 本次发出去的
-        热词键）与 `is_prompt_echo`（上一句转写 echo_ref 的回显——v1.6.12 起
-        热词里追加了上一句原文，静音段把上一句吐出来的情况与术语表复读同性质）。
-
-        另外这也解释了为什么开热词会慢 2.5 倍：模型把 130 个热词一个个生成
-        出来（约 130 token）才被丢弃，纯属白烧 CPU。
+        回显判定用 `is_prompt_echo(text, echo_ref)`：echo_ref 就是本次随请求
+        发出去的上一句原文（见 transcribe）。
         """
         r = self.transcribe_wav(wav, context, lang_key, timeout=timeout)
         text = (r.get("text") or "").strip()
-        if not context or not (self._is_glossary_echo(text, keys)
-                               or is_prompt_echo(text, echo_ref)):
+        if not context or not is_prompt_echo(text, echo_ref):
             return text
-        print(f"[asr] 热词表复读，改用无热词重试：{text[:40]!r}", flush=True)
+        print(f"[asr] 热词回显，改用无热词重试：{text[:40]!r}", flush=True)
         with self._lock:
             self.echo_retries += 1
         try:
             r2 = self.transcribe_wav(wav, "", lang_key, timeout=timeout)
         except Exception:
             return ""
-        t2 = (r2.get("text") or "").strip()
-        # 重试请求**没有带任何 prompt**（context=""），所以这里不能再拿
-        # is_prompt_echo(t2, echo_ref) 否决：模型根本没看到那段 prompt，
-        # 与上一句同尾的正常输出会被二次误杀，整句直接消失。
-        # 只保留"复读/退化"这一类与请求无关的判据。
-        if not t2 or self._is_glossary_echo(t2, keys):
-            return ""
-        return t2
+        return (r2.get("text") or "").strip()
 
     def transcribe_wav(self, wav: Path, context: str = "", lang_key: str = "",
                        timeout: float = 600.0) -> dict:
@@ -628,13 +573,9 @@ class AudioCppBackend:
         merged = capped
 
         pad = self.pad_sec
-        # 键与提示词一起取回：复读判据只认"这次真的发出去的键"
-        context, context_keys = self._context_with_keys(lang_key)
-        if extra_context:
-            # 上一句转写结果作为热词补充（借鉴 realtime-subtitle 的 context carryover）：
-            # 治人名/专名跨块听错。echo_ref 单独保存，复读重试判定要区分
-            # "术语表回显"与"上一句回显"。
-            context = (context + " " + extra_context).strip()
+        # 热词 = 上一句转写原文（借鉴 realtime-subtitle 的 context carryover）：
+        # 治人名/专名跨块听错。
+        context = (extra_context or "").strip()
         segs = []
         for i, (s, e) in enumerate(merged):
             a = max(0, int((s - pad) * SR))
@@ -650,7 +591,7 @@ class AudioCppBackend:
             span_timeout = max(60.0, min(600.0, (b - a) / float(SR) * 30.0))
             try:
                 self._write_wav(wav, pcm[a:b])
-                text = self._transcribe_span(wav, context, context_keys, lang_key,
+                text = self._transcribe_span(wav, context, lang_key,
                                              echo_ref=extra_context,
                                              timeout=span_timeout)
             except Exception as ex:

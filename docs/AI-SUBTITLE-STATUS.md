@@ -6,6 +6,11 @@
 > ⚠️ 本文 §0-§2 的栈描述停留在 Ollama/流式时代（2026-09-16），**最新事实**（Sakura-7B +
 >    llama.cpp + 云端、R43 重出基线、R44 参考项目实测、25 秒档真相）以桌面交接文档 R44 与
 >    `iteration_shturl.md` Round 36-45 为准；R41/R45 速览见下。
+>
+> ⚠️ **R53（2026-09-20）起：术语表与字幕/翻译缓存功能已整体移除**（用户点名删除，见
+>    `iteration_shturl.md` Round 53）——本文提到的术语表注入/修补、`is_glossary_echo`、
+>    `translate.cache`、`_CACHE_VERSION`、整片字幕缓存均为**历史机制**，已不存在。
+>    识别侧保留"上一句原文进热词"，回显判据用 `is_prompt_echo`。
 
 ## R45（2026-09-18）Whisper 主 ASR 后端接入速览
 

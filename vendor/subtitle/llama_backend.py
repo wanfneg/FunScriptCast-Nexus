@@ -115,7 +115,7 @@ class LlamaBackend:
                 raise LlamaError(
                     f"找不到 llama-server.exe：{self.exe}"
                     f"（本地翻译运行时未安装：请在 PC 端「识别与翻译」卡的模型列表下载，"
-                    f"或运行 tools\fetch_llama.ps1）")
+                    f"或运行 tools\\fetch_llama.ps1）")
             if not self.model.exists():
                 raise LlamaError(
                     f"找不到翻译模型：{self.model}"

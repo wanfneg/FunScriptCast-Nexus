@@ -7,8 +7,6 @@
     "quantization": "none",
     "bnb_quant_type": "nf4",
     "bnb_double_quant": true,
-    "use_glossary_context": true,
-    "context_max_chars": 0,
     "max_new_tokens_per_sec": 4.0,
     "max_new_tokens_min": 48,
     "max_new_tokens_max": 256,
@@ -53,7 +51,6 @@
     "batch_size": 10,
     "max_steps": 3,
     "thread_num": 4,
-    "cache": false,
     "target_lang": "zh",
     "fallback": {
       "enabled": false,
@@ -79,19 +76,6 @@
       "start_timeout_sec": 180
     },
     "mode": "auto"
-  },
-  "glossary": {
-    "ja": "glossary_ja_zh.json",
-    "en": "glossary_en_zh.json",
-    "extra": {
-      "ja": {
-        "悠亜": "悠亚",
-        "三上悠亜": "三上悠亚",
-        "御神悠亜": "御神悠亚",
-        "悠亜様": "悠亚大人",
-        "ゆあ": "悠亚"
-      }
-    }
   },
   "server": {
     "host": "0.0.0.0",

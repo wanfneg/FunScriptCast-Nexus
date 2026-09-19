@@ -107,8 +107,6 @@ def main():
     ap.add_argument("--input", required=True, help="validate_asr.py 产出的 JSON")
     ap.add_argument("--model", default="qwen2.5:3b")
     ap.add_argument("--max-sec", type=float, default=12.0, help="语义单元最长时长")
-    ap.add_argument("--glossary", nargs="*", default=None,
-                    help="术语表 JSON（{\"原文\": \"译文\"}），可传多个（日/英各一个）")
     ap.add_argument("--out", default="out")
     args = ap.parse_args()
 
@@ -118,25 +116,12 @@ def main():
     print(f"识别 {len(data['segments'])} 条 → 去重 {len(segs)} 条 → 合并 {len(units)} 个语义单元"
           f"，模型 {args.model}\n")
 
-    gloss = {}
-    for gpath in (args.glossary or []):
-        gloss.update(json.loads(Path(gpath).read_text(encoding="utf-8")))
-    if gloss:
-        print(f"已加载术语表 {len(gloss)} 条（按句命中注入）\n")
-
     results, total_dt, total_tok = [], 0.0, 0
     prev_orig = prev_tr = ""
     for i, unit in enumerate(units):
         text = join_tokens([x["text"] for x in unit])
         user = USER_CTX.format(prev_orig=prev_orig, prev_tr=prev_tr, text=text) if prev_tr else USER.format(text=text)
-        system = SYSTEM
-        if gloss:
-            # 只注入当前句里真正出现的术语：既省 token，也避免术语表被乱套到别的词上
-            hit = {k: v for k, v in gloss.items() if k in text}
-            if hit:
-                system += "\n\n术语表（原文→译文，必须严格遵守；未出现的词不要套用）：\n" + \
-                          "\n".join(f"{k}→{v}" for k, v in hit.items())
-        tr, dt, ntok = ollama_chat(args.model, user, system=system)
+        tr, dt, ntok = ollama_chat(args.model, user, system=SYSTEM)
         tr = tr.splitlines()[0].strip() if tr else ""
         total_dt += dt
         total_tok += ntok
@@ -148,7 +133,7 @@ def main():
 
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
-    stem = f"{Path(args.input).stem}_{args.model.replace(':', '-')}_units" + ("_gloss" if gloss else "")
+    stem = f"{Path(args.input).stem}_{args.model.replace(':', '-')}_units"
 
     srt = []
     for i, r in enumerate(results, 1):

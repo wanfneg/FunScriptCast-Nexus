@@ -7,7 +7,7 @@
 
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
-  var S = { state: null, settings: {}, glossary: { ja: {}, en: {} }, pollTimer: null, counts: {}, glossLang: "ja" };
+  var S = { state: null, settings: {}, pollTimer: null, counts: {} };
 
   function motionOff() { return document.documentElement.getAttribute("data-motion") === "off"; }
 
@@ -279,12 +279,6 @@
     /* ---- 指标 ---- */
     countTo($("#mRoots"), (d.roots || []).length);
     countTo($("#mUptime"), Math.floor((st.uptime || 0) / 60));
-    var termCount = 0;
-    if (sub.health && sub.health.glossary) {
-      Object.keys(sub.health.glossary).forEach(function (k) { termCount += sub.health.glossary[k] || 0; });
-    }
-    if (termCount) countTo($("#mTerms"), termCount);
-    else countTo($("#mTerms"), 0);   // 服务停止/未就绪时指标也要归零，别留着旧数
 
     /* ---- 系统负载四环（CPU / GPU 利用率 / 内存 / 显存）——替代旧 SIGNAL 波形动画 ---- */
     var sy = st.sys || {};
@@ -344,7 +338,6 @@
       $("#subAsr").textContent = ab === "whisper" ? "Whisper（kotoba）"
         : ab === "audiocpp" ? "Qwen3（audio.cpp）" : (h.asr_backend || "—");
     }
-    $("#subGloss").textContent = h.glossary ? Object.keys(h.glossary).map(function (k) { return k + " " + h.glossary[k]; }).join(" · ") : "—";
 
     /* 8756 上挂着别人的服务（上次强杀宿主留下的残留）：必须显式告警。
        它加载的是启动时的旧配置，用户改了模型/后端却不生效，光看界面完全看不出来。 */
@@ -355,15 +348,6 @@
       if (fp) $("#subForeignMsg").textContent = "字幕服务被残留的旧进程占用（PID " + fp + "），点「结束并重启」恢复";
     }
 
-    /* ---- 字幕缓存 ---- */
-    var sc = st.subtitleCache || {};
-    setBadge($("#cacheBadge"), sc.count ? "ok" : "", (sc.count || 0) + " 个");
-    $("#cacheSub").textContent = sc.count
-      ? (sc.count + " 个视频已缓存 · 共 " + (sc.size_kb || 0) + " KB · 最近 "
-         + (sc.newest ? new Date(sc.newest * 1000).toLocaleString() : "—"))
-      : "还没有缓存字幕（首次播放会生成并保存）";
-    renderTranslateCache(st.translate || {}, st.translateCache || {});
-
     /* ---- 设备同步页 ---- */
     renderSync(st.sync || {});
 
@@ -373,29 +357,6 @@
     $("#aboutLanApi").textContent = (st.host && st.host.lan_api_url) || "—";
     $("#verLine").textContent = "v" + (st.version || "—") + " · WebView2";
     syncSettingsUI();
-  }
-
-  /* ---- 翻译层统计（批量 / 缓存命中 / 纠错 / 兜底） ---- */
-  function renderTranslateCache(tr, tc) {
-    var el = $("#cacheTrSub");
-    if (!el) { return; }
-    if (!tr || !tr.ready) { el.textContent = "翻译层：字幕服务未就绪"; return; }
-    var s = tr.stats || {};
-    var parts = ["LLM " + (s.batches || 0) + " 批"];
-    var hits = s.cache_hits || 0;
-    parts.push("命中 " + hits + (s.cache_disk_hits ? "（磁盘 " + s.cache_disk_hits + "）" : ""));
-    if (s.fix_rounds) { parts.push("纠错 " + s.fix_rounds + " 轮"); }
-    if (s.partial_batches) { parts.push("部分救回 " + s.partial_batches + " 批"); }
-    if (s.fail_batches) {
-      parts.push("失败 " + s.fail_batches + " 批");
-      if (s.fallback_batches) { parts.push("兜底 " + s.fallback_batches + " 批"); }
-    }
-    var line = "翻译层：" + parts.join(" · ");
-    if (tc && tc.count) { line += " · 译文缓存 " + tc.count + " 条 " + (tc.size_kb || 0) + " KB"; }
-    if (s.degraded || s.fallback_error) {
-      line += "（已降级：" + (s.fallback_error || "免费后端") + "）";
-    }
-    el.textContent = line;
   }
 
   var lastRootsSig;
@@ -677,15 +638,6 @@
       $("#mtCloudBase").value = oa.base_url || "";
       $("#mtCloudModel").value = oa.model || "";
       $("#mtCloudKey").value = "";
-      /* 术语表总开关（glossary.enabled，缺省视为开）。开关状态只在用户正在
-         操作它时不回填——由 S.subCfgDirty 拦（checkbox 也触发 input 事件） */
-      var gl = c.glossary || {};
-      var gsw = $("#glossEnabled");
-      if (gsw) {
-        gsw.checked = gl.enabled !== false;
-        var gls = $("#glossEnabledState");
-        if (gls) gls.textContent = gsw.checked ? "已启用" : "已停用";
-      }
       syncMtGroups();
     });
   }
@@ -696,22 +648,6 @@
     Array.prototype.forEach.call(document.querySelectorAll("[data-mt-group]"), function (g) {
       g.style.display = (g.getAttribute("data-mt-group") === sel) ? "" : "none";
     });
-  }
-  /* 术语表：界面不渲染条目（4000+ 条会撑爆 DOM），只显示每张表的统计 */
-  function loadGlossary() {
-    api("/api/glossary").then(function (r) {
-      if (!r.ok) return;
-      S.glossary = r.langs || { ja: {}, en: {} };
-      S.glossaryLoaded = true;   // 之后才允许保存：加载失败时内存是空表，保存=清库
-      renderGlossStats();
-    });
-  }
-  function renderGlossStats() {
-    var ja = Object.keys(S.glossary.ja || {}).length;
-    var en = Object.keys(S.glossary.en || {}).length;
-    var t = $("#glossTotal"); if (t) t.textContent = (ja + en) + " 条";
-    var c1 = $("#glossJaCount"); if (c1) c1.textContent = ja + " 条";
-    var c2 = $("#glossEnCount"); if (c2) c2.textContent = en + " 条";
   }
 
   /* ---------------------------------------------------------- 事件绑定 */
@@ -856,106 +792,6 @@
           sel.value = prev;
           toast("保存失败", r.error || "", "err");
         }
-      });
-    });
-
-    $("#cacheClear").addEventListener("click", function () {
-      api("/api/subtitle/cache/clear", "POST", {}).then(function (r) {
-        if (r.ok) { toast("字幕缓存已清空"); poll(true); }
-        else toast("清空失败", r.error || "", "err");
-      });
-    });
-
-    /* 术语表：界面只做 CSV 导入/导出，不渲染条目 */
-    initSeg("glossSeg", "glossThumb", function (b) {
-      S.glossLang = b.getAttribute("data-glang-opt");
-    });
-    $("#glossExport").addEventListener("click", function () {
-      if (!bridgeReady()) return;
-      var lang = S.glossLang || "ja";
-      var name = (lang === "ja" ? "glossary_ja_zh" : "glossary_en_zh") + ".csv";
-      window.pywebview.api.pick_file("save", name, ["CSV 文件 (*.csv)", "所有文件 (*.*)"]).then(function (r) {
-        if (!r || !r.ok) return;
-        api("/api/glossary/export", "POST", { lang: lang, path: r.path }).then(function (res) {
-          if (res.ok) toast("已导出 " + res.count + " 条", res.path);
-          else toast("导出失败", res.error || "", "err");
-        });
-      });
-    });
-    $("#glossImport").addEventListener("click", function () {
-      if (!bridgeReady()) return;
-      // 与「保存术语表」同一道闸门，且必须在**导入前**挡：词库还没加载完时
-      // S.glossary 还是初始空表，"合并导入"只把新词并进空表，等 /api/glossary
-      // 回来又被整表覆盖——用户刚导入的词静默消失，界面却催他去保存。
-      if (!S.glossaryLoaded) {
-        toast("术语表尚未加载完成", "请等词库加载完再导入（否则本次导入会被覆盖）", "warn");
-        return;
-      }
-      var lang = S.glossLang || "ja";
-      var replace = !!$("#glossReplace").checked;
-      window.pywebview.api.pick_file("open", "", ["CSV 文件 (*.csv)", "所有文件 (*.*)"]).then(function (r) {
-        if (!r || !r.ok) return;
-        var body = { path: r.path, lang: lang };
-        if (replace) body.mode = "replace";
-        api("/api/glossary/import", "POST", body).then(function (res) {
-          if (!res.ok) { toast("导入失败", res.error || "", "err"); return; }
-          if (replace) {
-            S.glossary[lang] = res.terms;
-            renderGlossStats();
-            toast("已整体替换 " + res.count + " 条", "已写盘并热重载");
-          } else {
-            var cur = S.glossary[lang] || {};
-            var before = Object.keys(cur).length;
-            Object.keys(res.terms).forEach(function (k) { cur[k] = res.terms[k]; });
-            S.glossary[lang] = cur;
-            renderGlossStats();
-            toast("已解析 " + res.count + " 条（新增 " + (Object.keys(cur).length - before) + "）",
-              "点「保存术语表」写入并热重载", "warn");
-          }
-        });
-      });
-    });
-    /* 术语表总开关：关闭后 ASR 不注入热词、翻译不套用术语（词表文件保留）。
-       服务在跑时经 /glossary/reload 热同步，即时生效、无需重启 */
-    $("#glossEnabled").addEventListener("change", function () {
-      var on = this.checked, sw = this;
-      api("/api/subtitle/config", "POST", { glossary: { enabled: on } }).then(function (r) {
-        var st = $("#glossEnabledState");
-        if (st) st.textContent = on ? "已启用" : "已停用";
-        if (r.ok) {
-          toast(on ? "术语表已启用" : "术语表已停用", "即时生效：热词/术语注入已切换", "ok");
-        } else {
-          sw.checked = !on;   // 保存失败：开关弹回，别让界面与配置不一致
-          if (st) st.textContent = on ? "已停用" : "已启用";
-          toast("保存失败", r.error || "", "err");
-        }
-      });
-    });
-
-    $("#saveGloss").addEventListener("click", function () {
-      if (!S.glossaryLoaded) {
-        toast("术语表尚未加载完成", "现在保存会把词库清空——请等加载完成或刷新页面", "warn");
-        return;
-      }
-      function saveLang(lang, allowEmpty) {
-        var body = { lang: lang, terms: S.glossary[lang] || {} };
-        if (allowEmpty) body.allow_empty = true;
-        return api("/api/glossary/save", "POST", body);
-      }
-      var jobs = ["ja", "en"].map(function (lang) {
-        return saveLang(lang, false).then(function (r) {
-          if (r && r.needs_confirm === "empty" &&
-              window.confirm(lang.toUpperCase() + " 词表确实要清空吗？现有词条将全部删除。")) {
-            return saveLang(lang, true);
-          }
-          return r;
-        });
-      });
-      Promise.all(jobs).then(function (rs) {
-        var bad = (rs || []).filter(function (r) { return !r || !r.ok; });
-        renderGlossStats();
-        if (!bad.length) toast("术语表已保存并热重载");
-        else toast("保存失败", bad.map(function (r) { return r.error || "未知错误"; }).join("；"), "err");
       });
     });
 
@@ -1206,13 +1042,12 @@
     initPointerLight();
     poll(false);
     loadSubtitleConfig();
-    loadGlossary();
     loadModels();
     // 2.5s 后补拉一次字幕配置（防首次请求早于服务就绪），但用户已经开始改
     // 配置输入框时不要覆盖他的输入
     setTimeout(function () { if (!S.subCfgDirty) loadSubtitleConfig(); }, 2500);
     // 配置输入一旦被用户动过就标记：之后的自动回填一律让路
-    ["asrBackend", "glossEnabled", "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey"
+    ["asrBackend", "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey"
     ].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) el.addEventListener("input", function () { S.subCfgDirty = true; });

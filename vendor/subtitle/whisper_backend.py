@@ -14,7 +14,7 @@
   1. **不给 initial_prompt**——热词、上一句回传都不给。实测：给 prompt 的整片会吐
      6~7 段裸英文幻觉（`I`/`you`/`Thank` 直接当台词上屏），不给则 0 段（坑 #39）；
      且 A/B 显示热词没有可测的内容收益（三档覆盖率在同一噪声带）。因此本后端
-     **刻意忽略 extra_context**，也不读术语表。
+     **刻意忽略 extra_context**。
   2. `condition_on_previous_text=False`：跨块携带上文会连带幻觉，关掉（与实测同参）。
   3. 模型默认**只用本地 HF 缓存**（local_files_only，~1.4GB）：绝不在请求/启动里
      联网拉模型（坑 #31 同源——请求内下载会撞头显 180s readTimeout）。换机器先

@@ -1643,3 +1643,69 @@ embeddable Python，`python310._pth` 是封闭列表（`python310.zip` / `.` / `
 只剩别的项目的 374MB、出厂 config 的 key 为空、`logs\` 里有 `host.log` 与托盘诊断日志。
 宿主自己的日志也印证了规则生效：`用户数据目录：D:\FunScriptCast-Nexus\data`、
 `HF 模型缓存：D:\FunScriptCast-Nexus\models\hf-cache`。
+
+## Round 53（2026-09-20）：按用户要求整体移除「字幕缓存」与「术语表」两个功能
+
+**用户要求**：去掉字幕缓存功能、去掉术语表功能。
+
+### 一、删了什么
+
+**字幕缓存（两层全删）**：
+- 宿主层整片字幕缓存（`cache\subtitles`）：`subtitle_cache_key/path/get/save/summary/list`、
+  `_video_identity` / `_resolve_video_path` / `_config_fingerprint`（指纹只被缓存键用）、
+  8790 的 `GET /api/subtitle/cache{,/list}`、`POST /api/subtitle/cache/{save,clear}`、
+  `/api/state` 的 `subtitleCache` 段、UI「字幕缓存」卡（badge / 清空按钮 / 翻译层统计行）。
+- 翻译层缓存（`cache\translate` + `translate_engine` 的 L1 内存 / L2 磁盘）：
+  `_cache_ns` / `_key` / `_cache_path` / `_cache_get` / `_cache_put`、
+  `_CACHE_VERSION` / `_PROMPT_FP`、`cache_enabled` / `cache_dir`、stats 的
+  `cache_hits` / `cache_disk_hits`、`describe()` 的 cache 段、`translate.cache` 配置键、
+  `NEXUS_CACHE_DIR` 环境变量（唯一消费方就是这两层缓存）。
+- 8791（头显 LAN 面）的两个缓存路由**保留为兼容桩**：`GET cache` 恒回
+  `{"ok":true,"hit":false}`、`POST cache/save` 回 `ok:false`——已发布的头显 APK
+  （v1.6.16，改不了）还会调它们，桩让旧版头显拿到 hit:false 走正常识别、
+  存档失败静默忽略，而不是撞 403/404 进异常分支。
+
+**术语表（全链路删除）**：
+- 删文件：`vendor/subtitle/glossary.py`、`glossary_ja_zh.json`、`glossary_en_zh.json`、
+  `tools/import_glossary_csv.ps1`、两个对象已消失的 diag 脚本
+  （`tests/diag/translate_unit.py` 测的就是缓存+术语表修补、`asr_no_glossary_ctx.py`）。
+- 识别侧：`asr_engine` / `audiocpp_backend` 删热词注入（`context_with_keys`、
+  `use_glossary_context`、`context_max_chars`、`_build_context`）；
+  **保留"上一句原文进热词"**（realtime-subtitle 的 context carryover，与术语表无关）；
+  回显判据统一走既有的 `text_filters.is_prompt_echo`（audiocpp 原本就用它判上一句回显，
+  PyTorch 路径从 `is_glossary_echo` 换过来，行为同源）；`is_glossary_echo` 及其三个
+  专用常量删除。whisper 后端本就刻意忽略 prompt，只改注释。
+- 翻译侧：`Translator(cfg, glossary)` → `Translator(cfg)`；`_system_with_glossary` →
+  `_build_system`（保留 SYSTEM+附加规则，只去术语注入）；`_repair_with_glossary`
+  译文修补删除；`/glossary`、`/glossary/reload` 端点、宿主 `/api/glossary*` 四接口、
+  术语表总开关 `glossary.enabled`、宿主保存配置触发热重载的钩子全删。
+- UI：术语表导航页整页、仪表盘"术语表条目"指标卡、字幕卡 Glossary 一栏、
+  S 状态里的词表缓存与全部事件绑定（含 `#cacheClear` 绑定——按钮删了绑定不删会
+  null 崩掉整个 bind()）。
+- 工具链：`sync_distapp.ps1` 删 `-SyncGlossary`，词表不再排除（作为"仓库已删"从
+  dist-app 快照清掉，实测清掉 3 个文件）；`build_exe.ps1` 删词表摘出/回填段；
+  `setup.iss` 删两张词表的出厂种子条目与 Excludes；`user_paths` 删 `GLOSSARY_NAMES` /
+  `glossary_path` / 布局补救里的词表分支 / `_entry_count`。
+- 配置模板：`config.json` 删 `glossary` 段、`use_glossary_context`、`context_max_chars`、
+  `translate.cache`。**dist-app\data 里的旧运行配置不碰**（多余键没人读，无害）。
+
+### 二、怎么验的
+
+- `test_pipeline_unit.py` 12 项全过（术语表开关测试随功能删除；Translator 构造全部单参化；
+  user_paths 迁移测试的词表断言删除）。`py_compile` 全部改动 .py；`node --check` 全部改动 .js。
+- 重编 exe（版本自动升 **1.0.21 / code 22**）+ sync 后启动**打包版**实测：
+  `/api/state` 无 `subtitleCache`/`translateCache`；`/api/glossary` 404；8790 缓存路由 404；
+  8791 两桩行为符合预期；字幕服务 `/health` 无 glossary 段、`translate.stats` 无缓存计数、
+  code_sig 与仓库一致；`/translate/selftest` 直连报"本地翻译运行时未安装"（本机没装
+  llama 运行时，属环境状态非本次回归——顺手修了报错文案里 `tools\fetch` 被 `\f` 吃成
+  换页符的既有转义 bug）。
+- `node tests/ui_check.js` 无头 Chrome 集成检查：控制台错误 0、溢出 0×0、
+  字幕服务就绪、无任何 glossary/缓存残留字段。
+
+### 三、结论与影响
+
+- 每次播放都重新识别+翻译：改提示词/模型/参数/代码立即全部生效，不存在旧结果
+  被"当基线加载"或缓存命中跳过判据的问题（R0 待办 #4 的缓存版本标记问题随功能一起消失）。
+- 代价：同一视频看第二遍要重新跑 ASR（用户点名的取舍）；R48 布局补救的"词表以
+  条数多者为准"逻辑同步删除（key 补救保留）。
+- 头显端无需任何改动：v1.6.16 对两个桩的行为兼容。
