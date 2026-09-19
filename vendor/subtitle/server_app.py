@@ -138,9 +138,9 @@ def _idle_release_min() -> float:
     和"常驻"没有区别，只是发生得晚一点。
     """
     try:
-        return float((CFG.get("server") or {}).get("idle_release_min", 15) or 0)
+        return float((CFG.get("server") or {}).get("idle_release_min", 5) or 0)
     except Exception:
-        return 15.0
+        return 5.0
 
 
 async def _idle_reaper() -> None:

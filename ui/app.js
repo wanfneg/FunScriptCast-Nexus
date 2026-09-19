@@ -653,11 +653,11 @@
       $("#mtCloudModel").value = oa.model || "";
       $("#mtCloudKey").value = "";
       /* 空闲回收显存（server.idle_release_min，分钟；0=永不）。配置缺这个键时
-         按发运默认 1 分钟回填，不能让下拉停在第一项假装是用户选的 */
+         按发运默认 5 分钟回填，不能让下拉停在第一项假装是用户选的 */
       var idleSel = $("#subIdleRelease");
       if (idleSel && !busyEditing(idleSel)) {
         var idleVal = (c.server || {}).idle_release_min;
-        idleVal = (idleVal == null ? 1 : Number(idleVal));
+        idleVal = (idleVal == null ? 5 : Number(idleVal));
         idleSel.value = String(idleVal);
         if (idleSel.selectedIndex < 0 || idleSel.value !== String(idleVal)) {
           // 配置里的值不在预设档位（手改过 config）：如实显示成一个额外选项
@@ -834,7 +834,7 @@
     });
     /* 空闲回收显存：改完即时生效（字幕服务在跑就自动重启加载新时长） */
     $("#subIdleRelease").addEventListener("change", function () {
-      var sel = this, prev = S.subIdlePrev != null ? S.subIdlePrev : "1";
+      var sel = this, prev = S.subIdlePrev != null ? S.subIdlePrev : "5";
       var v = Number(sel.value);
       api("/api/subtitle/config", "POST", { server: { idle_release_min: v } }).then(function (r) {
         if (r.ok) {

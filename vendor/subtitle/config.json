@@ -80,6 +80,6 @@
   "server": {
     "host": "0.0.0.0",
     "port": 8756,
-    "idle_release_min": 1
+    "idle_release_min": 5
   }
 }
