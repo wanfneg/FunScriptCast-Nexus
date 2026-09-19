@@ -778,6 +778,13 @@ def sub_start() -> dict:
             if os.name == "nt":
                 flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             env = dict(os.environ)
+            # 子进程的 stdout 由本文件按 UTF-8 解码（Popen(encoding="utf-8")），但
+            # Windows 下 Python 管道输出默认走系统 locale（中文系统 = GBK）——不钉死
+            # 成 UTF-8 的话，中文日志到这边全是乱码，空闲回收的"释放模型并退出"
+            # 特征匹配失败，正常回收会被误报成异常退出（R54 实测通过是因为当时
+            # 宿主从开发终端拉起、继承了 PYTHONUTF8=1，用户双击启动时没有）。
+            # 只钉 stdio，不动文件系统编码（那会影响 open() 默认编码，风险面大）。
+            env.setdefault("PYTHONIOENCODING", "utf-8")
             # 模型由 config.json 决定（服务端会把相对路径按自身目录解析），
             # 所以这里只在 config 完全没写模型时才兜底注入绝对路径。
             try:

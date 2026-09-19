@@ -1812,3 +1812,55 @@ Sakura-7B IQ4XS（4.25GB 权重 + KV/上下文）≈ 7.2~7.5GB。1.5B 生效时�
 - 一句必要的说明文案（不是装饰）：暂停播放也算空闲，超时后继续播放会重新等待模型加载。
 - 实测：POST server.idle_release_min=2 → config 写入 → 服务重启后 /health 生效 2.0；
   已恢复默认 1 分钟。
+
+## Round 57（2026-09-20）：空闲回收显存默认值 1 → 5 分钟（用户拍板）
+
+R54 把空闲回收从 15 分钟缩到 1 分钟、R56 加了设置项之后，用户实际用下来拍板改默认：
+**1 分钟太激进**（看片中途暂停一小会儿就触发回收，续播要吃一次 15~20s 模型重载），
+默认放宽到 **5 分钟**。改动三处同步：`vendor/subtitle/config.json` 模板、
+`server_app.py` 兜底默认、`ui/app.js` 下拉默认档；dist-app 用户配置同步为 5，
+重启服务实测 `/health` 生效 5.0。30 秒/1/2/15 分钟/永不各档仍可选（`3c5422f`）。
+
+## Round 58（2026-09-20）：整体移除 PyTorch Qwen3-ASR 引擎
+
+**用户问**：PyTorch Qwen3-ASR（0.6B/1.7B 两个模型都在）能不能直接去掉。答：能，
+整条链没人真在用（历史整片实测识别召回零提升，生产默认早就是 whisper）。
+
+- **删**：`asr_engine.py`、7 个旧诊断脚本、`Qwen3-ASR-1.7B`（4.5GB）+
+  `Qwen3-ForcedAligner-0.6B`（1.8GB），释放磁盘约 **6.2GB**；配置里的 PyTorch 专属键
+  （量化/对齐器/生成上限/device）、torch 专属监控 `gpu_used_gb`。
+- **回退链收窄**：whisper → audiocpp（两层全挂进"未就绪"引导下载，实际使用无影响）。
+- **特意保留**：`Qwen3-ASR-0.6B`（1.8GB）——是 audio.cpp 引擎的模型，删了 audiocpp 就废。
+- 单测 12 项全过；sync 后打包版重启验证 whisper 就绪、翻译自测通过（`e3b0573`）。
+- 顺带回答用户：audio.cpp 理论上能加载 1.7B（HF 目录格式同 0.6B）但不值得
+  （多占 2GB+ 显存、召回零提升）；1.7B 完整副本在 `E:\模型\Qwen3-ASR-1.7B-hf` 可随时验。
+
+## Round 59（2026-09-20）：清 8.6GB VibeVoice 实验残留 + 修空闲回收误报 error（R54 回归）
+
+**用户回「2」**：拍板删除 R58 末尾挂起的两处实验残留——`models\hf`（7.3GB，VibeVoice-ASR
+HF 下载缓存）+ `models\vibevoice`（1.2GB），共 **8.6GB**；顺带删其唯一引用者
+`tests/diag/download_vibevoice.ps1`（它的作用就是把删掉的东西下回来）。
+全链路 grep 零引用（现役 HF 缓存是 `models\hf-cache`——kotoba-whisper，**保留**）；
+`dist-app\models` 是指向仓库 models 的 junction，删一处两侧同步消失。
+
+**顺带修掉一个真回归（用户本轮实测踩中）**：字幕服务空闲自动回收被宿主误报成
+`error：字幕服务运行中退出（code 0）`+乱码，而 R54 明明做过"正常回收 → 已停止 + info"分类。
+
+- 根因：宿主按 UTF-8 解子进程 stdout（`Popen(encoding="utf-8")`），但 Windows 下
+  Python 3.10 管道输出默认走系统 locale（中文系统 = GBK）→ 中文日志全成替换符乱码 →
+  「释放模型并退出」特征匹配失败 → 落进异常分支。
+- **为什么 R54 当时验证通过**：宿主是从 ZCode 开发终端拉起的，shell 里带着
+  `PYTHONUTF8=1`，子进程继承后输出恰好是 UTF-8——**测试环境污染把 locale bug 藏住了**；
+  用户双击启动（无此变量）从未受益于该修复。
+- 修法：`_start_subtitle` 的 Popen env 里 `setdefault("PYTHONIOENCODING", "utf-8")`——
+  只钉 stdio 编码，不动文件系统/open 默认编码（风险面为零）。改 host_server.py ⇒
+  重编 exe **1.0.23 / code 24**。
+- **干净环境实测**（剔除 PYTHONUTF8/PYTHONIOENCODING 后重启宿主，等价用户双击）：
+  0.2 分钟阈值下自然回收 → `status=stopped`、`error` 空、事件流 info
+  「字幕服务空闲超时已自动回收（显存已释放；下次使用会自动再启动）」✓。
+- 顺带修显示：回收阈值分钟数 `:.0f` → `:g`（0.2 分钟此前显示成「0 分钟」，有误导）。
+- 阈值已恢复 R57 默认 5 分钟；单测全过；sync 后快照 code_sig 一致、whisper 就绪。
+
+**教训（真写进文档）**：凡是「子进程中文输出 → 父进程做字符串匹配」的链路，
+验证必须在干净环境（等价用户双击）下做——开发 shell 里的 `PYTHONUTF8=1` 会让
+locale 相关 bug 在测试里隐形、只在用户手里爆。

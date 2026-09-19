@@ -156,7 +156,7 @@ async def _idle_reaper() -> None:
         with _INFLIGHT_LOCK:      # 复核 + 退出原子化：在飞请求的打点会被这把锁挡住
             if _INFLIGHT > 0:
                 continue
-            print(f"[server] 空闲 {idle / 60:.1f} 分钟 ≥ {mins:.0f} 分钟，"
+            print(f"[server] 空闲 {idle / 60:.1f} 分钟 ≥ {mins:g} 分钟，"
                   f"释放模型并退出（下次要用会由头显重新拉起）", flush=True)
             try:
                 if hasattr(state["asr"], "stop_server"):
@@ -259,7 +259,7 @@ async def lifespan(_app):
     threading.Thread(target=_warm_translator, daemon=True,
                      name="translator-warmup").start()
     _reaper = asyncio.create_task(_idle_reaper())
-    print(f"[server] 空闲回收：{_idle_release_min():.0f} 分钟无识别请求后释放模型"
+    print(f"[server] 空闲回收：{_idle_release_min():g} 分钟无识别请求后释放模型"
           if _idle_release_min() > 0 else "[server] 空闲回收：已关闭（idle_release_min=0）")
     yield
     _reaper.cancel()
