@@ -650,6 +650,27 @@
             </label>
           </div>
 
+          <div class="panel card">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow">AI Subtitle</div>
+                <h2>AI 字幕</h2>
+              </div>
+            </div>
+            <label class="field">
+              <span>空闲回收显存</span>
+              <select class="input" id="subIdleRelease">
+                <option value="0.5">30 秒</option>
+                <option value="1">1 分钟</option>
+                <option value="2">2 分钟</option>
+                <option value="5">5 分钟</option>
+                <option value="15">15 分钟</option>
+                <option value="0">永不</option>
+              </select>
+            </label>
+            <div class="sub">字幕服务空闲这段时间后自动退出并释放显存，下次使用自动再启动；头显暂停播放也算空闲，超时后继续播放会重新等待模型加载</div>
+          </div>
+
           <div class="panel card span-2">
             <div class="panel-head">
               <div>

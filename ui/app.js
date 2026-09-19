@@ -652,6 +652,24 @@
       $("#mtCloudBase").value = oa.base_url || "";
       $("#mtCloudModel").value = oa.model || "";
       $("#mtCloudKey").value = "";
+      /* 空闲回收显存（server.idle_release_min，分钟；0=永不）。配置缺这个键时
+         按发运默认 1 分钟回填，不能让下拉停在第一项假装是用户选的 */
+      var idleSel = $("#subIdleRelease");
+      if (idleSel && !busyEditing(idleSel)) {
+        var idleVal = (c.server || {}).idle_release_min;
+        idleVal = (idleVal == null ? 1 : Number(idleVal));
+        idleSel.value = String(idleVal);
+        if (idleSel.selectedIndex < 0 || idleSel.value !== String(idleVal)) {
+          // 配置里的值不在预设档位（手改过 config）：如实显示成一个额外选项
+          var opt = document.createElement("option");
+          var label = idleVal === 0 ? "永不" : (idleVal < 1 ? (idleVal * 60) + " 秒" : idleVal + " 分钟");
+          opt.value = String(idleVal);
+          opt.textContent = label;
+          idleSel.appendChild(opt);
+          idleSel.value = String(idleVal);
+        }
+        S.subIdlePrev = idleSel.value;   // 保存失败时弹回基准
+      }
       syncMtGroups();
     });
   }
@@ -807,6 +825,22 @@
         if (r.ok) {
           S.asrBackendPrev = sel.value;
           toast("识别引擎已保存", "字幕服务正在重启以切换引擎", "ok");
+          restartSubForConfig();
+        } else {
+          sel.value = prev;
+          toast("保存失败", r.error || "", "err");
+        }
+      });
+    });
+    /* 空闲回收显存：改完即时生效（字幕服务在跑就自动重启加载新时长） */
+    $("#subIdleRelease").addEventListener("change", function () {
+      var sel = this, prev = S.subIdlePrev != null ? S.subIdlePrev : "1";
+      var v = Number(sel.value);
+      api("/api/subtitle/config", "POST", { server: { idle_release_min: v } }).then(function (r) {
+        if (r.ok) {
+          S.subIdlePrev = sel.value;
+          toast("已保存", v > 0 ? ("空闲 " + (v < 1 ? (v * 60) + " 秒" : v + " 分钟") + "自动回收显存")
+                              : "空闲回收已关闭", "ok");
           restartSubForConfig();
         } else {
           sel.value = prev;
@@ -1080,7 +1114,7 @@
     // 配置输入框时不要覆盖他的输入
     setTimeout(function () { if (!S.subCfgDirty) loadSubtitleConfig(); }, 2500);
     // 配置输入一旦被用户动过就标记：之后的自动回填一律让路
-    ["asrBackend", "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey"
+    ["asrBackend", "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey", "subIdleRelease"
     ].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) el.addEventListener("input", function () { S.subCfgDirty = true; });
