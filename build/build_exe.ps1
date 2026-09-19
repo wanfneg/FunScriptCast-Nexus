@@ -92,6 +92,23 @@ if (Test-Path $distDataDir) {
     $nData = (Get-ChildItem $dataStash -Recurse -File -Force | Measure-Object).Count
     Write-Host "  已摘出 dist-app\data（运行数据 $nData 个文件），组装完回填" -ForegroundColor DarkGray
 }
+# dist-app\vendor\llama（llama.cpp + CUDA，约 1.1 GB）与 data 同理：它不进安装包
+# （v1.0.18 起改为界面内下载），但**日常重编的 dist-app 就是用户的运行实例**——
+# 不摘出来，每次重编都会吃掉它；下一次字幕服务启动时"找不到 llama-server.exe"，
+# 本地翻译静默失效（预热只打一行日志，界面上毫无感知，R55 实测踩中）。
+$llamaStash = Join-Path $root 'build\_dist-app-llama'
+$distLlamaDir = Join-Path $out 'vendor\llama'
+if ((Test-Path $llamaStash) -and -not (Test-Path $distLlamaDir)) {
+    Move-Item $llamaStash $distLlamaDir -Force
+    Write-Host "  发现上次重编遗留的 llama 暂存，已先回填 dist-app\vendor\llama" -ForegroundColor Yellow
+}
+$stashedLlama = $false
+if (Test-Path $distLlamaDir) {
+    Remove-Item $llamaStash -Recurse -Force -ErrorAction SilentlyContinue
+    Move-Item $distLlamaDir $llamaStash -Force
+    $stashedLlama = $true
+    Write-Host "  已摘出 dist-app\vendor\llama（本地翻译运行时），组装完回填" -ForegroundColor DarkGray
+}
 if (Test-Path $out) {
     # 先摘除 junction（只删链接点本身）。PS5.1 的 Remove-Item -Recurse 会**跟随
     # junction 递归删除目标内容**（PowerShell#621）：dist-app 里的 models/.venv
@@ -170,6 +187,13 @@ if ($stashedData) {
     if (Test-Path $distDataDir) { Remove-Item $distDataDir -Recurse -Force -ErrorAction SilentlyContinue }
     Move-Item $dataStash $distDataDir -Force
     Write-Host "  已把 dist-app\data 回填（用户的配置 / 设置 / DLNA 数据）" -ForegroundColor DarkGray
+}
+# 回填 dist-app\vendor\llama（本地翻译运行时，见"摘出"处的说明）
+if ($stashedLlama) {
+    $distLlamaDir = Join-Path $out 'vendor\llama'
+    if (Test-Path $distLlamaDir) { Remove-Item $distLlamaDir -Recurse -Force -ErrorAction SilentlyContinue }
+    Move-Item $llamaStash $distLlamaDir -Force
+    Write-Host "  已把 dist-app\vendor\llama 回填（本地翻译运行时）" -ForegroundColor DarkGray
 }
 
 # 回填用户 key（坑 #12 就此关闭）。注意 PS5.1 的 UTF8 必须无 BOM——

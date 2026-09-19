@@ -771,7 +771,12 @@
       var k = $("#mtCloudKey").value.trim();
       if (k) body.translate.openai.api_key = k;
       api("/api/subtitle/config", "POST", body).then(function (r) {
-        toast(r.ok ? "翻译设置已保存" : "保存失败", r.ok ? "重启字幕服务后生效" : (r.error || ""), r.ok ? "ok" : "err");
+        if (r.ok) {
+          toast("翻译设置已保存", "字幕服务正在重启以加载新模型", "ok");
+          restartSubForConfig();
+        } else {
+          toast("保存失败", r.error || "", "err");
+        }
       });
     });
     $("#testMt").addEventListener("click", function () {
@@ -801,7 +806,8 @@
       api("/api/subtitle/config", "POST", { asr: { backend: sel.value } }).then(function (r) {
         if (r.ok) {
           S.asrBackendPrev = sel.value;
-          toast("识别引擎已保存", "重启字幕服务后生效", "ok");
+          toast("识别引擎已保存", "字幕服务正在重启以切换引擎", "ok");
+          restartSubForConfig();
         } else {
           sel.value = prev;
           toast("保存失败", r.error || "", "err");
@@ -971,6 +977,19 @@
     btn.innerHTML = '<svg class="ic"><use href="#i-circle-check"/></svg>';
     btn.style.color = "var(--ok)";
     setTimeout(function () { btn.innerHTML = old; btn.style.color = ""; }, 1200);
+  }
+
+  /* 字幕设置改动后自动重启字幕服务（R55）：模型/引擎都是启动期加载的常驻进程，
+     只保存不重启的话界面显示"已切换"、实际还跑着旧模型（实测 7B→1.5B 不重启
+     显纹丝不动，用户以为切了）。没在跑就不用重启，下次启动自然用新配置。 */
+  function restartSubForConfig() {
+    var st = (S.state && S.state.subtitle || {}).status;
+    if (st !== "ready" && st !== "loading" && st !== "error") return;
+    api("/api/subtitle/stop", "POST", {}).then(function () {
+      setTimeout(function () {
+        api("/api/subtitle/start", "POST", {}).then(function () { poll(true); });
+      }, 800);   // 等端口完全释放（stop 的 taskkill 是同步的，留点余量）
+    });
   }
 
   function startDlna() {
