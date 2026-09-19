@@ -646,7 +646,7 @@ class AudioCppBackend:
 
     @staticmethod
     def _merge_short_segments(segs: list, seg_cfg: dict) -> list:
-        """把过短的碎片并进相邻句（判据与 AsrEngine._merge_short 一致：
+        """把过短的碎片并进相邻句（与原 PyTorch 引擎的 _merge_short 同判据：
         时长 < min_sec 或字数 < min_chars、与前句间隔 < 0.8s、合并后不超长）。
 
         拼接用 join_tokens（与 PyTorch 侧同一实现）：旧实现是字符串直接相加，

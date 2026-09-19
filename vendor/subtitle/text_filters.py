@@ -67,7 +67,7 @@ def is_latin_hallucination(text: str, lang_key: str = "ja") -> bool:
 def join_tokens(parts):
     """拼接 ASR token：中日文直接相连，英文/数字之间补空格。
 
-    从 asr_engine 下沉到这里（两条后端都要用：PyTorch 分句、audiocpp 合并短句）。
+    从原 PyTorch 引擎下沉到这里（whisper 分句、audiocpp 合并短句都要用）。
     直接相加在英文上会粘成一坨（"hello"+"world" → "helloworld"），
     而中日文之间**不能**加空格（加了字幕会多出空格）。
     """

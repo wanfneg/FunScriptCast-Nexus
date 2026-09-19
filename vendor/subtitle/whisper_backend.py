@@ -50,7 +50,7 @@ import user_paths as _user_paths  # noqa: E402  （同目录）
 _HF_HOME = _user_paths.apply_hf_env()
 # **显式**缓存根，所有 WhisperModel 调用都传它。为什么不只靠上面的 HF_HOME：
 # huggingface_hub 的 HF_HUB_CACHE 是 import 时读成常量的，而本模块是**惰性导入**的
-# （server_app 里 asr_engine → transformers 早就把 hub 拉进来了）⇒ 那时环境变量已经
+# （server_app 的 user_paths.apply_hf_env 早就把 hub 路径定死了）⇒ 那时环境变量已经
 # 来不及生效。实测踩中过：模型在安装目录、hub 常量却指着 C 盘，whisper 找不到模型后
 # **静默回落 audiocpp**。显式 download_root 与 import 顺序无关，是这里的正确做法。
 _HUB_DIR = _user_paths.hf_cache_dir() / "hub"
@@ -77,7 +77,7 @@ class WhisperBackend:
         self.backend_kind = "whisper"
         self.load_s = 0.0
         self._model = None
-        # CTranslate2 默认 num_workers=1，官方不建议并发进同一模型；与 AsrEngine
+        # CTranslate2 默认 num_workers=1，官方不建议并发进同一模型；与 audiocpp 引擎
         # 同思路串行化（/transcribe 走线程池，可能并发进来）。
         self._lock = threading.Lock()
 

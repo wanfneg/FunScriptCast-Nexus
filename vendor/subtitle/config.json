@@ -1,15 +1,5 @@
 {
   "asr": {
-    "model": "../../models/Qwen3-ASR-0.6B",
-    "aligner": "../../models/Qwen3-ForcedAligner-0.6B",
-    "device": "cuda:0",
-    "dtype": "bf16",
-    "quantization": "none",
-    "bnb_quant_type": "nf4",
-    "bnb_double_quant": true,
-    "max_new_tokens_per_sec": 4.0,
-    "max_new_tokens_min": 48,
-    "max_new_tokens_max": 256,
     "backend": "whisper",
     "audiocpp": {
       "dir": "E:/audiocpp-portable",

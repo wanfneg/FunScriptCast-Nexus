@@ -27,9 +27,9 @@ BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-# ⚠️ **必须排在下面那批重量级 import 之前**：`asr_engine` / `translate_engine` 会连带
-# import transformers/torch，而它们又会 import huggingface_hub —— hub 的缓存路径是在
-# import 时**读成常量**的（HF_HUB_CACHE），之后再改环境变量一概无效。
+# ⚠️ **必须排在下面那批重量级 import 之前**：`whisper_backend` / `translate_engine`
+# 会连带 import huggingface_hub —— hub 的缓存路径是在 import 时**读成常量**的
+# （HF_HUB_CACHE），之后再改环境变量一概无效。
 # 实测踩中：whisper_backend 是惰性导入的，等它设 HF_HOME 时 hub 早已冻结在
 # `%USERPROFILE%\.cache\huggingface`（C 盘），于是模型搬进安装目录后 whisper 找不到模型、
 # **静默回落 audiocpp**（配置写着 whisper，实际在跑 Qwen3）。
@@ -49,7 +49,6 @@ import numpy as np  # noqa: E402
 from fastapi import FastAPI, Request  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
-from asr_engine import AsrEngine  # noqa: E402
 from whisper_fallback import WhisperFallback  # noqa: E402
 from translate_engine import Translator  # noqa: E402
 
@@ -87,21 +86,7 @@ for _sec in ("asr", "translate", "server", "vad", "segment"):
 MAX_BODY_BYTES = 100 * 1024 * 1024
 
 
-def _abs_path(p: str) -> str:
-    """相对路径按本文件所在目录解析，避免 cwd 不同导致找不到模型。"""
-    if not p:
-        return p
-    q = Path(p)
-    return str(q if q.is_absolute() else (BASE / q).resolve())
-
-
-# config.json 是模型路径的唯一真相（可切 0.6B / 1.7B）。
-# 环境变量只在 config 没写时兜底，避免「改了 config 却不生效」。
-for _k in ("model", "aligner"):
-    if CFG.get("asr", {}).get(_k):
-        CFG["asr"][_k] = _abs_path(CFG["asr"][_k])
-if not CFG.get("asr", {}).get("model") and os.environ.get("ASR_MODEL"):
-    CFG["asr"]["model"] = os.environ["ASR_MODEL"]
+# 翻译后端的环境变量兜底：config 没写时才生效，避免「改了 config 却不生效」。
 if os.environ.get("TRANSLATE_BACKEND"):
     CFG["translate"]["backend"] = os.environ["TRANSLATE_BACKEND"]
 # ASR 后端同名机制：评测/排障时用环境变量切后端（NEXUS_ASR_BACKEND=whisper），
@@ -207,13 +192,15 @@ class _AsrUnavailable:
 def _make_asr(cfg: dict):
     """按 asr.backend 选引擎。
 
-    - "pytorch"（默认）：原来的 Qwen3-ASR + torch 实现
+    - "whisper"：faster-whisper/CTranslate2 进程内引擎（R44 实测覆盖率 +10%、
+      时序更好、快 3×；见 whisper_backend 模块注释——**不给 prompt**）
     - "audiocpp"：audiocpp 常驻服务（CPU 后端显存 0 占用；必须先 VAD 裁剪语音段，
       否则长音频会退化出成百上千连重复——见 audiocpp_backend 模块注释）
-    - "whisper"：faster-whisper/CTranslate2 进程内引擎（R44 实测覆盖率 +10%、
-      时序更好、快 3×；R45 起可配，见 whisper_backend 模块注释——**不给 prompt**）
+
+    PyTorch Qwen3-ASR 引擎已整体移除（R58）：生产 A/B 里它对 whisper/audiocpp
+    没有任何优势，回退链收窄为 whisper → audiocpp → 未就绪兜底。
     """
-    kind = str(cfg.get("backend", "pytorch") or "pytorch").lower()
+    kind = str(cfg.get("backend", "whisper") or "whisper").lower()
     if kind in ("whisper", "faster-whisper", "kotoba"):
         try:
             from whisper_backend import WhisperBackend
@@ -223,32 +210,23 @@ def _make_asr(cfg: dict):
             be.ensure_model()     # 启动期加载（+2.5~3.9s），首次请求不再付这个代价
             return be
         except Exception as e:
-            # 回落 audiocpp（生产验证过的默认）而不是 PyTorch：轻量运行时没有 torch，
-            # 掉进 PyTorch 分支 = lifespan 直接炸 = 整场零字幕。回落链必须落在
-            # "能跑"的那一级；/health 的 asr_backend 会如实显示实际生效的引擎。
+            # 回落 audiocpp（生产验证过的另一引擎）；/health 的 asr_backend 会如实
+            # 显示实际生效的引擎。
             print(f"[server] ⚠️ whisper 不可用（{type(e).__name__}: {e}），回落 audiocpp（Qwen3）")
-    if kind in ("audiocpp", "cpp", "ggml", "whisper", "faster-whisper", "kotoba"):
-        # whisper 配置失败也会走到这里（见上）：回退链 whisper → audiocpp → pytorch
-        try:
-            from audiocpp_backend import AudioCppBackend
-
-            be = AudioCppBackend(
-                cfg.get("audiocpp", {}) or {},
-                # 拉丁幻觉过滤在 asr 段（与引擎选择同源），默认开
-                drop_latin=bool(cfg.get("drop_latin_hallucination", True)),
-            )
-            be.ensure_server()
-            print(f"[server] ASR 后端 = audiocpp（{be.backend}, {be.threads} 线程, "
-                  f"端口 {be.port}）")
-            return be
-        except Exception as e:
-            print(f"[server] audiocpp 不可用（{type(e).__name__}: {e}），回退 PyTorch")
     try:
-        engine = AsrEngine(cfg)
-        print(f"[server] ASR 后端 = pytorch（加载 {engine.load_s:.1f}s）")
-        return engine
+        from audiocpp_backend import AudioCppBackend
+
+        be = AudioCppBackend(
+            cfg.get("audiocpp", {}) or {},
+            # 拉丁幻觉过滤在 asr 段（与引擎选择同源），默认开
+            drop_latin=bool(cfg.get("drop_latin_hallucination", True)),
+        )
+        be.ensure_server()
+        print(f"[server] ASR 后端 = audiocpp（{be.backend}, {be.threads} 线程, "
+              f"端口 {be.port}）")
+        return be
     except Exception as e:
-        print(f"[server] ⚠️ PyTorch 引擎不可用（{type(e).__name__}: {e}），进入未就绪模式"
+        print(f"[server] ⚠️ 两个识别引擎都不可用（{type(e).__name__}: {e}），进入未就绪模式"
               f"（下载识别模型后重启字幕服务即恢复）")
         return _AsrUnavailable()
 
@@ -323,15 +301,10 @@ app.add_middleware(_LoopbackGuard)
 
 
 def _gpu_used_gb() -> float:
-    """当前显存占用（GB）。注意：audiocpp 路径下本进程不加载 torch 模型，
-    恒为 0——监控 audiocpp 的内存要看系统内存而不是这个值。"""
-    try:
-        import torch
-        # memory_allocated() 是当前占用；此前用 max_memory_allocated()（启动以来
-        # 峰值）只升不降，做监控会得到假数据
-        return round(torch.cuda.memory_allocated() / 1e9, 2)
-    except Exception:
-        return 0.0
+    """（已废弃，恒 0）原为 PyTorch 引擎的 torch 显存监控；两个现役引擎
+    （whisper=CTranslate2 / audiocpp=独立进程）的显存都不归 torch 管，
+    监控看宿主 /api/state 的 gpu 段（NVML 总量）。字段保留仅为兼容旧客户端。"""
+    return 0.0
 
 
 @app.get("/health")
