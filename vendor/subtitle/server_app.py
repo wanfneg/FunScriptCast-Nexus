@@ -155,7 +155,9 @@ async def _idle_reaper() -> None:
     """
     global _INFLIGHT
     while True:
-        await asyncio.sleep(30)
+        # 10s 粒度（R54）：回收阈值改成了分钟级的小值（用户要求"没用就尽快清显存"），
+        # 30s 粒度下实际回收延迟最坏 = 阈值 + 30s，体验跟不上阈值本身的意义。
+        await asyncio.sleep(10)
         mins = _idle_release_min()
         if mins <= 0:
             continue
@@ -257,6 +259,27 @@ async def lifespan(_app):
     state["translator"] = Translator(CFG.get("translate", {}))
     print(f"[server] 管线代码签名 code_sig={CODE_SIG}（陈旧实例排障用）", flush=True)
     print(f"[server] 翻译后端={state['translator'].backend}")
+    # 翻译引擎预热（R54，用户点名"启动时就启用翻译模型"）：识别模型加载完成后在
+    # 后台把本地 llama-server 拉起来（Sakura-7B 装显存实测 ~5s）。不预热时第一句
+    # 译文要等引擎冷启动，开头几秒只有识别没有字幕。只对 local 后端有意义
+    # （ollama/openai 是外部服务，无进程可拉起）；预热失败只留日志不拦住服务就绪
+    # ——真到翻译时 _chat_local 还会再 ensure_server 并如实报错。字幕服务退出时
+    # llama-server 被 Job Object 一并带走，不会变成无人回收的常驻显存。
+    def _warm_translator() -> None:
+        t = state["translator"]
+        try:
+            if t is None or t.disabled or t.backend != "local":
+                return
+            from translate_engine import _local_backend
+            be = _local_backend(t.cfg.get("local") or {})
+            be.ensure_server()
+            print(f"[server] 翻译引擎已预热：{be.base_url}（{be.model.name}）", flush=True)
+        except Exception as e:
+            print(f"[server] 翻译引擎预热失败（翻译请求时会重试并如实报错）："
+                  f"{type(e).__name__}: {e}", flush=True)
+
+    threading.Thread(target=_warm_translator, daemon=True,
+                     name="translator-warmup").start()
     _reaper = asyncio.create_task(_idle_reaper())
     print(f"[server] 空闲回收：{_idle_release_min():.0f} 分钟无识别请求后释放模型"
           if _idle_release_min() > 0 else "[server] 空闲回收：已关闭（idle_release_min=0）")
@@ -338,6 +361,10 @@ def health():
         "gpu_used_gb": _gpu_used_gb(),
         "translate_backend": state["translator"].backend if state["translator"] else None,
         "translate": state["translator"].describe() if state["translator"] else None,
+        # 空闲回收透明化（R54）：PC 端界面用这两个字段显示"最近活动 + 还有多久
+        # 自动回收"，用户能看出服务为什么自己停了（而不是像凭空消失）
+        "last_req_ts": _LAST_REQ_TS,
+        "idle_release_min": _idle_release_min(),
     }
 
 

@@ -331,6 +331,20 @@
     $("#subModel").textContent = h.asr_model ? String(h.asr_model).split(/[\\/]/).pop() : "—";
     $("#subDevice").textContent = h.device || "—";
     $("#subMt").textContent = h.translate_backend || "—";
+    /* 空闲回收透明化：让"服务为什么自己停了"看得见——最近一次识别请求的时间
+       与自动回收规则（头显退出字幕不通知 PC，回收靠服务端空闲计时） */
+    var idleEl = $("#subIdle");
+    if (idleEl) {
+      var idleMin = h.idle_release_min;
+      var txt = (idleMin != null && idleMin > 0)
+        ? ("空闲 " + idleMin + " 分钟无识别请求即自动回收显存")
+        : "空闲回收：已关闭";
+      if (h.last_req_ts) {
+        var ago = Math.max(0, Math.floor(Date.now() / 1000 - h.last_req_ts));
+        txt += " · 最近活动 " + (ago < 60 ? ago + " 秒前" : Math.floor(ago / 60) + " 分钟前");
+      }
+      idleEl.textContent = txt;
+    }
     // 当前实际生效的识别引擎（/health 的 asr_backend）。显示"实际"而不是"配置"：
     // 选了 Whisper 但模型缺失回落 Qwen3 时，这里必须能看出来（与选择器不一致即异常）
     if ($("#subAsr")) {

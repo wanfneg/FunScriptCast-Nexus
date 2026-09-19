@@ -884,6 +884,13 @@ def _watch_subtitle(proc: "subprocess.Popen") -> None:
             RT.sub_ready = False
     if ours and gen == RT.sub_gen and not TRAY.quitting:
         detail = " / ".join(tail[-3:]) or "无输出"
+        # 空闲回收是**设计内的正常退出**（服务端打点"空闲 X 分钟 ≥ Y 分钟，释放模型
+        # 并退出"，code 0）。R54 起回收阈值缩到分钟级，这是高频正常路径——再报成
+        # "异常退出"就是误导（用户会以为出了故障）。识别到回收特征时只留一条普通
+        # 事件，状态落回"已停止"。
+        if rc == 0 and "释放模型并退出" in detail:
+            RT.add_log("字幕服务空闲超时已自动回收（显存已释放；下次使用会自动再启动）", "info")
+            return
         with RT.lock:
             RT.sub_error = f"字幕服务运行中退出（code {rc}）：{detail}"
         RT.add_log(f"字幕服务异常退出：{RT.sub_error}", "err")
