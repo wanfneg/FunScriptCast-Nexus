@@ -436,7 +436,8 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg) -> dict:
             silence_threshold=float(h.get("silence_threshold", 0.01)),
             silence_tail_sec=float(h.get("silence_tail_sec", 1.0)),
             min_phrase_sec=float(h.get("min_phrase_sec", 2.0)),
-            max_phrase_sec=float(h.get("max_phrase_sec", 5.0)))
+            max_phrase_sec=float(h.get("max_phrase_sec", 5.0)),
+            vad_fn=_hybrid_vad_fn)
     span, span_ms, reason = _HYBRID.feed(pcm, lang, video_start_ms)
     if span is None:
         return {"language": lang, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
@@ -447,10 +448,13 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg) -> dict:
     result = state["asr"].transcribe(
         span, lang, span_ms, 0,
         {"vad_filter": False} if is_whisper else None, seg_cfg, "")
-    regions = _hybrid_vad_fn(span)
-    # ⚠ VAD 组是 span 内相对毫秒，必须加 span_ms 换成视频绝对时间轴——
-    # 段-组对齐按中点落位，两边不同轴就会吸附到错误的时间上（R63 实测踩过：
-    # 漏加偏移 → 中位 −700ms、26% 半秒内）
+    # 对齐用语音区：VAD 裁决的切句直接复切句时的语音区（同一缓冲同一起点，
+    # 免第二次 CLI）；RMS/硬切切的才现场跑。⚠ 组是 span 内相对毫秒，必须加
+    # span_ms 换成视频绝对时间轴（R63 实测：漏加偏移 → 中位 −700ms）。
+    regions = _HYBRID.last_cut_regions
+    _HYBRID.last_cut_regions = None
+    if regions is None:
+        regions = _hybrid_vad_fn(span)
     groups = ([(span_ms + ga, span_ms + gb) for ga, gb in merge_regions(regions)]
               if regions else [])
     segs = align_segments_to_groups(result.get("segments") or [], groups)

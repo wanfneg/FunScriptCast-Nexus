@@ -56,11 +56,18 @@ class HybridBuffer:
     def __init__(self, silence_threshold: float = SILENCE_THRESHOLD,
                  silence_tail_sec: float = SILENCE_TAIL_SEC,
                  min_phrase_sec: float = MIN_PHRASE_SEC,
-                 max_phrase_sec: float = MAX_PHRASE_SEC):
+                 max_phrase_sec: float = MAX_PHRASE_SEC,
+                 vad_fn=None):
         self.thr = float(silence_threshold)
         self.tail_sec = float(silence_tail_sec)
         self.min_sec = float(min_phrase_sec)
         self.max_sec = float(max_phrase_sec)
+        # vad_fn(pcm) -> [(start_sec, end_sec)]（相对输入）：silero 语音区。
+        # BGM 内容的整段 RMS 永远压不过静音阈值（R63.1 实测：全片切句全是
+        # 5.2s 硬切），RMS 只配当免费第一优先，句尾停顿的最终裁判是 VAD——
+        # 音乐不是语音，silero 的语音区间隙就是句间停顿。
+        self.vad_fn = vad_fn
+        self.last_cut_regions = None   # 切句时的 VAD 语音区（相对 span 秒），供对齐复用
         self._lock = threading.Lock()
         self.reset()
 
@@ -123,9 +130,12 @@ class HybridBuffer:
             dur = len(self._pcm) / SR
             if dur < 0.5:
                 return None, 0, ""
-            # 原型同款 0.2s 步进扫描（R63 实测教训：只在块到达时评估会看不见
-            # 句间短停顿，7s 大段塞多句 → whisper 并句 → 对齐吞时间戳）：
-            # 从最短句长起找第一个「尾部 1s 静音」的位置下刀；越过硬切线就硬切。
+            # 切点裁决，三优先级：
+            #   ① RMS 静音扫描（免费，纯安静内容秒判）；
+            #   ② VAD 语音区间隙（BGM 内容的真正裁判——音乐不是语音，语音区
+            #      的间隙就是句间停顿；silero 每次喂块都跑，成本与生产旧管线
+            #      的逐块 VAD 同级）；
+            #   ③ 5.2s 硬切兜底（连续说话/两条判据都瞎时封顶延迟）。
             # 切点之后的残余音频**留在缓冲里**（可能已是下一句的头）。
             step_n = int(0.2 * SR)
             tail_n = int(self.tail_sec * SR)
@@ -141,6 +151,23 @@ class HybridBuffer:
                     cut_n, reason = i, "standard"
                     break
                 i += step_n
+            vad_regions = None
+            if not cut_n and self.vad_fn is not None and dur >= self.min_sec:
+                try:
+                    vad_regions = self.vad_fn(self._pcm)
+                except Exception:
+                    vad_regions = None
+                if vad_regions:
+                    last_end = float(vad_regions[-1][1])
+                    pause = dur - last_end
+                    if pause >= self.tail_sec and last_end * SR >= tail_n:
+                        cut_n = min(int(round((last_end + 0.15) * SR)),
+                                    len(self._pcm))
+                        reason = "vad"
+                elif vad_regions is not None and dur > max_n:
+                    pass  # VAD 明确说整段无语音：交给下面的硬切路径处理
+            if not cut_n and len(self._pcm) > max_n + step_n:
+                cut_n, reason = max_n + step_n, "hard"
             if not cut_n:
                 return None, 0, ""
             # 丢弃只在**切点**评估（参考项目同语义）：切下的这段整段 RMS<阈值
@@ -154,6 +181,8 @@ class HybridBuffer:
             self._pcm = self._pcm[cut_n:]
             self._start_ms += int(round(cut_n / SR * 1000))
             # _next_ms 续着时间轴末端（不清零）；残余缓冲从切点继续攒下一句
+            self.last_cut_regions = (list(vad_regions)
+                                     if (vad_regions and reason == "vad") else None)
             return span, start_ms, reason
 
 

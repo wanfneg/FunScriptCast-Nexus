@@ -545,6 +545,37 @@ def t_hybrid_cutpoint_carry():
     # 反证：若切点没续（bug 版），下一句起点会标到 5000ms——重叠区重复入账。
 
 
+# 17 ----------------------------- 混合切句：VAD 裁决切点（R63.1 BGM 场景）
+def t_hybrid_vad_cut():
+    import numpy as np
+    from hybrid_segmenter import HybridBuffer
+    bgm = (np.sin(np.arange(16000 * 4) / 5.0) * 0.05).astype(np.float32)  # RMS 0.035，永远过不了静音线
+
+    calls = {"n": 0}
+    def fake_vad(pcm):
+        calls["n"] += 1
+        return [(0.0, 2.5)]          # 语音到 2.5s 结束，之后是 BGM
+
+    buf = HybridBuffer(vad_fn=fake_vad)
+    # 2s：到最短句长了，但语音区尾(2.5s)还没到，停顿不足 → 不切
+    assert buf.feed(bgm[:32000], "ja", 0)[0] is None
+    # +1.5s：语音尾 2.5s，停顿 = 3.5-2.5 = 1.0s → VAD 裁决切在 2.65s（+0.15s 垫）
+    span, start_ms, reason = buf.feed(bgm[32000:56000], "ja", 2000)
+    assert reason == "vad" and start_ms == 0, (reason, start_ms)
+    assert len(span) == 42400, len(span)
+    assert buf.last_cut_regions == [(0.0, 2.5)]          # 语音区供对齐复用
+    assert calls["n"] == 2, calls
+    # VAD 失败（返回 None）→ 退回 RMS/硬切路径，不炸
+    def bad_vad(pcm):
+        return None
+    buf2 = HybridBuffer(vad_fn=bad_vad)
+    assert buf2.feed(bgm[:32000], "ja", 0)[0] is None
+    assert buf2.feed(bgm[:32000], "ja", 2000)[0] is None
+    span, start_ms, reason = buf2.feed(bgm[:32000], "ja", 4000)
+    assert reason == "hard" and start_ms == 0, (reason, start_ms)
+    assert len(span) == 83200, len(span)                 # 5.2s 格点
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -564,6 +595,7 @@ if __name__ == "__main__":
     check("混合切句 重叠去重/补零/跳变重置（R63）", t_hybrid_overlap_gap_jump)
     check("混合切句 段-组对齐器（R63）", t_hybrid_align)
     check("混合切句 切点续接（R63 回归锁）", t_hybrid_cutpoint_carry)
+    check("混合切句 VAD 裁决切点（R63.1 BGM 场景）", t_hybrid_vad_cut)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
