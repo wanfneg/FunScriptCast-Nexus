@@ -1200,8 +1200,6 @@ MODELS_CATALOG = [
              "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/model.safetensors"},
             {"rel": "preprocessor_config.json",
              "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/preprocessor_config.json"},
-            {"rel": "tokenizer.json",
-             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/tokenizer.json"},
             {"rel": "tokenizer_config.json",
              "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/tokenizer_config.json"},
             {"rel": "vocab.json",
