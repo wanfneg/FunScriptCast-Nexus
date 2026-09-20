@@ -205,6 +205,11 @@ class WhisperBackend:
                    extra_context: str = "") -> dict:
         """pcm: float32 [-1,1] @16k mono（与另两个后端同约定）。
 
+        vad_cfg 支持 {"vad_filter": false} 显式关闭内建 VAD 修剪——混合切句
+        （R63）按 RMS 句界切好整句送进来，再让 vad_filter 修剪会吃掉气声段
+        （R61 实测：块内 vad_filter 是 sivr001 漏 4 句的机制候选）。缺省不变
+        （True，定长块口径）。
+
         extra_context 刻意忽略——见模块注释"三条铁律"第 1 条。
         skipped=True 仅在"模型 + VAD 一段都没给出"时置位：语义是"整块没有语音"，
         同时让 server_app 的 whisper 二次兜底跳过（主引擎已经是 whisper，
@@ -215,13 +220,14 @@ class WhisperBackend:
         # faster-whisper 只认 2 字母码，"zh-CN" 这类带地区后缀会直接 ValueError
         lang = ((lang_key or self.language).split("-")[0].strip().lower()
                 or self.language)
+        vad_filter = True if vad_cfg is None else bool(vad_cfg.get("vad_filter", True))
         segs: list[dict] = []
         with self._lock:
             # 迭代生成器必须在持锁期间完成（faster-whisper 的 transcribe 返回惰性生成器）
             segments, _info = self._model.transcribe(
                 pcm, language=lang,
                 beam_size=self.beam_size,
-                vad_filter=True,
+                vad_filter=vad_filter,
                 vad_parameters={"min_silence_duration_ms": self.min_silence_ms},
                 condition_on_previous_text=False,
             )

@@ -440,6 +440,111 @@ def t_run_server_embeddable_import():
         "打包版会表现为「启动字幕服务」永远失败。原始输出：\n" + out[-1500:])
 
 
+# 13 ------------------------------------------------ 混合切句：切句规则（R63）
+def t_hybrid_cut_rules():
+    import numpy as np
+    from hybrid_segmenter import HybridBuffer
+    tone = (np.sin(np.arange(16000 * 3) / 5.0) * 0.1).astype(np.float32)   # RMS≈0.07
+    silence = np.zeros(16000, dtype=np.float32)
+
+    buf = HybridBuffer()
+    # 2.4s 语音：超过 2s 最短缓冲，但尾部 1s 还在说话 → 不切
+    assert buf.feed(tone[:38400], "ja", 0)[0] is None
+    # 尾部 1s 静音 → standard 切，绝对起点=缓冲起点，span=语音+静音尾
+    span, start_ms, reason = buf.feed(silence, "ja", 2400)
+    assert reason == "standard" and start_ms == 0, (reason, start_ms)
+    assert len(span) == 16000 * 3.4, len(span)
+    # 硬切：切点后续 6s 连续语音（无静音点可找）→ 在 5.2s 格点硬切
+    span, start_ms, reason = buf.feed(np.concatenate([tone, tone]), "ja", 3400)
+    assert reason == "hard" and start_ms == 3400, (reason, start_ms)
+    assert len(span) == 16000 * 5.2, len(span)
+    # 整段全静音 → 攒到切点（2s）时整段 RMS<阈值 → 丢弃（防静音复读循环）
+    buf2 = HybridBuffer()
+    span, start_ms, reason = buf2.feed(np.zeros(16000 * 3, dtype=np.float32), "ja", 0)
+    assert span is None and reason == "silent", (reason,)
+
+
+# 14 --------------------------------------- 混合切句：重叠去重/补零/跳变重置（R63）
+def t_hybrid_overlap_gap_jump():
+    import numpy as np
+    from hybrid_segmenter import HybridBuffer
+    tone = (np.sin(np.arange(16000 * 3) / 5.0) * 0.1).astype(np.float32)
+    silence = np.zeros(16000, dtype=np.float32)
+
+    buf = HybridBuffer()
+    # 头显 3s/1s 协议：喂的是完整块，缓冲按绝对时间轴自己丢弃重叠区
+    assert buf.feed(tone, "ja", 0)[0] is None                # [0,3s) 净增 3s
+    assert buf.feed(tone, "ja", 2000)[0] is None             # [2s,5s) 重叠 1s 丢弃
+    span, start_ms, reason = buf.feed(silence, "ja", 5000)   # [5s,6s) 静音尾
+    assert reason == "hard" and start_ms == 0, (reason, start_ms)
+    assert len(span) == 16000 * 5.2, len(span)               # 5s 语音+0.2s 静音，5.2s 格点硬切
+    # 前跳 >10s：新会话，重置后从新起点重开（无切句时 feed 的 start_ms 恒 0，
+    # 用"下一块切句的绝对起点"来验证重置真的发生了）
+    assert buf.feed(tone[:32000], "ja", 20000)[0] is None
+    span, start_ms, reason = buf.feed(silence, "ja", 22000)
+    assert reason == "standard" and start_ms == 20000, (reason, start_ms)
+    assert len(span) == 16000 * 3, len(span)                 # 2s 语音 + 1s 静音尾
+    # 回跳 >1s：seek/重启，旧缓冲作废，从回跳点重开
+    assert buf.feed(tone, "ja", 5000)[0] is None             # [5s,8s)
+    assert buf.feed(tone[:16000], "ja", 5000)[0] is None     # 回跳 → 重置，重积 1s
+    span, start_ms, reason = buf.feed(np.zeros(32000, dtype=np.float32), "ja", 6000)
+    assert reason == "standard" and start_ms == 5000, (reason, start_ms)
+    assert len(span) == 16000 * 2, len(span)
+    # 空洞（丢块）：缺的 5s 补零保时间轴 → 扫描在补零区第一个静音点(4s)下刀
+    buf2 = HybridBuffer()
+    assert buf2.feed(tone, "ja", 0)[0] is None
+    span, start_ms, reason = buf2.feed(tone, "ja", 8000)
+    assert reason == "standard" and start_ms == 0, (reason, start_ms)
+    assert len(span) == 16000 * 4, len(span)                 # 3s 语音 + 1s 补零零区
+
+
+# 15 ------------------------------------------- 混合切句：段-组对齐器（R63）
+def t_hybrid_align():
+    from hybrid_segmenter import align_segments_to_groups, merge_regions
+
+    groups = [(1000, 3000), (3500, 5500)]
+    segs = [
+        {"start_ms": 1000, "end_ms": 2500, "text": "あ"},
+        {"start_ms": 2500, "end_ms": 3400, "text": "い"},   # 中点仍在组 0 → 并句
+        {"start_ms": 3800, "end_ms": 5000, "text": "う"},
+        {"start_ms": 8000, "end_ms": 9000, "text": "え"},   # 谁也不沾 → 保留自报时间
+    ]
+    out = align_segments_to_groups(segs, groups)
+    assert [(s["start_ms"], s["end_ms"], s["text"]) for s in out] == [
+        (1000, 3000, "あい"), (3500, 5500, "う"), (8000, 9000, "え")], out
+    # 落在组间呼吸间隙的短段：中点距组尾 ≤0.6s 吸附进组
+    out2 = align_segments_to_groups(
+        [{"start_ms": 3050, "end_ms": 3150, "text": "ん"}], groups)
+    assert out2[0]["start_ms"] == 1000 and out2[0]["text"] == "ん", out2
+    # 组空 / 段空的边界
+    assert align_segments_to_groups([], groups) == []
+    only = [{"start_ms": 100, "end_ms": 200, "text": "あ"}]
+    assert align_segments_to_groups(only, []) == only
+    # 语音区合并（秒 → 毫秒，间隙 0.3s 内并组）
+    assert merge_regions([(0.0, 1.0), (1.2, 2.0), (3.0, 3.2)]) == [
+        (0, 2000), (3000, 3200)]
+
+
+# 16 --------------------------------------- 混合切句：切点续接（R63 回归锁）
+def t_hybrid_cutpoint_carry():
+    import numpy as np
+    from hybrid_segmenter import HybridBuffer
+    tone = (np.sin(np.arange(16000 * 3) / 5.0) * 0.1).astype(np.float32)
+    silence = np.zeros(16000, dtype=np.float32)
+
+    buf3 = HybridBuffer()
+    assert buf3.feed(tone, "ja", 0)[0] is None
+    assert buf3.feed(tone, "ja", 2000)[0] is None
+    span, _, reason = buf3.feed(silence, "ja", 5000)     # 5.2s 格点硬切，切点=5200ms
+    assert reason == "hard" and len(span) == 16000 * 5.2, (reason, len(span))
+    # 切点 5200ms 续着时间轴：下一块 [5s,8s) 头部 0.8s 属上一句已入账
+    assert buf3.feed(tone, "ja", 5000)[0] is None        # 净增 [6s,8s)
+    span, start_ms, reason = buf3.feed(silence, "ja", 8000)
+    assert reason == "standard" and start_ms == 5200, (reason, start_ms)
+    assert len(span) == 16000 * 3.8, len(span)           # [5.2s,9.0s)，不是从 5s 起
+    # 反证：若切点没续（bug 版），下一句起点会标到 5000ms——重叠区重复入账。
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -455,6 +560,10 @@ if __name__ == "__main__":
     check("模型下载器（进度/断点续传/原子替换）", t_model_downloader)
     check("用户数据迁移（落在安装目录 data\\，多源迁移与补救）", t_user_data_migration)
     check("run_server 在封闭 sys.path 下可 import（embeddable 条件）", t_run_server_embeddable_import)
+    check("混合切句规则（standard/hard/silent，R63）", t_hybrid_cut_rules)
+    check("混合切句 重叠去重/补零/跳变重置（R63）", t_hybrid_overlap_gap_jump)
+    check("混合切句 段-组对齐器（R63）", t_hybrid_align)
+    check("混合切句 切点续接（R63 回归锁）", t_hybrid_cutpoint_carry)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

@@ -325,6 +325,9 @@ def health():
         "started_at": _BOOT_TS,
         "asr_backend": getattr(asr, "backend_kind", None)
                        or str((CFG.get("asr") or {}).get("backend", "pytorch")),
+        # 切句口径（R63）：chunk=3s/1s 定长块（现役）；hybrid=RMS 静音定界+VAD 赋时。
+        # 评测与排障靠它区分跑的是哪套切段——config 换档不换代码签名（R60 教训）。
+        "segmentation": "hybrid" if _hybrid_mode() else "chunk",
         "asr_model": m,
         # 识别是否真的可用（模型没下载时服务照常起，但这里为 False，头显端据此不误报就绪）
         "asr_ready": getattr(asr, "backend_kind", "unavailable") != "unavailable",
@@ -387,6 +390,78 @@ def translate_selftest(text: str = "こんにちは、いい天気ですね。")
     return out
 
 
+# ---------------------------------------------------------------- 混合切句（R63 立项）
+# asr.segmentation = "chunk"（默认，3s/1s 定长块+逐块 VAD，现役口径）| "hybrid"
+# （服务端 RMS 静音定界 + silero VAD 赋时，R62 原型实测两片零漏识+句界三件套）。
+# 头显协议零改动：音频照旧按块 POST /transcribe，重切句全在 PC 侧。
+_HYBRID = None       # HybridBuffer 单例（单客户端与 _LAST_CTX 同一假设）
+_HYBRID_VAD = None   # AudioCppBackend 只当 silero VAD 用（惰性建，不起 ASR 服务）
+
+
+def _hybrid_mode() -> bool:
+    return str((CFG.get("asr", {}) or {}).get("segmentation", "chunk")).lower() == "hybrid"
+
+
+def _hybrid_vad_fn(pcm):
+    """silero VAD（生产同款 CLI 与默认参数）→ [(start_sec, end_sec)]；失败回 None。
+
+    失败不致命：对齐器退化为"保留 ASR 自报时间"，混合切句降级成 RMS 定句版。
+    """
+    global _HYBRID_VAD
+    try:
+        if _HYBRID_VAD is None:
+            from audiocpp_backend import AudioCppBackend
+            _HYBRID_VAD = AudioCppBackend(
+                (CFG.get("asr", {}) or {}).get("audiocpp", {}) or {})
+        return _HYBRID_VAD.speech_spans(pcm)
+    except Exception as e:
+        print(f"[hybrid] VAD 不可用（{type(e).__name__}: {e}），退 ASR 自报时间",
+              flush=True)
+        return None
+
+
+def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg) -> dict:
+    """混合切句的整句转写。返回结构与 state["asr"].transcribe 同约定。
+
+    注意 skipped 语义：还在积累/静音丢弃时 = True——既如实告诉调用方"本轮
+    无出句"，也让 whisper 二次兜底别拿半截缓冲去空跑（R62 教训：兜底只认
+    "主引擎整段零输出"，混合模式下主引擎已经在完整句上跑过了）。
+    """
+    global _HYBRID
+    from hybrid_segmenter import (HybridBuffer, SR as _SR,
+                                  align_segments_to_groups, merge_regions)
+    if _HYBRID is None:
+        h = ((CFG.get("asr", {}) or {}).get("hybrid", {}) or {})
+        _HYBRID = HybridBuffer(
+            silence_threshold=float(h.get("silence_threshold", 0.01)),
+            silence_tail_sec=float(h.get("silence_tail_sec", 1.0)),
+            min_phrase_sec=float(h.get("min_phrase_sec", 2.0)),
+            max_phrase_sec=float(h.get("max_phrase_sec", 5.0)))
+    span, span_ms, reason = _HYBRID.feed(pcm, lang, video_start_ms)
+    if span is None:
+        return {"language": lang, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
+                "skipped": True, "backend": "hybrid"}
+    # ASR 整句转写。whisper 必须关内建 vad_filter（R61：块内修剪吃气声段，
+    # 是 sivr001 漏 4 句的机制候选）；audiocpp 自带内部 VAD，原样送整句。
+    is_whisper = getattr(state["asr"], "backend_kind", "") == "whisper"
+    result = state["asr"].transcribe(
+        span, lang, span_ms, 0,
+        {"vad_filter": False} if is_whisper else None, seg_cfg, "")
+    regions = _hybrid_vad_fn(span)
+    # ⚠ VAD 组是 span 内相对毫秒，必须加 span_ms 换成视频绝对时间轴——
+    # 段-组对齐按中点落位，两边不同轴就会吸附到错误的时间上（R63 实测踩过：
+    # 漏加偏移 → 中位 −700ms、26% 半秒内）
+    groups = ([(span_ms + ga, span_ms + gb) for ga, gb in merge_regions(regions)]
+              if regions else [])
+    segs = align_segments_to_groups(result.get("segments") or [], groups)
+    result["segments"] = segs
+    result["skipped"] = not segs
+    result["backend"] = f"hybrid+{result.get('backend') or '?'}"
+    print(f"[hybrid] 切句({reason}) {len(span) / _SR:.1f}s @{span_ms}ms → "
+          f"组{len(groups)} 段{len(segs)}（ASR {result.get('asr_ms')}ms）", flush=True)
+    return result
+
+
 @app.post("/transcribe")
 async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0,
                      keep_from_ms: int = 0, translate: bool = True):
@@ -427,10 +502,14 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
     asr_extra = prev["src"][:60]   # 上一句原文截断后作热词补充（echo 有回显重试兜底）
 
     t0 = time.perf_counter()
-    result = await run_in_threadpool(
-        state["asr"].transcribe, pcm, lang, video_start_ms, keep_from_ms,
-        CFG.get("vad", {}), CFG.get("segment", {}), asr_extra,
-    )
+    if _hybrid_mode():
+        result = await run_in_threadpool(
+            _hybrid_transcribe, pcm, lang, video_start_ms, CFG.get("segment", {}))
+    else:
+        result = await run_in_threadpool(
+            state["asr"].transcribe, pcm, lang, video_start_ms, keep_from_ms,
+            CFG.get("vad", {}), CFG.get("segment", {}), asr_extra,
+        )
 
     # 二次识别兜底：主 ASR 零输出、但块里确有语音能量（气声/耳语台词是
     # 0.6B 模型的盲区，实测 916/978/995s 三处纯净音频也零输出）时，
@@ -498,13 +577,20 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
         for s in segs:
             s["text"] = strip_wrap_quotes(s.get("text") or "")
             s["translation"] = strip_wrap_quotes(s.get("translation") or "")
-        kept = []
-        for s in sorted(segs, key=lambda x: len(x.get("text") or ""), reverse=True):
-            ct = s.get("text") or ""
-            if ct and any(ct in (k.get("text") or "") for k in kept):
-                continue
-            kept.append(s)
-        result["segments"] = sorted(kept, key=lambda x: x.get("start_ms") or 0)
+        if _hybrid_mode():
+            # 混合切句（R63）：一个响应装的是按 VAD 组对齐后的**整句集**，
+            # 短句（はい）与长句（はい、頑張ります）并存是常态，跨响应的重叠
+            # 去重已由混合缓冲的时间轴完成——这里的子串去重会把正当短句当
+            # 碎片误杀（实测 sivr002 掉到 92.1%），必须跳过。
+            result["segments"] = sorted(segs, key=lambda x: x.get("start_ms") or 0)
+        else:
+            kept = []
+            for s in sorted(segs, key=lambda x: len(x.get("text") or ""), reverse=True):
+                ct = s.get("text") or ""
+                if ct and any(ct in (k.get("text") or "") for k in kept):
+                    continue
+                kept.append(s)
+            result["segments"] = sorted(kept, key=lambda x: x.get("start_ms") or 0)
         for s in result["segments"]:
             s["translation"] = _display_zh(s)
     result["mt_ms"] = mt_ms

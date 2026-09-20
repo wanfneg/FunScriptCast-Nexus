@@ -1,6 +1,13 @@
 {
   "asr": {
     "backend": "whisper",
+    "segmentation": "chunk",
+    "hybrid": {
+      "silence_threshold": 0.01,
+      "silence_tail_sec": 1.0,
+      "min_phrase_sec": 2.0,
+      "max_phrase_sec": 5.0
+    },
     "audiocpp": {
       "dir": "E:/audiocpp-portable",
       "backend": "cuda",
