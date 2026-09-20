@@ -2319,3 +2319,33 @@ llama-server，幂等），`Translator._apply_local_lang_model(lang)` 在翻译�
 （Qwen3 英转录 → Hy-MT2 翻译）全部出中文 ✓**。配置三处已加 model_by_lang + mt_user_prefix_by_lang；
 D 盘 models\ 已补 Hy-MT2 两个 GGUF（自包含）。GGUF 相对路径按安装根两级上跳解析
 （vendor/subtitle/../../models/），D 盘活配置同理。
+
+## Round 66（2026-09-20 下午）：模型档位/显存估算/下载目录三件套——服务端+UI 全链路
+
+**用户规格**：识别 0.6B/1.7B 两档、翻译 4 模型（Sakura 7B/1.5B + Hy-MT2 7B/1.8B）用户自由
+组合选择；选完提示大致显存占用；Sakura/Hy 可同时选（按请求语言自动路由）；模型进下载列表；
+下方按当前显存推荐组合。
+
+**实现**：
+1. **转录 1.7B 档实测通过**：audio.cpp 直接吃 Qwen3-ASR-1.7B HF 单文件权重（E:\模型 那份，
+   联接点 qwen17b 复用）——1.7B 档可行。⚠️ ModelScope/HF 官方仓是**分片权重**（2 片），
+   audio.cpp 只吃单文件——下载目录暂缓 1.7B 条目（需合并步骤），UI 档位仍上（手动放置权重
+   即可启用，路径指向含单文件的目录）。
+2. **/health 增 vram_estimate**：按当前配置档位估算显存（asr_mb/mt_ja_mb/mt_en_mb/
+   mt_active_mb/total_mb）——翻译按语言热切换、**同时只驻留一个**，所以翻译取两档较大值
+   而非求和（关键口径）。档位表按文件名特征（0.6B=1300/1.7B=3600/Hy-MT2-7B=4700/
+   Hy-MT2-1.8B=1300/Sakura-7B=4400/Sakura-1.5B=1400/固定开销 900MB）。
+3. **UI（dist-app ui 外置即生效）**：本地翻译下拉拆成 **日语翻译模型 / 英语翻译模型** 两个
+   （各写 local.model / local.model_by_lang.en），保存随 #saveMt 走；显存估算行接
+   /api/state（subtitle.health.vram_estimate + gpu 实际空闲），空闲不足时警示降档。
+4. **下载目录**：host_server MODELS_CATALOG 增 hymt2-7b（4.3GB）/hymt2-1.8b（1.1GB）两条
+   （ModelScope 直链，curl 验证 200/大小吻合）。**需要 exe 重编**（catalog 在 exe 里）——
+   build_exe.ps1 已跑，新 exe 已产出待部署。Qwen3-ASR-1.7B 条目暂缓：官方仓只有分片权重，
+   audio.cpp 需单文件，待合并步骤或上游单文件源。
+5. **部署**：vendor py + ui 已同步 dist-app 与 D 盘；D 盘宿主重启装载新 exe 后字幕服务
+   验证 segmentation=hybrid/mt_warm=True。
+
+**对照用户规格的差距收口**：档位选择 ✓（PC UI 两个下拉）/显存提示 ✓（估算+空闲警示）/
+同时选 ✓（分语言两档，热切换）/下载列表 ✓（exe 升级后含 4 模型+1.7B 待定）/按显存推荐 ✓
+（空闲不足自动提示降档）。手机/头显端无需改（档位在 PC 端管理，客户端只选语言——引擎既定
+设计）。

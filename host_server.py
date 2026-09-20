@@ -1224,6 +1224,28 @@ MODELS_CATALOG = [
         ],
     },
     {
+        "id": "hymt2-7b",
+        "role": "translate",
+        "label": "翻译模型 · Hy-MT2-7B（英语）",
+        "dest_dir": MODELS_DIR / "Hy-MT2-7B",
+        "size_gb": 4.3,
+        "files": [
+            {"rel": "Hy-MT2-7B-Q4_K_M.gguf",
+             "url": "https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-7B-GGUF/resolve/master/Hy-MT2-7B-Q4_K_M.gguf"},
+        ],
+    },
+    {
+        "id": "hymt2-1.8b",
+        "role": "translate",
+        "label": "翻译模型 · Hy-MT2-1.8B（英语·轻量）",
+        "dest_dir": MODELS_DIR / "Hy-MT2-1.8B",
+        "size_gb": 1.1,
+        "files": [
+            {"rel": "Hy-MT2-1.8B-Q4_K_M.gguf",
+             "url": "https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf"},
+        ],
+    },
+    {
         "id": "sakura-1.5b",
         "role": "translate",
         "label": "翻译模型 · Sakura-1.5B（轻量）",

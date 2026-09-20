@@ -334,6 +334,45 @@ def _gpu_used_gb() -> float:
     return 0.0
 
 
+# 显存档位表（R66）：按模型路径特征估算 VRAM 占用（MB）。文件大小 ≈ 权重体积，
+# 运行时开销（CUDA 上下文/KV/音频运行时）单列 FIXED。数字是实测+余量的粗估，
+# 用于 UI 的"选组合 → 提示显存"，不是精确值。
+_VRAM_FIXED_MB = 900        # audio.cpp 运行时 + llama.cpp 运行时 + CUDA 上下文 + 杂项
+_VRAM_TIERS = [
+    ("1.7B", 3600),         # Qwen3-ASR-1.7B（bf16 权重 ~3.4GB）
+    ("0.6B", 1300),         # Qwen3-ASR-0.6B
+    ("Hy-MT2-7B", 4700),    # Hy-MT2-7B Q4_K_M（4.6GB 文件 + 激活）
+    ("Hy-MT2-1.8B", 1300),  # Hy-MT2-1.8B Q4_K_M
+    ("7b-qwen2.5", 4400),   # Sakura-7B iq4xs
+    ("1.5b-qwen2.5", 1400), # Sakura-1.5B q5ks
+]
+
+
+def _tier_mb(path: str) -> int:
+    low = str(path or "").lower().replace("\\", "/")
+    for key, mb in _VRAM_TIERS:
+        if key.lower() in low:
+            return mb
+    return 0
+
+
+def _vram_estimate() -> dict:
+    """按当前配置估算显存占用（R66）。翻译模型按语言热切换、**同时只驻留一个**，
+    所以翻译取 ja/en 两档的较大值；转录模型单独驻留。"""
+    asr = (CFG.get("asr", {}) or {})
+    asr_mb = 0
+    if str(asr.get("backend", "")).lower() == "audiocpp":
+        asr_mb = _tier_mb(((asr.get("audiocpp", {}) or {}).get("model", "")))
+    local = (CFG.get("translate", {}) or {}).get("local", {}) or {}
+    ja_mb = _tier_mb(str(local.get("model", "")))
+    en_mb = _tier_mb(((local.get("model_by_lang") or {}).get("en", "")))
+    mt_mb = max(ja_mb, en_mb)
+    total = asr_mb + mt_mb + _VRAM_FIXED_MB
+    return {"asr_mb": asr_mb, "mt_ja_mb": ja_mb, "mt_en_mb": en_mb,
+            "mt_active_mb": mt_mb, "fixed_mb": _VRAM_FIXED_MB,
+            "total_mb": total}
+
+
 @app.get("/health")
 def health():
     asr = state["asr"]
@@ -372,6 +411,8 @@ def health():
         # 这里的时间戳非 0 才说明首句翻译不会再付 prefill 的账
         "mt_warm": _MT_WARM > 0,
         "mt_warm_ts": _MT_WARM or None,
+        # 显存档位估算（R66）：UI 的「识别与翻译」卡据此显示占用与推荐组合
+        "vram_estimate": _vram_estimate(),
     }
 
 
