@@ -2278,3 +2278,13 @@ apache-2.0）已下载完毕，待写 ONNX 转录后端做英语转录（对手=
 按语言路由——ja→Sakura-7B（日中专用冠军），en→Hy-MT2-7B（英语线主力）；1.8B 仅作低配备选，
 不进主线**。配置已恢复 Sakura 为日译默认。另：Hy-MT2-7B 评测吞吐慢 2.5×（470 vs 183s），
 实时单句中位无差（0.2s），慢在长句尾部，流式场景影响有限，记录备查。
+
+**R64 追加 3（Cohere Transcribe 受限 + 英语能力快测全通过）**：
+用户要求下载 Cohere Transcribe——**CohereLabs/cohere-transcribe-03-2026 是 gated 模型**（须 HF
+账号登录模型页同意条款进入授权名单才能下载；匿名+镜像被拒）。已到手：onnx-community ONNX 版
+1.1GB（q4f16，apache-2.0，未受限），但 ONNX 裸跑需自写解码循环；原始权重要走 HF 授权。
+**同时英语能力快测全通过**（无需 Cohere）：Windows TTS 合成已知英语句 → Qwen3-ASR-0.6B
+`--language English` 转录**逐字全对** → Hy-MT2-7B 翻译流畅自然（"你能看看我的舞蹈吗？"/
+"我今晚一直在等你。"）——**英语全链路用现有资产即可跑通**，只差 PC 管线按语言路由的接线
+（ja→Sakura / en→Hy-MT2；ASR 侧 Qwen3 切 English 已验证）。Cohere 转录后续：用户在 HF 模型页
+申请授权 → 提供 token → 再下载原版权重做对比评估（非必需，英语已有可用组合）。
