@@ -1184,38 +1184,64 @@ def _hf_hub_dir() -> Path:
 
 MODELS_CATALOG = [
     {
-        "id": "whisper",
+        "id": "qwen3-asr-0.6b",
         "role": "asr",
-        "label": "识别模型（Whisper · 日文特化）",
-        "repo_dirname": "models--kotoba-tech--kotoba-whisper-v2.0-faster",
-        "commit": "local-download",
-        "size_gb": 1.4,
+        "label": "识别模型 · Qwen3-ASR-0.6B（显存约 1.3GB）",
+        "dest_dir": MODELS_DIR / "Qwen3-ASR-0.6B",
+        "size_gb": 1.2,
         "files": [
-            {"rel": fn,
-             "url": _HF_MIRROR + "/kotoba-tech/kotoba-whisper-v2.0-faster/resolve/main/" + fn}
-            for fn in ("config.json", "preprocessor_config.json",
-                       "tokenizer.json", "vocabulary.json", "model.bin")
+            {"rel": "config.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/config.json"},
+            {"rel": "generation_config.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/generation_config.json"},
+            {"rel": "merges.txt",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/merges.txt"},
+            {"rel": "model.safetensors",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/model.safetensors"},
+            {"rel": "preprocessor_config.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/preprocessor_config.json"},
+            {"rel": "tokenizer.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/tokenizer.json"},
+            {"rel": "tokenizer_config.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/tokenizer_config.json"},
+            {"rel": "vocab.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/vocab.json"},
         ],
     },
     {
-        # 仓库是私有的 → 自挂的 release 资产对用户不可达；llama.cpp 官方 release
-        # 是公开仓库，两个 zip（主程序 + CUDA 运行时）解压合并即得到 vendor/llama
-        "id": "llama-runtime",
-        "role": "translate-runtime",
-        "label": "本地翻译运行时（llama.cpp · CUDA）",
-        "kind": "zip",
-        "dest_dir": APP_DIR / "vendor" / "llama",
-        "size_gb": 0.8,
-        # 单文件发行（公开发行仓库 llama-runtime-windows.zip，内容=官方两 zip 解压合并）
+        "id": "qwen3-asr-1.7b",
+        "role": "asr",
+        "label": "识别模型 · Qwen3-ASR-1.7B（显存约 3.6GB，转录质量更高）",
+        "dest_dir": MODELS_DIR / "Qwen3-ASR-1.7B",
+        "size_gb": 4.4,
+        # 官方仓为两片分权重，下载完成后自动合并为单文件 model.safetensors
+        # （audio.cpp 的 qwen3_asr 只认单文件，见 _merge_safetensor_shards）
+        "merge_shards": True,
         "files": [
-            {"rel": "llama-runtime-windows.zip",
-             "url": "https://github.com/wanfneg/FunScriptCast-Nexus-Release/releases/latest/download/llama-runtime-windows.zip"},
+            {"rel": "config.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B/resolve/master/config.json"},
+            {"rel": "generation_config.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B/resolve/master/generation_config.json"},
+            {"rel": "merges.txt",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B/resolve/master/merges.txt"},
+            {"rel": "model-00001-of-00002.safetensors",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B/resolve/master/model-00001-of-00002.safetensors"},
+            {"rel": "model-00002-of-00002.safetensors",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B/resolve/master/model-00002-of-00002.safetensors"},
+            {"rel": "model.safetensors.index.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B/resolve/master/model.safetensors.index.json"},
+            {"rel": "preprocessor_config.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B/resolve/master/preprocessor_config.json"},
+            {"rel": "tokenizer_config.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B/resolve/master/tokenizer_config.json"},
+            {"rel": "vocab.json",
+             "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B/resolve/master/vocab.json"},
         ],
     },
     {
         "id": "sakura-7b",
         "role": "translate",
-        "label": "翻译模型 · Sakura-7B（推荐）",
+        "label": "翻译模型 · Sakura-7B（日语，显存约 4.4GB，翻译质量更好）",
         "dest_dir": MODELS_DIR / "Sakura-7B-Qwen2.5-v1.0",
         "size_gb": 4.0,
         "files": [
@@ -1224,9 +1250,22 @@ MODELS_CATALOG = [
         ],
     },
     {
+        "id": "sakura-1.5b",
+        "role": "translate",
+        "label": "翻译模型 · Sakura-1.5B（日语，显存约 1.4GB，低显存推荐）",
+        "dest_dir": MODELS_DIR / "Sakura-1.5B-Qwen2.5-v1.0",
+        "size_gb": 1.2,
+        # 量化文件在第三方镜像仓（官方 GGUF 仓只有 fp16）；远端文件名为大写 Q5KS，
+        # 已实测 206 且字节数与本地既有文件完全一致
+        "files": [
+            {"rel": "sakura-1.5b-qwen2.5-v1.0-q5ks.gguf",
+             "url": _HF_MIRROR + "/shing3232/Sakura-1.5B-Qwen2.5-v1.0-GGUF-IMX/resolve/main/sakura-1.5b-qwen2.5-v1.0-Q5KS.gguf"},
+        ],
+    },
+    {
         "id": "hymt2-7b",
         "role": "translate",
-        "label": "翻译模型 · Hy-MT2-7B（英语）",
+        "label": "翻译模型 · Hy-MT2-7B（英语，显存约 4.7GB，翻译质量更好）",
         "dest_dir": MODELS_DIR / "Hy-MT2-7B",
         "size_gb": 4.3,
         "files": [
@@ -1237,7 +1276,7 @@ MODELS_CATALOG = [
     {
         "id": "hymt2-1.8b",
         "role": "translate",
-        "label": "翻译模型 · Hy-MT2-1.8B（英语·轻量）",
+        "label": "翻译模型 · Hy-MT2-1.8B（英语，显存约 1.2GB，低显存推荐）",
         "dest_dir": MODELS_DIR / "Hy-MT2-1.8B",
         "size_gb": 1.1,
         "files": [
@@ -1245,21 +1284,7 @@ MODELS_CATALOG = [
              "url": "https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf"},
         ],
     },
-    {
-        "id": "sakura-1.5b",
-        "role": "translate",
-        "label": "翻译模型 · Sakura-1.5B（轻量）",
-        "dest_dir": MODELS_DIR / "Sakura-1.5B-Qwen2.5-v1.0",
-        "size_gb": 1.2,
-        # 量化文件在第三方镜像仓（官方 GGUF 仓只有 fp16）；远端文件名为大写 Q5KS，
-        # 已实测 206 且字节数与本地既有文件完全一致
-        "files": [
-            {"rel": "sakura-1.5b-qwen2.5-v1.0-q5ks.gguf",
-             "url": _HF_MIRROR + "/shing3232/Sakura-1.5B-Qwen2.5-v1.0-GGUF-IMX/resolve/main/sakura-1.5b-qwen2.5-v1.0-Q5KS.gguf"},
-        ],
-    },
 ]
-
 _MODEL_DL: dict = {}
 _DL_LOCK = threading.Lock()
 # 直连 hf-mirror（绕过系统代理：代理软件没开时 urllib 读注册表代理会 TLS 失败，
@@ -1429,6 +1454,13 @@ def _model_dl_worker(e: dict) -> None:
                     st["total"] = total
 
             _download_to_file(f["url"], dest, prog)
+        if e.get("merge_shards"):
+            # 分片权重合并（R66：Qwen3-ASR-1.7B 官方仓只发分片，audio.cpp 只认单文件）
+            try:
+                RT.add_log("分片权重合并中：" + e["label"])
+                _merge_safetensor_shards(Path(e["dest_dir"]))
+            except Exception as mex:
+                raise RuntimeError("分片合并失败: " + str(mex)) from mex
         if e.get("repo_dirname"):
             ref = _hf_hub_dir() / e["repo_dirname"] / "refs" / "main"
             ref.parent.mkdir(parents=True, exist_ok=True)
@@ -1460,6 +1492,50 @@ def _model_dl_worker(e: dict) -> None:
         with _DL_LOCK:
             _MODEL_DL[id_].update(state="error", error=type(exc).__name__ + ": " + str(exc))
         RT.add_log("模型下载失败：" + e["label"] + "（" + str(exc) + "）", "err")
+
+
+def _merge_safetensor_shards(model_dir) -> None:
+    """把 HF 分片权重合并成单文件 model.safetensors（R66）。
+
+    audio.cpp 的 qwen3_asr 只认单文件权重；ModelScope/HF 官方仓对 1.7B 只发
+    分片。纯字节拼接（safetensors 格式 = 8 字节头长 + JSON 头 + 数据区），
+    不依赖 torch/safetensors 库。合并后删除分片与索引。
+    """
+    import json as _json
+    idx_path = model_dir / "model.safetensors.index.json"
+    if not idx_path.is_file():
+        return
+    idx = _json.loads(idx_path.read_text(encoding="utf-8"))
+    weight_map = idx.get("weight_map") or {}
+    if not weight_map:
+        return
+    shard_hdrs = {}
+    shard_bytes = {}
+    for name in sorted(set(weight_map.values())):
+        fp = model_dir / name
+        with fp.open("rb") as fh:
+            n = int.from_bytes(fh.read(8), "little")
+            shard_hdrs[name] = _json.loads(fh.read(n))
+            shard_bytes[name] = fh.read()
+    out_hdr = {}
+    out_data = bytearray()
+    for tname, shard in weight_map.items():
+        meta = shard_hdrs[shard][tname]
+        s0, e0 = meta["data_offsets"]
+        raw = shard_bytes[shard][8 + s0: 8 + e0]
+        out_hdr[tname] = {"dtype": meta["dtype"], "shape": meta["shape"],
+                          "data_offsets": [len(out_data), len(out_data) + len(raw)]}
+        out_data += raw
+    hdr = _json.dumps(out_hdr, separators=(",", ":")).encode("utf-8")
+    hdr += b" " * ((8 - len(hdr) % 8) % 8)   # 头部按 8 字节对齐
+    (model_dir / "model.safetensors").write_bytes(
+        len(hdr).to_bytes(8, "little") + hdr + bytes(out_data))
+    for name in sorted(set(weight_map.values())):
+        fp = model_dir / name
+        if fp.exists():
+            fp.unlink()
+    if idx_path.exists():
+        idx_path.unlink()
 
 
 def models_catalog_payload() -> dict:

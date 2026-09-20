@@ -27,7 +27,7 @@ BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-# ⚠️ **必须排在下面那批重量级 import 之前**：`whisper_backend` / `translate_engine`
+# ⚠️ **必须排在下面那批重量级 import 之前**：`translate_engine`（连带 huggingface_hub）
 # 会连带 import huggingface_hub —— hub 的缓存路径是在 import 时**读成常量**的
 # （HF_HUB_CACHE），之后再改环境变量一概无效。
 # 实测踩中：whisper_backend 是惰性导入的，等它设 HF_HOME 时 hub 早已冻结在
@@ -49,7 +49,6 @@ import numpy as np  # noqa: E402
 from fastapi import FastAPI, Request  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
-from whisper_fallback import WhisperFallback  # noqa: E402
 from translate_engine import Translator  # noqa: E402
 
 # 配置从**数据目录**读（首次运行自动从历史位置迁移，见 user_paths 模块注释）。
@@ -195,27 +194,12 @@ class _AsrUnavailable:
 def _make_asr(cfg: dict):
     """按 asr.backend 选引擎。
 
-    - "whisper"：faster-whisper/CTranslate2 进程内引擎（R44 实测覆盖率 +10%、
-      时序更好、快 3×；见 whisper_backend 模块注释——**不给 prompt**）
-    - "audiocpp"：audiocpp 常驻服务（CPU 后端显存 0 占用；必须先 VAD 裁剪语音段，
-      否则长音频会退化出成百上千连重复——见 audiocpp_backend 模块注释）
-
-    PyTorch Qwen3-ASR 引擎已整体移除（R58）：生产 A/B 里它对 whisper/audiocpp
-    没有任何优势，回退链收窄为 whisper → audiocpp → 未就绪兜底。
+    R66：kotoba/whisper 转录方案整体剔除（用户拍板）——识别引擎只有
+    audiocpp（Qwen3-ASR，日英双语已实测）。回退链 = audiocpp → 未就绪兜底。
     """
-    kind = str(cfg.get("backend", "whisper") or "whisper").lower()
-    if kind in ("whisper", "faster-whisper", "kotoba"):
-        try:
-            from whisper_backend import WhisperBackend
-
-            be = WhisperBackend(cfg.get("whisper", {}) or {},
-                                drop_latin=bool(cfg.get("drop_latin_hallucination", True)))
-            be.ensure_model()     # 启动期加载（+2.5~3.9s），首次请求不再付这个代价
-            return be
-        except Exception as e:
-            # 回落 audiocpp（生产验证过的另一引擎）；/health 的 asr_backend 会如实
-            # 显示实际生效的引擎。
-            print(f"[server] ⚠️ whisper 不可用（{type(e).__name__}: {e}），回落 audiocpp（Qwen3）")
+    kind = str(cfg.get("backend", "audiocpp") or "audiocpp").lower()
+    if kind not in ("audiocpp", "cpp", "ggml", "qwen3"):
+        print(f"[server] ⚠️ 未知识别引擎 {kind!r}，回落 audiocpp（Qwen3）")
     try:
         from audiocpp_backend import AudioCppBackend
 
@@ -229,7 +213,7 @@ def _make_asr(cfg: dict):
               f"端口 {be.port}）")
         return be
     except Exception as e:
-        print(f"[server] ⚠️ 两个识别引擎都不可用（{type(e).__name__}: {e}），进入未就绪模式"
+        print(f"[server] ⚠️ audiocpp 不可用（{type(e).__name__}: {e}），进入未就绪模式"
               f"（下载识别模型后重启字幕服务即恢复）")
         return _AsrUnavailable()
 
@@ -523,10 +507,8 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
             snap = _HYBRID.snapshot()
             if snap is not None:
                 spcm, sms = snap
-                is_whisper = getattr(state["asr"], "backend_kind", "") == "whisper"
                 res = state["asr"].transcribe(
-                    spcm, lang, sms, 0,
-                    {"vad_filter": False} if is_whisper else None, seg_cfg, "")
+                    spcm, lang, sms, 0, None, seg_cfg, "")
                 psegs = res.get("segments") or []
                 if psegs:
                     for s in psegs:
@@ -537,12 +519,7 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
                     return res
         return {"language": lang, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
                 "skipped": True, "backend": "hybrid"}
-    # ASR 整句转写。whisper 必须关内建 vad_filter（R61：块内修剪吃气声段，
-    # 是 sivr001 漏 4 句的机制候选）；audiocpp 自带内部 VAD，原样送整句。
-    is_whisper = getattr(state["asr"], "backend_kind", "") == "whisper"
-    result = state["asr"].transcribe(
-        span, lang, span_ms, 0,
-        {"vad_filter": False} if is_whisper else None, seg_cfg, "")
+    result = state["asr"].transcribe(span, lang, span_ms, 0, None, seg_cfg, "")
     # 对齐用语音区：VAD 裁决的切句直接复切句时的语音区（同一缓冲同一起点，
     # 免第二次 CLI）；RMS/硬切切的才现场跑。⚠ 组是 span 内相对毫秒，必须加
     # span_ms 换成视频绝对时间轴（R63 实测：漏加偏移 → 中位 −700ms）。
@@ -613,31 +590,6 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
             CFG.get("vad", {}), CFG.get("segment", {}), asr_extra,
         )
 
-    # 二次识别兜底：主 ASR 零输出、但块里确有语音能量（气声/耳语台词是
-    # 0.6B 模型的盲区，实测 916/978/995s 三处纯净音频也零输出）时，
-    # 用 kotoba-whisper（CPU int8）重试一次。纯静音块直接跳过不浪费算力。
-    if not result.get("segments") and not result.get("skipped"):
-        peak = float(np.abs(pcm).max()) if len(pcm) else 0.0
-        if peak > 0.02:
-            try:
-                state.setdefault("whisper_fb", WhisperFallback(
-                    (CFG.get("asr", {}) or {}).get("whisper_fallback") or {}))
-                fb = state["whisper_fb"]
-                if fb.available():
-                    fb_segs = await run_in_threadpool(
-                        fb.transcribe, pcm, 16000,
-                        "ja" if lang.startswith("ja") else lang)
-                    if fb_segs:
-                        video0 = video_start_ms
-                        for s in fb_segs:
-                            s["start_ms"] += video0
-                            s["end_ms"] += video0
-                        result["segments"] = fb_segs
-                        result["backend"] = "kotoba-whisper"
-                        print(f"[asr] 主引擎零输出 → kotoba-whisper 兜底 {len(fb_segs)} 段",
-                              flush=True)
-            except Exception as e:
-                print(f"[asr] whisper 兜底失败（忽略）: {type(e).__name__}: {e}", flush=True)
     mt_ms = 0.0
     # 源语言 == 目标语言时跳过翻译。头显的语言枚举里含"中文"（LangCodes=ja/en/ko/zh），
     # 而 PC 的 target_lang 就是 zh：不跳过就会中→中再翻一遍——白烧一次请求，

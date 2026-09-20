@@ -10,9 +10,6 @@
       "min_phrase_sec": 2.0,
       "max_phrase_sec": 5.0
     },
-    "whisper": {
-      "beam_size": 1
-    },
     "audiocpp": {
       "dir": "E:/audiocpp-portable",
       "backend": "cuda",

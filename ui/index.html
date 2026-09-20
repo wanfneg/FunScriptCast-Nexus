@@ -423,7 +423,13 @@
               <span>识别引擎</span>
               <select class="input" id="asrBackend">
                 <option value="audiocpp">Qwen3（默认）</option>
-                <option value="whisper">Whisper</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>识别模型</span>
+              <select class="input" id="asrModelTier">
+                <option value="0.6b">Qwen3-ASR-0.6B（显存约 1.3GB）</option>
+                <option value="1.7b">Qwen3-ASR-1.7B（显存约 3.6GB，转录质量更高）</option>
               </select>
             </label>
             <label class="field">

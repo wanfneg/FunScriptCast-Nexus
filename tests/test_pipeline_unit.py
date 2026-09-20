@@ -180,36 +180,6 @@ def t_latin_hallucination():
     assert not f("I", "en") and not f("you", "ko")
 
 
-# 9 -------------------------------- whisper 后端段级过滤与接口（R45 接入）
-def t_whisper_backend_filters():
-    """faster_whisper 必须是懒加载（轻量运行时没装也能 import）；过滤与接口对齐 audiocpp。
-
-    三条铁律的代码面：不给 prompt（没有回显判据的输入条件）、只本地缓存、
-    skipped=True ⇔ 空结果（server 据此跳过 whisper 二次兜底，不会拿 CPU 把同一段
-    音频再跑一遍）。"""
-    from whisper_backend import WhisperBackend
-    be = WhisperBackend({})
-    assert be.model_ref == "kotoba-tech/kotoba-whisper-v2.0-faster"
-    assert be.device == "cuda" and be.compute_type == "float16"
-    assert be.vad is True and be.use_aligner is False and be.model == be.model_ref
-    assert be.stop_server() is None
-    assert be.backend_kind == "whisper"
-    # 正常日语一律保留（含片假名外来语、汉字人名）
-    assert be._keep("こんにちは、三上悠亜です。", "ja", True)
-    assert be._keep("オーケー、わかった。", "ja", True)
-    # 复读退化丢弃
-    assert not be._keep("あ" * 30, "ja", True)
-    # 拉丁幻觉丢弃（日语音频里的裸英文短输出）
-    assert not be._keep("Thank you.", "ja", True)
-    assert not be._keep("I", "ja", True)
-    # drop_latin=False 时放行（判据开关生效）
-    assert be._keep("Thank you.", "ja", False)
-    # 长纯英文不在此判据射程内（另一类问题，宁可放行）
-    assert be._keep("thank you very much for watching this video", "ja", True)
-    # 空文本：既不过滤保留，也对应 skipped 语义
-    assert not be._keep("", "ja", True)
-
-
 # 10 ------------------------------ keep_segment 跨块去重（生产共用判据）
 def t_keep_segment():
     from text_filters import keep_segment
@@ -586,7 +556,6 @@ if __name__ == "__main__":
     check("退化/漏译判据", t_degenerate_and_leak)
     check("请求体上限边读边拒（超限提前中断）", t_read_capped_body)
     check("拉丁幻觉判据（不误杀正常日语/片假名）", t_latin_hallucination)
-    check("whisper 后端过滤与接口（懒加载/铁律）", t_whisper_backend_filters)
     check("keep_segment 跨块去重", t_keep_segment)
     check("模型下载器（进度/断点续传/原子替换）", t_model_downloader)
     check("用户数据迁移（落在安装目录 data\\，多源迁移与补救）", t_user_data_migration)

@@ -591,7 +591,8 @@
 
   /* ---------- 模型下载：识别 / 翻译模型缺什么下什么（走 hf-mirror，宿主负责） ---------- */
   var MODEL_NAMES = {
-    "whisper": "识别模型（Whisper）",
+    "qwen3-asr-0.6b": "识别模型 · Qwen3-ASR-0.6B（显存约 1.3GB）",
+    "qwen3-asr-1.7b": "识别模型 · Qwen3-ASR-1.7B（显存约 3.6GB，转录质量更高）",
     "sakura-7b": "翻译模型 · Sakura-7B（推荐）",
     "sakura-1.5b": "翻译模型 · Sakura-1.5B（轻量）",
     "hymt2-7b": "翻译模型 · Hy-MT2-7B（英语）",
@@ -662,9 +663,13 @@
          其余识别参数（模型路径/设备/分段/VAD）不进界面：属内部调优项，留在 config.json */
       var rawAb = String(asr.backend || "audiocpp").toLowerCase();
       var asrSel = $("#asrBackend");
-      asrSel.value = (rawAb === "whisper" || rawAb === "faster-whisper" || rawAb === "kotoba")
-        ? "whisper" : "audiocpp";
+      asrSel.value = "audiocpp";   // R65：whisper 转录已剔除，引擎仅 audiocpp
       S.asrBackendPrev = asrSel.value;   // 引擎即改即存，失败时弹回这个值
+      /* 识别模型档位（R66）：audiocpp.model 路径含 1.7B 即高精度档 */
+      var ac = asr.audiocpp || {};
+      var tier = String(ac.model || "").indexOf("1.7B") >= 0 ? "1.7b" : "0.6b";
+      var tierSel = $("#asrModelTier");
+      if (tierSel && !busyEditing(tierSel)) tierSel.value = tier;
       // 兜底必须与 index.html 里 <select> 的首项一致（local）。写成 "ollama" 的话，
       // 配置里 backend 为空时会把选择器指向 Ollama，用户一保存就把后端切成
       // 本地根本没在跑的 Ollama（翻译整条挂掉）。
@@ -850,6 +855,18 @@
       });
     });
     /* 识别引擎即改即存（选错自动弹回）；其余识别参数不进界面 */
+    $("#asrModelTier").addEventListener("change", function () {
+      var sel = this, tierPath = sel.value === "1.7b"
+        ? "../../models/Qwen3-ASR-1.7B" : "../../models/Qwen3-ASR-0.6B";
+      api("/api/subtitle/config", "POST", { asr: { audiocpp: { model: tierPath } } }).then(function (r) {
+        if (r.ok) {
+          toast("识别模型已保存", "字幕服务正在重启以加载 " + (sel.value === "1.7b" ? "1.7B" : "0.6B"), "ok");
+          restartSubForConfig();
+        } else {
+          toast("保存失败", r.error || "", "err");
+        }
+      });
+    });
     $("#asrBackend").addEventListener("change", function () {
       var sel = this, prev = S.asrBackendPrev || sel.value;
       api("/api/subtitle/config", "POST", { asr: { backend: sel.value } }).then(function (r) {
