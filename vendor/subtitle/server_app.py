@@ -451,7 +451,8 @@ def _hybrid_vad_fn(pcm):
         return None
 
 
-def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg) -> dict:
+def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
+                       want_partial: bool = False) -> dict:
     """混合切句的整句转写。返回结构与 state["asr"].transcribe 同约定。
 
     注意 skipped 语义：还在积累/静音丢弃时 = True——既如实告诉调用方"本轮
@@ -465,12 +466,34 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg) -> dict:
         h = ((CFG.get("asr", {}) or {}).get("hybrid", {}) or {})
         _HYBRID = HybridBuffer(
             silence_threshold=float(h.get("silence_threshold", 0.01)),
-            silence_tail_sec=float(h.get("silence_tail_sec", 1.0)),
+            silence_tail_sec=float(h.get("silence_tail_sec", 0.7)),
             min_phrase_sec=float(h.get("min_phrase_sec", 2.0)),
             max_phrase_sec=float(h.get("max_phrase_sec", 5.0)),
+            long_silence_tail_sec=float(h.get("long_silence_tail_sec", 0.4)),
+            long_phrase_sec=float(h.get("long_phrase_sec", 4.0)),
             vad_fn=_hybrid_vad_fn)
     span, span_ms, reason = _HYBRID.feed(pcm, lang, video_start_ms)
     if span is None:
+        # partial 渐进出字（R63.6，参考项目 sosv/realtime-subtitle 同思路）：
+        # 句子还没切出来时，把当前缓冲的临时转写先发给**主动要了 partial 的
+        # 客户端**（手机端；旧头显不带 partial=1 参数，行为零变化），客户端按
+        # 「同文本覆盖」语义原位刷新，定稿到达后由跨块去重保留更完整的一条。
+        if want_partial:
+            snap = _HYBRID.snapshot()
+            if snap is not None:
+                spcm, sms = snap
+                is_whisper = getattr(state["asr"], "backend_kind", "") == "whisper"
+                res = state["asr"].transcribe(
+                    spcm, lang, sms, 0,
+                    {"vad_filter": False} if is_whisper else None, seg_cfg, "")
+                psegs = res.get("segments") or []
+                if psegs:
+                    for s in psegs:
+                        s["partial"] = True
+                    res["backend"] = "hybrid-partial"
+                    print(f"[hybrid] partial {len(spcm) / _SR:.1f}s @{sms}ms → "
+                          f"{len(psegs)} 段（临时稿）", flush=True)
+                    return res
         return {"language": lang, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
                 "skipped": True, "backend": "hybrid"}
     # ASR 整句转写。whisper 必须关内建 vad_filter（R61：块内修剪吃气声段，
@@ -499,7 +522,7 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg) -> dict:
 
 @app.post("/transcribe")
 async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0,
-                     keep_from_ms: int = 0, translate: bool = True):
+                     keep_from_ms: int = 0, translate: bool = True, partial: int = 0):
     global _LAST_REQ_TS, _INFLIGHT
     # 先看 Content-Length 再读体：超大请求直接拒收，不先把几百 MB 读进内存。
     # 没有 Content-Length（分块传输）时由 read_capped_body 兜底——它边读边累加，
@@ -516,7 +539,8 @@ async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0
     with _INFLIGHT_LOCK:
         _INFLIGHT += 1
     try:
-        return await _transcribe_impl(body, lang, video_start_ms, keep_from_ms, translate)
+        return await _transcribe_impl(body, lang, video_start_ms, keep_from_ms, translate,
+                                      partial == 1)
     finally:
         with _INFLIGHT_LOCK:
             _INFLIGHT -= 1
@@ -524,7 +548,8 @@ async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0
 
 
 async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
-                           keep_from_ms: int, translate: bool) -> dict:
+                           keep_from_ms: int, translate: bool,
+                           want_partial: bool = False) -> dict:
     if len(body) < 3200:  # <0.1s 音频，直接返回
         return {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
                 "skipped": True, "reason": "音频过短"}
@@ -539,7 +564,8 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
     t0 = time.perf_counter()
     if _hybrid_mode():
         result = await run_in_threadpool(
-            _hybrid_transcribe, pcm, lang, video_start_ms, CFG.get("segment", {}))
+            _hybrid_transcribe, pcm, lang, video_start_ms, CFG.get("segment", {}),
+            want_partial)
     else:
         result = await run_in_threadpool(
             state["asr"].transcribe, pcm, lang, video_start_ms, keep_from_ms,

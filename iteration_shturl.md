@@ -2191,3 +2191,21 @@ beam_size=1 对 audiocpp 无效（whisper 专属），用户日后切 whisper �
   （或重装/升级安装版）** → ④ 宿主 API 重启；只做②不等于部署；
 - APPDATA\Roaming\FunScriptCast-Nexus 的配置**不是** D 盘版的活配置——D 盘版用
   data\subtitle_config.json（v1.0.19 时代的 user_paths 行为）。
+
+## Round 63.6（2026-09-20 深夜）：partial 渐进出字 + 手机端验证通道开通
+
+**用户新输入**：头显不能改，但**手机端 App（E:\Development\FunScriptCast，v0.15.x）已加同款字幕
+功能**——手机上改/验方便，验证通过再同步头显。"APK 冻结"约束解除，③ partial 渐进出字解锁。
+
+**PC 端**：/transcribe 增 `partial=1` 参数（旧头显不带 = 行为零变化）。hybrid 模式下句子未切出时，
+把当前缓冲（≥1.5s）的临时转写标 `partial:true` 先行下发（whisper/audiocpp 通吃，vad_filter 关）；
+定稿照旧，客户端靠"跨块去重保更长"原位覆盖。HybridBuffer 增 snapshot()。
+
+**手机端**：AiSubtitleEngine.uploadChunk 的 URL 加 `&partial=1`（一行）——其 addSegmentLocked 的
+「时间重叠 + LCS≥6 → 保留更长一条」去重恰好就是 partial→定稿的原位替换语义，**无需其它改动**；
+头显端同步时同样只需加这一个参数。
+
+**部署**：D 盘实机重启装载全量（含 R63.4 两级端点 0.7/0.4、beam_size=1、mt_warm、拉流预启动）。
+/health 实测：segmentation=hybrid、mt_warm=True、asr=whisper/kotoba、translate=local ✓。
+**待验证**：手机装新 APK 后实测 partial 出字体感（临时稿日文先出、定稿中文跟上），确认后把
+`&partial=1` 同步进头显端。

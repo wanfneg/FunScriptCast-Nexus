@@ -40,6 +40,8 @@ REGION_MERGE_GAP = 0.3     # VAD 语音区间隙小于此值并成同一句
 MAX_SNAP_SEC = 0.6         # ASR 段中点离最近语音组超过此距离就保留 ASR 自报时间
 JUMP_RESET_MS = 1000       # 请求起点比缓冲末端回跳超过此值 → 视为 seek/重连，重置
 GAP_RESET_MS = 10000       # 请求起点比缓冲末端前跳超过此值 → 视为新会话，重置
+LONG_SILENCE_TAIL_SEC = 0.4  # 两级端点：长缓冲的句尾静音确认（R63.4 选项①）
+LONG_PHRASE_SEC = 4.0        # 缓冲超过此时长后启用长句级确认
 
 
 def _rms(x: np.ndarray) -> float:
@@ -57,11 +59,18 @@ class HybridBuffer:
                  silence_tail_sec: float = SILENCE_TAIL_SEC,
                  min_phrase_sec: float = MIN_PHRASE_SEC,
                  max_phrase_sec: float = MAX_PHRASE_SEC,
+                 long_silence_tail_sec: float = LONG_SILENCE_TAIL_SEC,
+                 long_phrase_sec: float = LONG_PHRASE_SEC,
                  vad_fn=None):
         self.thr = float(silence_threshold)
         self.tail_sec = float(silence_tail_sec)
         self.min_sec = float(min_phrase_sec)
         self.max_sec = float(max_phrase_sec)
+        # 两级端点（R63.4 选项①，realtime-subtitle main.py:165-175 同思路）：
+        # 缓冲攒到 long_sec 之后，句尾静音确认从 tail_sec 降到 long_tail_sec——
+        # 长句已经"押"了很多内容在缓冲里，早切 0.3s 的收益大于偶尔误切的风险。
+        self.long_tail_sec = float(long_silence_tail_sec)
+        self.long_sec = float(long_phrase_sec)
         # vad_fn(pcm) -> [(start_sec, end_sec)]（相对输入）：silero 语音区。
         # BGM 内容的整段 RMS 永远压不过静音阈值（R63.1 实测：全片切句全是
         # 5.2s 硬切），RMS 只配当免费第一优先，句尾停顿的最终裁判是 VAD——
@@ -80,6 +89,13 @@ class HybridBuffer:
     def state(self) -> dict:
         return {"buffered_ms": int(len(self._pcm) / SR * 1000),
                 "start_ms": self._start_ms, "lang": self._lang}
+
+    def snapshot(self, min_sec: float = 1.5):
+        """partial 用：当前缓冲的快照（拷贝 + 绝对起点）。不足 min_sec 回 None。"""
+        with self._lock:
+            if len(self._pcm) < int(min_sec * SR):
+                return None
+            return self._pcm.copy(), self._start_ms
 
     def feed(self, pcm: np.ndarray, lang: str, video_start_ms: int):
         """拼块 + 切句评估。见类注释。reason ∈ standard|hard|silent|""。
@@ -131,23 +147,30 @@ class HybridBuffer:
             if dur < 0.5:
                 return None, 0, ""
             # 切点裁决，三优先级：
-            #   ① RMS 静音扫描（免费，纯安静内容秒判）；
+            #   ① RMS 静音扫描（免费，纯安静内容秒判；两级端点——缓冲过 4s 后
+            #      尾窗从 0.7s 收窄到 0.4s，长句早切）；
             #   ② VAD 语音区间隙（BGM 内容的真正裁判——音乐不是语音，语音区
             #      的间隙就是句间停顿；silero 每次喂块都跑，成本与生产旧管线
             #      的逐块 VAD 同级）；
             #   ③ 5.2s 硬切兜底（连续说话/两条判据都瞎时封顶延迟）。
             # 切点之后的残余音频**留在缓冲里**（可能已是下一句的头）。
             step_n = int(0.2 * SR)
-            tail_n = int(self.tail_sec * SR)
             min_n = int(self.min_sec * SR)
             max_n = int(self.max_sec * SR)
+            long_n = int(self.long_sec * SR)
+
+            def _tail_n(pos_n: int) -> int:
+                return (int(self.long_tail_sec * SR) if pos_n >= long_n
+                        else int(self.tail_sec * SR))
+
             cut_n, reason = 0, ""
             i = min_n
             while i <= len(self._pcm):
                 if i > max_n:
                     cut_n, reason = i, "hard"
                     break
-                if i >= tail_n and _rms(self._pcm[i - tail_n:i]) < self.thr:
+                tn = _tail_n(i)
+                if i >= tn and _rms(self._pcm[i - tn:i]) < self.thr:
                     cut_n, reason = i, "standard"
                     break
                 i += step_n
@@ -159,8 +182,10 @@ class HybridBuffer:
                     vad_regions = None
                 if vad_regions:
                     last_end = float(vad_regions[-1][1])
+                    tail = (self.long_tail_sec if dur >= self.long_sec
+                            else self.tail_sec)
                     pause = dur - last_end
-                    if pause >= self.tail_sec and last_end * SR >= tail_n:
+                    if pause >= tail and last_end * SR >= int(tail * SR):
                         cut_n = min(int(round((last_end + 0.15) * SR)),
                                     len(self._pcm))
                         reason = "vad"
