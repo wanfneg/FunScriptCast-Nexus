@@ -2164,3 +2164,30 @@ end_ms；实时推流时块的音频末端≈到达时刻，即"说完到文本�
 **优化菜单**（回编号执行）：① 两级静音确认 0.7→0.4（纯配置+小代码，~0.3s/句）；
 ② beam_size 5→1（配置+A/B，~0.2-0.3s/句）；③ partial 渐进显示（~1-1.5s，需真机验证 APK
 去重行为，风险中）；④ 接受现状（3s 是"整句出字"的结构地板，chunk 模式的 2.5s 买的是碎片化）。
+
+## Round 63.5（2026-09-20 深夜）：部署拓扑纠错——用户实际跑的是 D 盘安装版！
+
+**发现**：部署 ①+② 时 /health 没有 segmentation 字段，追查 8756 进程命令行 →
+`D:\FunScriptCast-Nexus\runtime\python.exe run_server.py`——**用户实际运行的是 D 盘安装版**
+（v1.0.23 宿主 + **pre-R63 老 vendor 代码** + data\subtitle_config.json 里 audiocpp 后端），
+而"dist-app 是用户运行副本"的旧认知**错误**：dist-app 只是开发/打包副本，用户当前不跑它
+（dist-app\logs\host.log 10:18 后就停了；D:\logs\host.log 11:49 仍活跃，:8790 归 D 盘宿主）。
+**今天之前所有"已部署"的验证都发生在 dist-app 代码上，从未真正到达用户运行时**——用户
+实测反馈（首句慢/延迟大）跑的全是老代码。
+
+**部署纠正**：备份 D:\vendor\subtitle → 同目录 .bak-时间戳；dist-app\vendor\subtitle 全量
+*.py + config.json 模板复制到 D:\；vr_dlna.py 同步到 D:\vendor\dlna；D:\data\subtitle_config.json
+（备份后）写入 segmentation=hybrid + hybrid 参数块 + whisper.beam_size=1（引擎保持用户的
+audiocpp）。重启后 /health：segmentation=hybrid ✓ mt_warm=True ✓。
+
+**audiocpp+hybrid 组合首验**（此前 A/B 全是 whisper+hybrid，代码虽引擎无关但未实测）：
+sivr002 召回 99.2%、+130ms/73.9%/83.8%、长度比 1.07、零越界、空译文 0——过闸 ✓。
+beam_size=1 对 audiocpp 无效（whisper 专属），用户日后切 whisper 引擎时自动生效。
+
+**部署拓扑新认知（真写进文档）**：
+- 用户运行时 = **D:\FunScriptCast-Nexus**（安装版，exe+runtime+vendor+data 自包含）；
+- dist-app = 开发/打包副本；两套共用 :8790/:8756/:8899 端口，**同时运行会互相顶掉**；
+- 部署公式 = ① dist-app 上开发 → ② sync_distapp 到 dist-app → ③ **再复制 vendor 到 D 盘
+  （或重装/升级安装版）** → ④ 宿主 API 重启；只做②不等于部署；
+- APPDATA\Roaming\FunScriptCast-Nexus 的配置**不是** D 盘版的活配置——D 盘版用
+  data\subtitle_config.json（v1.0.19 时代的 user_paths 行为）。

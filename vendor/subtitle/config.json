@@ -5,8 +5,13 @@
     "hybrid": {
       "silence_threshold": 0.01,
       "silence_tail_sec": 0.7,
+      "long_silence_tail_sec": 0.4,
+      "long_phrase_sec": 4.0,
       "min_phrase_sec": 2.0,
       "max_phrase_sec": 5.0
+    },
+    "whisper": {
+      "beam_size": 1
     },
     "audiocpp": {
       "dir": "E:/audiocpp-portable",
