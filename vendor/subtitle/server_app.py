@@ -107,6 +107,9 @@ _BOOT_TS = time.time()
 _LAST_REQ_TS = _BOOT_TS
 _INFLIGHT = 0                    # 正在处理中的 /transcribe 数
 _INFLIGHT_LOCK = threading.Lock()
+_MT_WARM = 0.0                   # 翻译预热完成时刻（0=未完成）：llama 端口就绪
+                                 # ≠ 翻译热了，首条真实请求还欠系统提示词 prefill
+                                 # + 首包 CUDA 路径的账（R63.2，预热请求补上后置时间戳）
 
 # 上一块的字幕上下文：① 上一句原文进 ASR 热词（治人名/专名跨块听错，借鉴
 # realtime-subtitle 的 context carryover）② 上一句原文+译文进翻译提示词
@@ -255,6 +258,21 @@ async def lifespan(_app):
         except Exception as e:
             print(f"[server] 翻译引擎预热失败（翻译请求时会重试并如实报错）："
                   f"{type(e).__name__}: {e}", flush=True)
+            return
+        # 预热补全（R63.2，用户实测点名）：llama-server「就绪」只是端口通了——
+        # 首条真实翻译还要付系统提示词 prefill + 首包 CUDA 路径的账，全落在
+        # 第一句字幕上。这里用**真实系统提示词**喂一条极短请求，把 prefill 和
+        # 解码路径焐热；完成时间记进 /health 的 mt_warm。
+        try:
+            _t0 = time.perf_counter()
+            t._chat(t.mt_system, (t.mt_user_prefix or "") + "テスト")
+            _dt = time.perf_counter() - _t0
+            global _MT_WARM
+            _MT_WARM = time.time()
+            print(f"[server] 翻译预热完成（含提示词首包）：{_dt:.1f}s", flush=True)
+        except Exception as e:
+            print(f"[server] 翻译预热请求失败（不影响服务，首条翻译会照常重试）："
+                  f"{type(e).__name__}: {e}", flush=True)
 
     threading.Thread(target=_warm_translator, daemon=True,
                      name="translator-warmup").start()
@@ -341,6 +359,10 @@ def health():
         # 自动回收"，用户能看出服务为什么自己停了（而不是像凭空消失）
         "last_req_ts": _LAST_REQ_TS,
         "idle_release_min": _idle_release_min(),
+        # 翻译是否已用真实提示词预热（R63.2）：ready 只保证识别模型加载完，
+        # 这里的时间戳非 0 才说明首句翻译不会再付 prefill 的账
+        "mt_warm": _MT_WARM > 0,
+        "mt_warm_ts": _MT_WARM or None,
     }
 
 

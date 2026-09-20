@@ -2085,3 +2085,23 @@ silero 的语音区间隙就是句间停顿，音乐不是语音；喂块即查�
 VAD 失败退硬切）。
 
 **已部署**：sync dist-app（server_app/hybrid_segmenter）+ 宿主重启，/health segmentation=hybrid ✓。
+
+## Round 63.2（2026-09-20 晚）：翻译预热补全 —— "开始加载"≠"完全加载"
+
+**用户两次实测反馈合并定位**：① 播放开始了模型还没加载完；② 首句字幕延迟，怀疑翻译模型的
+提示词预喂时间没算。**代码核实**（host_server / server_app）：头显轮询的 ready = /health 可用
++ asr_ready，而 /health 只等 **whisper 加载完**；翻译引擎的 R54 预热只是后台把 llama-server
+**端口拉起来**——"就绪"仅此而已。首条真实翻译还要付**系统提示词 prefill + 首包 CUDA 路径**
+的账，全砸在第一句字幕上。用户点破的"喂提示词的时间"就是这个。
+
+**修复**：`_warm_translator` 在 llama-server 就绪后，用**真实系统提示词**喂一条极短预热请求
+（"テスト"），把 prefill 与解码路径在启动期焐热；完成时刻记入 /health 新字段
+`mt_warm`/`mt_warm_ts`（本机实测预热请求 0.1s——冷启动首包会更贵，但从此结构性落在启动期，
+不落在首句字幕上）。识别模型加载与翻译预热本来就是并行线程，ready 时点不变。
+
+**已部署**：sync + 宿主重启，/health mt_warm=True ✓。单测 17 项全过（不受影响）。
+
+**遗留可选项**（用户拍板再做）：① `silence_tail_sec` 1.0→0.7（出字再提前 ~0.3s，纯配置）；
+② ready 语义升级为"识别+翻译全热"（/health 等 mt_warm 再翻转，头显会晚几秒推流但首句全速）；
+③ 头显拉流（media GET）时预启动字幕服务——治"点播放才加载"的本手，但要改 host_server.py
+并重编 exe。
