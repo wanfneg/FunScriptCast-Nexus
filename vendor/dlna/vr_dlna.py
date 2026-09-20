@@ -95,6 +95,33 @@ TRANSIENT_WINERRORS = {1005, 1006, 64, 55, 121, 232, 59, 33, 87}
 log = logging.getLogger("vr-dlna")
 _log_lock = threading.Lock()  # 保护 ACCESS_LOG 写入
 
+# ---- R63.3 选项③：拉流预启动字幕服务 ----
+# 头显开始拉流 = 观影意图的最强信号。此时预启动字幕服务，把识别/翻译模型的
+# 加载藏进「拉流 → 点播放」的间隙（用户实测：点播放才开始加载，首句字幕被
+# 冷启动拖慢）。经宿主 :8790 的幂等接口触发（已在跑/在启动都直接返回，不重复
+# 拉起）；每个 media key 10 分钟最多触发一次——Range 续传的反复 GET 不会刷屏。
+# 宿主不在（standalone 跑 DLNA 调试）时静默跳过。
+_sub_prewarm_ts: dict = {}
+_SUB_PREWARM_INTERVAL = 600.0
+
+
+def _prewarm_subtitle(key: str) -> None:
+    now = time.monotonic()
+    if now - _sub_prewarm_ts.get(key, 0.0) < _SUB_PREWARM_INTERVAL:
+        return
+    _sub_prewarm_ts[key] = now
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", 8790, timeout=3)
+        conn.request("POST", "/api/subtitle/start", body=b"",
+                     headers={"Origin": "http://127.0.0.1:8790"})
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        log.info("media 拉流 → 已触发字幕服务预启动（key=%s）", key[:60])
+    except Exception as e:
+        log.info("media 拉流 → 字幕服务预启动未触发（宿主不在？）：%s", e)
+
+
 # ---- 应用设置（开机自启 / 启动最小化 / 关闭到托盘） ----
 APP_SETTINGS_FILE = _app_data_dir() / "vr_dlna_settings.json"
 APP_SETTINGS_DEFAULT = {
@@ -1116,6 +1143,7 @@ class DlnaHandler(BaseHTTPRequestHandler):
         if not is_file:
             self._send_error_text(404, "not found")
             return
+        _prewarm_subtitle(key)
         if is_strm(file_path.name):
             self._proxy_strm(file_path, self.headers.get("Range"), want_body)
             return

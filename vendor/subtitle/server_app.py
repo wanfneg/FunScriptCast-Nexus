@@ -236,9 +236,7 @@ def _make_asr(cfg: dict):
 
 @asynccontextmanager
 async def lifespan(_app):
-    state["asr"] = _make_asr(CFG.get("asr", {}))
     state["translator"] = Translator(CFG.get("translate", {}))
-    print(f"[server] 管线代码签名 code_sig={CODE_SIG}（陈旧实例排障用）", flush=True)
     print(f"[server] 翻译后端={state['translator'].backend}")
     # 翻译引擎预热（R54，用户点名"启动时就启用翻译模型"）：识别模型加载完成后在
     # 后台把本地 llama-server 拉起来（Sakura-7B 装显存实测 ~5s）。不预热时第一句
@@ -274,8 +272,19 @@ async def lifespan(_app):
             print(f"[server] 翻译预热请求失败（不影响服务，首条翻译会照常重试）："
                   f"{type(e).__name__}: {e}", flush=True)
 
-    threading.Thread(target=_warm_translator, daemon=True,
-                     name="translator-warmup").start()
+    # R63.3 选项②：预热线程先起（与 whisper 加载并行，ready 时点不叠加）；
+    # 本地翻译时**等预热（含提示词首包）完成再放行 /health**——ready 从
+    # 「识别加载完」升级为「识别+翻译全热」，头显晚几秒推流换首句全速。
+    # 12s 兜底：llama 起不来也绝不卡死服务（超时后线程继续在后台试，行为
+    # 退回 R54 的后台预热）。头显只在推流前轮询 ready，ready 晚 = 推流晚，
+    # 不会丢音频（播放本身不等字幕）。
+    _warm = threading.Thread(target=_warm_translator, daemon=True,
+                             name="translator-warmup")
+    _warm.start()
+    state["asr"] = _make_asr(CFG.get("asr", {}))
+    print(f"[server] 管线代码签名 code_sig={CODE_SIG}（陈旧实例排障用）", flush=True)
+    if (CFG.get("translate") or {}).get("backend") == "local":
+        _warm.join(timeout=12.0)
     _reaper = asyncio.create_task(_idle_reaper())
     print(f"[server] 空闲回收：{_idle_release_min():g} 分钟无识别请求后释放模型"
           if _idle_release_min() > 0 else "[server] 空闲回收：已关闭（idle_release_min=0）")

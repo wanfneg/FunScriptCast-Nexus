@@ -1,10 +1,10 @@
 {
   "asr": {
     "backend": "whisper",
-    "segmentation": "chunk",
+    "segmentation": "hybrid",
     "hybrid": {
       "silence_threshold": 0.01,
-      "silence_tail_sec": 1.0,
+      "silence_tail_sec": 0.7,
       "min_phrase_sec": 2.0,
       "max_phrase_sec": 5.0
     },
