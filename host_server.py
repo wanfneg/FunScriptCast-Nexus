@@ -1522,7 +1522,7 @@ def _merge_safetensor_shards(model_dir) -> None:
     for tname, shard in weight_map.items():
         meta = shard_hdrs[shard][tname]
         s0, e0 = meta["data_offsets"]
-        raw = shard_bytes[shard][8 + s0: 8 + e0]
+        raw = shard_bytes[shard][s0:e0]   # shard_bytes 已是纯数据区（8 字节头长在读取时已消费）
         out_hdr[tname] = {"dtype": meta["dtype"], "shape": meta["shape"],
                           "data_offsets": [len(out_data), len(out_data) + len(raw)]}
         out_data += raw
