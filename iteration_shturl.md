@@ -2288,3 +2288,24 @@ apache-2.0）已下载完毕，待写 ONNX 转录后端做英语转录（对手=
 "我今晚一直在等你。"）——**英语全链路用现有资产即可跑通**，只差 PC 管线按语言路由的接线
 （ja→Sakura / en→Hy-MT2；ASR 侧 Qwen3 切 English 已验证）。Cohere 转录后续：用户在 HF 模型页
 申请授权 → 提供 token → 再下载原版权重做对比评估（非必需，英语已有可用组合）。
+
+## Round 65（2026-09-20 下午）：语言收窄 ja/en 三端落地 + VR 项目同步
+
+**用户拍板**：AI 字幕源语言只保留**日语和英语**可选；同时检查 VR 头显项目的同步（此前 partial/
+续播等改动只在手机项目验证）。
+
+**三端修改**：
+1. **服务端**：`AUDIOCPP_LANG` 收窄为 `{"ja": "Japanese", "en": "English"}`（ko/zh/yue 移除；
+   翻译目标固定中文不受影响）。已 sync dist-app + 复制 D 盘 + 重启验证 ✓。
+2. **手机端**（v85）：Screens.kt AI 面板语言列表只留 ja/en；AppViewModel.startAiSubtitle 语言
+   收敛（旧存档 ko/zh 回落 ja）；versionCode 85，release APK 已构建。
+3. **VR 端**（同步手机未同步的改动 + 语言收窄）：Unity C# AiSubtitleController.cs 的
+   LangCodes/LangNames 收窄 ja/en（含 meta 镜像目录）；funscriptcore Kotlin 引擎
+   uploadChunk 增 `&partial=1`（R63.6 partial 出字，此前 VR 未同步）；finishWait 改
+   「就绪即续播（含手动暂停场景）+ 失败只恢复自己按的暂停」（R63.6 场景①②对齐手机端）。
+   `:funscriptcore:compileReleaseKotlin` 编译通过 ✓。
+
+**遗留**：① 手机 v85 APK 已构建未装机（手机无线调试掉线——重开无线调试或插 USB 后一条命令
+补装）；② VR APK 需走 Unity 构建流程（Kotlin 层已编译验证），由用户按日常流程出包；
+③ 英语翻译质量依赖按语言路由（ja→Sakura / en→Hy-MT2）落地，当前选英语仍走 Sakura（差），
+路由实现为下一轮。
