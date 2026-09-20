@@ -2369,3 +2369,9 @@ Hy-MT2 翻译全部出中文 ✓；日语多块喂入 → お疲れ様です/ラ
 4. **新装机端到端**：EN（Qwen3 英转录 → Hy-MT2-1.8B 翻译"你能看看我的舞蹈吗？"）✓；
    切回 JA（Sakura 热切换回程）5 段正常 ✓。模型热切换双向验证通过。
 5. 模型文件布局对齐 catalog dest_dir（Hy-MT2 移入子目录）后下载列表正确显示"已安装"。
+
+**R66.1 追加 2（D 盘实机最终状态验证）**：宿主重启装载新 exe 后——served catalog 6 条正确
+（qwen3 两档 present、whisper 移除、Hy-MT2 installed）；字幕服务 hybrid + mt_warm=True +
+vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；英语/日语音频实测均正常。
+⚠️ /api/state 的 version 显示 1.0.19 = exe 内嵌的陈旧版本常量（nexus.spec 未随版本更新），
+纯显示问题记录备查。
