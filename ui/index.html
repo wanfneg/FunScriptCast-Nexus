@@ -440,11 +440,18 @@
             <!-- 本地（llama.cpp）：只显示这一组 -->
             <div class="mt-group" data-mt-group="local">
               <label class="field">
-                <span>本地模型</span>
+                <span>日语翻译模型</span>
                 <select class="input" id="mtLocalModel">
                   <option value="">加载中…</option>
                 </select>
               </label>
+              <label class="field">
+                <span>英语翻译模型</span>
+                <select class="input" id="mtLocalModelEn">
+                  <option value="">加载中…</option>
+                </select>
+              </label>
+              <div class="field" id="vramEstimate" style="font-size:12px;color:#9aa4b2;line-height:1.6"></div>
             </div>
 
             <!-- 云端（OpenAI 兼容）：只显示这一组 -->

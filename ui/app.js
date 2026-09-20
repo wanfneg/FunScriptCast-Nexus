@@ -254,6 +254,7 @@
     else setPill($("#pillSub"), "", "字幕服务已停止");
 
     var g = st.gpu || {};
+    updateVramEstimate(st);
     var gpuPct = g.total_mb ? (g.used_mb / g.total_mb * 100) : 0;
     setPill($("#pillGpu"), g.used_mb ? (gpuPct >= 85 ? "busy" : "on") : "", "GPU " + (g.used_mb ? Math.round(gpuPct) + "%" : "—"));
 
@@ -537,24 +538,49 @@
   /* 本地翻译模型下拉：列表来自 /api/subtitle/models（安装目录 models\ 下的 GGUF）。
      进程内缓存一份；当前配置值不在列表里（手动改过 config）时补一个「当前」项，
      绝不静默改掉用户的配置。 */
-  function renderLocalModelSelect(current) {
+  /* 显存估算（R66）：服务端按当前档位估算 + 宿主 NVML 实际空闲，给出推荐提示 */
+  function updateVramEstimate(st) {
+    var el = $("#vramEstimate");
+    if (!el) return;
+    var ve = (st && st.subtitle && st.subtitle.health && st.subtitle.health.vram_estimate) || null;
+    var gpu = (st && st.gpu) || {};
+    if (!ve || !ve.total_mb) { el.textContent = ""; return; }
+    var totalGb = (ve.total_mb / 1024).toFixed(1);
+    var freeMb = gpu.total_mb ? Math.max(0, gpu.total_mb - gpu.used_mb) : 0;
+    var freeGb = (freeMb / 1024).toFixed(1);
+    var tip = "预计显存占用 ≈ " + totalGb + " GB（转录 " + (ve.asr_mb / 1024).toFixed(1)
+      + " + 翻译 " + (ve.mt_active_mb / 1024).toFixed(1) + " + 运行时）；显存共 "
+      + ((gpu.total_mb || 0) / 1024).toFixed(1) + " GB，当前空闲约 " + freeGb + " GB。";
+    if (freeMb >= ve.total_mb) tip += " 当前档位可流畅运行。";
+    else tip += " ⚠ 空闲显存低于该档位预估，建议降低转录/翻译档位。";
+    el.textContent = tip;
+  }
+
+  function renderLocalModelSelect(current, currentEn) {
     var sel = $("#mtLocalModel");
+    var selEn = $("#mtLocalModelEn");
     if (!sel) return;
     function paint(models) {
-      sel.innerHTML = "";
-      (models || []).forEach(function (m) {
-        var o = document.createElement("option");
-        o.value = m.path;
-        o.textContent = m.name;
-        sel.appendChild(o);
-      });
-      if (current && !(models || []).some(function (m) { return m.path === current; })) {
-        var o = document.createElement("option");
-        o.value = current;
-        o.textContent = "（当前）" + String(current).split("/").pop().replace(/\.gguf$/i, "");
-        sel.appendChild(o);
+      function fill(select, cur) {
+        select.innerHTML = "";
+        (models || []).forEach(function (m) {
+          var o = document.createElement("option");
+          o.value = m.path;
+          o.textContent = m.name;
+          select.appendChild(o);
+        });
+        if (cur && !(models || []).some(function (m) { return m.path === cur; })) {
+          var o = document.createElement("option");
+          o.value = cur;
+          o.textContent = "（当前）" + String(cur).split("/").pop().replace(/\.gguf$/i, "");
+          select.appendChild(o);
+        }
+        select.value = cur || (models && models[0] ? models[0].path : "");
       }
-      sel.value = current || (models && models[0] ? models[0].path : "");
+      fill(sel, current);
+      fill(selEn, currentEn);
+      var st = S.lastState;
+      updateVramEstimate(st);
     }
     if (S.localModels) { paint(S.localModels); return; }
     api("/api/subtitle/models").then(function (r) {
@@ -567,7 +593,9 @@
   var MODEL_NAMES = {
     "whisper": "识别模型（Whisper）",
     "sakura-7b": "翻译模型 · Sakura-7B（推荐）",
-    "sakura-1.5b": "翻译模型 · Sakura-1.5B（轻量）"
+    "sakura-1.5b": "翻译模型 · Sakura-1.5B（轻量）",
+    "hymt2-7b": "翻译模型 · Hy-MT2-7B（英语）",
+    "hymt2-1.8b": "翻译模型 · Hy-MT2-1.8B（英语·轻量）"
   };
   var modelPollTimer = 0;
   function loadModels() {
@@ -777,7 +805,10 @@
       var body = {
         translate: {
           backend: $("#mtBackend").value,
-          local: { model: $("#mtLocalModel").value },
+          local: {
+            model: $("#mtLocalModel").value,
+            model_by_lang: { en: $("#mtLocalModelEn").value }
+          },
           openai: {
             base_url: $("#mtCloudBase").value,
             model: $("#mtCloudModel").value
