@@ -195,6 +195,9 @@ class Translator:
         # 失败句标记 error（头显跳过空行）。
         self.mt_system = str(self.cfg.get("mt_system", "") or "").strip()
         self.mt_user_prefix = str(self.cfg.get("mt_user_prefix", "") or "将下面的日文文本翻译成中文：")
+        # 按源语言的用户前缀（R65.1）：英语片选 en 时，前缀还写"日文"会让模型
+        # 自相矛盾到直接回显原文（实测）。未配置的语言回落 mt_user_prefix。
+        self.mt_user_prefix_by_lang = dict(self.cfg.get("mt_user_prefix_by_lang") or {})
 
         # 翻译模式：auto（默认）/ batch / mt。
         # 逐句 MT 是给 Sakura 这类"单文本 + 专用提示词"的**本地**模型准备的；
@@ -697,8 +700,10 @@ class Translator:
     # ------------------------------------------------------ 逐句专攻 MT
     def _mt_once(self, text: str, lang_key: str, context: str = "") -> str:
         """单句调用专攻翻译模型；空/漏译/退化一律判失败返回空串。"""
+        lang = (lang_key or "").split("-")[0].strip().lower()
+        user_prefix = self.mt_user_prefix_by_lang.get(lang) or self.mt_user_prefix
         prefix = ""   # 上下文前缀实测会泄漏进上屏译文（MT 无 JSON 校验兜底），弃用
-        raw = str(self._chat(self.mt_system, prefix + self.mt_user_prefix + text) or "").strip()
+        raw = str(self._chat(self.mt_system, prefix + user_prefix + text) or "").strip()
         out = raw.strip().strip('"“”「」『』').strip()
         if not out or self._has_untranslated(text, out) or self._is_degenerate(text, out):
             return ""
@@ -813,6 +818,27 @@ class Translator:
                 if not (s.get("translation") or "").strip():
                     s["error"] = s.get("error") or f"translate_failed:{type(e).__name__}"
 
+    def _apply_local_lang_model(self, lang_key: str) -> None:
+        """按源语言切换本地 GGUF（R65.1：ja→Sakura / en→Hy-MT2）。
+
+        config → translate.local.model_by_lang: {"en": "<gguf 路径>"}。映射里没有
+        的语言走默认 model（行为与从前完全一致）。切模型 = 重启 llama-server，
+        由 LlamaBackend.use_model 内部幂等处理。
+        """
+        if self.backend != "local":
+            return
+        local = self.cfg.get("local") or {}
+        mapping = local.get("model_by_lang") or {}
+        lang = (lang_key or "").split("-")[0].strip().lower()
+        target = str(mapping.get(lang) or "") or str(local.get("model") or "")
+        if not target:
+            return
+        try:
+            _local_backend(local).use_model(target)
+        except Exception as e:
+            print(f"[mt] 按语言切换模型失败（沿用当前模型）：{type(e).__name__}: {e}",
+                  flush=True)
+
     def _translate_inner(self, segs: list, lang_key: str, context: str = "") -> None:
         """就地写入 seg['translation']；失败时留空并记录 seg['error']。"""
         if self.disabled:
@@ -825,6 +851,9 @@ class Translator:
                 s.pop("error", None)
             return
         todo = [(i, s) for i, s in enumerate(segs) if (s.get("text") or "").strip()]
+        # 按语言路由本地翻译模型（R65.1）：ja→默认(Sakura)，en→Hy-MT2（配置
+        # model_by_lang 映射，未配置则全部走默认模型，行为与从前一致）
+        self._apply_local_lang_model(lang_key)
         for s in segs:
             if not (s.get("text") or "").strip():
                 s["translation"] = ""

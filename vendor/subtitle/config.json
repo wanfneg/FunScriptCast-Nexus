@@ -75,9 +75,16 @@
       "temperature": 0.2,
       "top_p": 0.3,
       "max_tokens": 2048,
-      "start_timeout_sec": 180
+      "start_timeout_sec": 180,
+      "model_by_lang": {
+        "en": "../../models/Hy-MT2-7B-Q4_K_M.gguf"
+      }
     },
-    "mode": "auto"
+    "mode": "auto",
+    "mt_user_prefix_by_lang": {
+      "ja": "将下面的日文文本翻译成中文：",
+      "en": "将下面的英语文本翻译成中文："
+    }
   },
   "server": {
     "host": "0.0.0.0",

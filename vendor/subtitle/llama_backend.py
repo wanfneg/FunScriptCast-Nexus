@@ -91,6 +91,20 @@ class LlamaBackend:
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    def use_model(self, model_path, alias: str | None = None) -> None:
+        """按语言路由（R65.1）：目标模型与当前加载的不同 → 停掉常驻实例，
+        下次 ensure_server 用新模型拉起（热切换：首次切换付一次加载时间）。
+        路径相同则什么都不做（幂等）。"""
+        with self._lock:
+            m = _resolve(model_path or "")
+            if not m or m == self.model:
+                return
+            self.stop_server()          # 换模型必须重启 llama-server（权重随进程走）
+            self.model = m
+            if alias:
+                self.alias = str(alias)
+            print(f"[llama] 切换翻译模型 → {m.name}", flush=True)
+
     def probe(self, timeout: float = 2.0) -> bool:
         """llama-server 的 /health：加载中返回 503，就绪后 {"status":"ok"}。"""
         try:

@@ -2309,3 +2309,13 @@ apache-2.0）已下载完毕，待写 ONNX 转录后端做英语转录（对手=
 补装）；② VR APK 需走 Unity 构建流程（Kotlin 层已编译验证），由用户按日常流程出包；
 ③ 英语翻译质量依赖按语言路由（ja→Sakura / en→Hy-MT2）落地，当前选英语仍走 Sakura（差），
 路由实现为下一轮。
+
+**R65.1 追加（按语言路由翻译模型，用户拍板"做吧"）**：translate.local 增 `model_by_lang`
+映射（如 {"en": Hy-MT2-7B GGUF 路径}），`LlamaBackend.use_model()` 热切换（路径不同才重启
+llama-server，幂等），`Translator._apply_local_lang_model(lang)` 在翻译入口按源语言切模型。
+**E2E 根因补刀**：en 片第二句回显英文的真因是 **mt_user_prefix 写死"日文"**——英语文本配
+"将下面的日文文本翻译成中文"的自相矛盾指令，Hy-MT2 直接回显。修：新增
+`mt_user_prefix_by_lang`（ja/en 各自前缀），_mt_once 按语言取前缀。**复测：英语两句全链路
+（Qwen3 英转录 → Hy-MT2 翻译）全部出中文 ✓**。配置三处已加 model_by_lang + mt_user_prefix_by_lang；
+D 盘 models\ 已补 Hy-MT2 两个 GGUF（自包含）。GGUF 相对路径按安装根两级上跳解析
+（vendor/subtitle/../../models/），D 盘活配置同理。
