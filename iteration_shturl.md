@@ -2209,3 +2209,21 @@ beam_size=1 对 audiocpp 无效（whisper 专属），用户日后切 whisper �
 /health 实测：segmentation=hybrid、mt_warm=True、asr=whisper/kotoba、translate=local ✓。
 **待验证**：手机装新 APK 后实测 partial 出字体感（临时稿日文先出、定稿中文跟上），确认后把
 `&partial=1` 同步进头显端。
+
+**R63.6 追加（手机端暂停/续播规格落地，versionCode 84 已装机）**：用户实测"开启 AI 字幕没有自动
+暂停"，并给出两分法规格——场景①视频本就手动暂停：保持暂停等模型全热，就绪后**自动继续播放**；
+场景②视频在播：先按住，就绪后继续。根因：旧 finishWait 只在 `pausedByUs` 时续播，场景①
+（开启前就已暂停）永远不会自动续播。修：finishWait ok=true 时**无条件 force 续播**
+（VideoPlayerController.aiResumePlayback 增 force 参数，无视 aiHeldPlayback）；失败/超时仍只
+恢复我们按下的暂停，用户手动暂停的保持暂停。注意：服务端本就热（probe ready 直通）时不暂停
+也不自动播——没有"加载"就无所谓"等完"。
+
+**R63.7 追加（提示词 A/B，用户拍板"不要定制"）**：同片同管线（sivr002 全片，audiocpp+hybrid）只换
+翻译 system 提示词：A=现役定制版（成人对白/第一人称/口语/如实四规则），B=参考项目式通用版
+（"你是专业的实时字幕翻译器。把用户输入翻译成简体中文，只输出译文本身。"）。结果：召回/时序/
+覆盖率/长度比/空译文**全部打平**（覆盖率 0.497 vs 0.501、长度比 1.07 vs 1.00、译文总字数
+1179 vs 1157，"她"次 5 vs 1 属噪声级）；样例对照仅措辞风格差异。**裁定：采纳通用版**（简洁
+优先，小模型无负担，无质量损失）；D 盘活配置 + 仓库/dist-app 模板三处已换。保留一手：定制版
+的"人称一致/如实翻译"两个维度客观指标测不到，日后若发现译文"她/他"乱指或翻译回避，配置里
+一键换回定制版即可。遗留保险丝：翻译模型若换成 Qwen3 类推理模型，需加 think 标签剥离
+（参考 auto-caption /no_think、realtime-subtitle 正则剥壳）。

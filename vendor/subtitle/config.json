@@ -1,6 +1,6 @@
 {
   "asr": {
-    "backend": "whisper",
+    "backend": "audiocpp",
     "segmentation": "hybrid",
     "hybrid": {
       "silence_threshold": 0.01,
@@ -59,7 +59,7 @@
       "backend": "auto",
       "after_fail_batches": 3
     },
-    "mt_system": "你是日语到简体中文的字幕翻译器，翻译成人影片中说话人的口语对白与独白。规则：1) 画面中正在说话的人一律用第一人称“我”，不要译成“她/他”；2) 忠实原意与语气，口语、简短，性相关表达如实翻译，不雅化、不回避；3) 不添加原文中没有的信息、人称或称呼；4) 只输出译文，不要解释。",
+    "mt_system": "你是专业的实时字幕翻译器。把用户输入翻译成简体中文，只输出译文本身。",
     "mt_user_prefix": "将下面的日文文本翻译成中文：",
     "local": {
       "dir": "../../vendor/llama",
