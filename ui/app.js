@@ -370,7 +370,10 @@
     $("#aboutIp").textContent = (st.host && st.host.lan_ip) || "—";
     $("#aboutPort").textContent = (st.host && st.host.port) || "—";
     $("#aboutLanApi").textContent = (st.host && st.host.lan_api_url) || "—";
-    $("#verLine").textContent = "v" + (st.version || "—") + " · WebView2";
+    var verTxt = "v" + (st.version || "—") + (st.dev_copy ? " · 开发副本" : "") + " · WebView2";
+    $("#verLine").textContent = verTxt;
+    var brandSub = $("#brandSub");
+    if (brandSub) brandSub.textContent = st.dev_copy ? "开发副本" : "集成版";
     syncSettingsUI();
   }
 
@@ -593,10 +596,10 @@
   var MODEL_NAMES = {
     "qwen3-asr-0.6b": "识别模型 · Qwen3-ASR-0.6B（显存约 1.3GB）",
     "qwen3-asr-1.7b": "识别模型 · Qwen3-ASR-1.7B（显存约 3.6GB，转录质量更高）",
-    "sakura-7b": "翻译模型 · Sakura-7B（推荐）",
-    "sakura-1.5b": "翻译模型 · Sakura-1.5B（轻量）",
-    "hymt2-7b": "翻译模型 · Hy-MT2-7B（英语）",
-    "hymt2-1.8b": "翻译模型 · Hy-MT2-1.8B（英语·轻量）"
+    "sakura-7b": "翻译模型 · Sakura-7B（日语，显存约 4.4GB，翻译质量更好）",
+    "sakura-1.5b": "翻译模型 · Sakura-1.5B（日语，显存约 1.4GB，低显存推荐）",
+    "hymt2-7b": "翻译模型 · Hy-MT2-7B（英语，显存约 4.7GB，翻译质量更好）",
+    "hymt2-1.8b": "翻译模型 · Hy-MT2-1.8B（英语，显存约 1.2GB，低显存推荐）"
   };
   var modelPollTimer = 0;
   function loadModels() {
