@@ -2253,3 +2253,11 @@ kotoba（beam 1=生产参数、无 prompt、无 vad_filter）与 Qwen3-0.6B（au
 R63: whisper 档召回 100/96.6 vs audiocpp 档历史 99-100）显示 whisper 档覆盖率略优、audiocpp
 召回稳定。**建议维持现状（D 盘=audiocpp 亦可、dist-app 模板=whisper 亦可），不必为日文质量
 换引擎**；选引擎的真正决策点是英语（Qwen3 多语言 vs kotoba 仅日语）与显式词汇取向。
+
+**R64 追加（翻译模型选型实测，模型由用户提供：Hy-MT2-7B/1.8B Q4_K_M + 8 样本对照）**：
+Hy-MT2-7B（llama.cpp b11000 直接加载 ✓，单句 0.2-0.45s）：日→中 4/4 自然准确；**英→中 4/4
+流畅自然**（含暗示性内容如实翻译、零拒绝）。Sakura-7B：日→中 4/4 ✓；**英→中 2/4 直接原样
+回显英文不翻译** ✗——英语线必须换模型，实锤。**裁定：日→中维持 Sakura（两代模型风格差异
+而已），英→中采用 Hy-MT2-7B，按请求语言路由模型**。下一步：translate_engine 增加按语言路由
+（ja→sakura / en→hy-mt2，各自 llama-server 实例或同实例双模型）；Cohere ONNX（1.1GB q4f16，
+apache-2.0）已下载完毕，待写 ONNX 转录后端做英语转录（对手=Qwen3-ASR 多语言）。
