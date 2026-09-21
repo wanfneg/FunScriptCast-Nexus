@@ -487,6 +487,7 @@ def _hybrid_vad_fn(pcm):
 def _get_hybrid_buffer():
     """HybridBuffer 单例（双检锁懒建，见 _HYBRID_LOCK 注释）。"""
     global _HYBRID
+    from hybrid_segmenter import HybridBuffer   # 本函数自用 import（R68 挪构造时漏带，探针实测 NameError）
     with _HYBRID_LOCK:
         if _HYBRID is None:
             h = ((CFG.get("asr", {}) or {}).get("hybrid", {}) or {})

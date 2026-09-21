@@ -1222,6 +1222,21 @@ def _hf_hub_dir() -> Path:
 
 MODELS_CATALOG = [
     {
+        # R69 打通全新安装链路时恢复（重建 catalog 时曾被误删——D 盘机器上
+        # vendor/llama 恰好已存在，把缺条目遮住了）。仓库私有 → 自挂 release
+        # 资产必须放在公开的发行仓库；zip 内容 = llama.cpp 官方两 zip 解压合并。
+        "id": "llama-runtime",
+        "role": "translate-runtime",
+        "label": "本地翻译运行时（llama.cpp · CUDA）",
+        "kind": "zip",
+        "dest_dir": APP_DIR / "vendor" / "llama",
+        "size_gb": 0.8,
+        "files": [
+            {"rel": "llama-runtime-windows.zip",
+             "url": "https://github.com/wanfneg/FunScriptCast-Nexus-Release/releases/latest/download/llama-runtime-windows.zip"},
+        ],
+    },
+    {
         "id": "qwen3-asr-0.6b",
         "role": "asr",
         "label": "识别模型 · Qwen3-ASR-0.6B（显存约 1.3GB）",

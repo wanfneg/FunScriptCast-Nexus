@@ -37,7 +37,12 @@ from text_filters import (has_repetition_loop, is_latin_hallucination,
 
 SR = 16000
 BASE_DIR = Path(__file__).resolve().parent          # vendor/subtitle
-AUDIOCPP_DIR = Path(os.environ.get("AUDIOCPP_DIR", r"E:\audiocpp-portable"))
+# 运行时目录：安装目录 vendor\audiocpp（安装包自带 CPU 版，R69 打通全新安装）。
+# 旧默认是开发机绝对路径 E:\audiocpp-portable——别的机器上必然不存在，且模板
+# 里也写着它，全新装机识别必然不可用（R69 修正）。环境变量仍可覆盖（开发机
+# 指向 E 盘大本营用）。
+AUDIOCPP_DIR = Path(os.environ.get("AUDIOCPP_DIR")
+                    or (BASE_DIR.parent / "audiocpp"))
 
 # 请求的 lang_key → audiocpp 的语言名。此前请求体写死构造时的 self.language，
 # `/transcribe?lang=en` 在本路径下会被静默按日语解码。
@@ -73,7 +78,10 @@ class AudioCppBackend:
     backend_kind = "audiocpp"
 
     def __init__(self, cfg: dict, drop_latin: bool = True):
-        self.dir = Path(cfg.get("dir") or AUDIOCPP_DIR)
+        # dir 支持相对路径（相对 vendor/subtitle 解析，与 config 既有约定一致）；
+        # 兼容历史绝对路径（开发机 E:\audiocpp-portable 的活配置照常工作）。
+        _d = Path(str(cfg.get("dir") or AUDIOCPP_DIR))
+        self.dir = _d if _d.is_absolute() else (BASE_DIR / _d).resolve()
         self.backend = str(cfg.get("backend", "cpu"))          # cpu | cuda
         self.threads = int(cfg.get("threads", max(1, (os.cpu_count() or 4) - 1)))
         self.port = int(cfg.get("port", 8083))

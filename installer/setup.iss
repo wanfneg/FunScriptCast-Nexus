@@ -108,8 +108,11 @@ Source: "..\dist-app\ui\*"; DestDir: "{app}\ui"; \
 ;   副本（key 为空）⇒ 首次迁移读到的就是空 key。所以这里排除掉，改由 data\ 那份种子负责。
 ;   开发者垃圾（__pycache__ / *.pyc / *.log / *.json.bak* / *.json.tmp）也一并排除：
 ;   "用户装到的是干净的"——包里不该有打包机的缓存、日志和历史备份。
+;   llama\* 排除（R69）：本地翻译运行时（约 1.1GB）走界面下载条目，不进安装包——
+;   构建机会把 vendor\llama 留在 dist-app 供日常调试，打包时必须显式排除。
+;   audiocpp（ASR CPU 运行时，~27MB）相反**必须打进包**：全新安装的识别零下载依赖。
 Source: "..\dist-app\vendor\*"; DestDir: "{app}\vendor"; \
-    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp"; \
+    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp,llama\*"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 ; 出厂种子：**只在新装时铺**（onlyifdoesntexist）。装了就不再动它——用户的 key、
 ; 以及界面上调过的参数都在这份文件里。配置在 data\ 里叫 subtitle_config.json。
