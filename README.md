@@ -15,345 +15,172 @@
 </p>
 
 **沟通渠道**：QQ `2831691505`
-
 ---
+面向 VR 观影的 PC 端控制中枢：**DLNA 媒体服务 + AI 实时字幕 + 设备同步**，一个窗口、一个托盘。
 
-面向 VR 观影的 PC 端控制中枢：**DLNA 媒体服务 + AI 实时字幕 + 设备联动**，一个窗口、一个托盘。
+- 源码仓库（私有）：<https://github.com/wanfneg/FunScriptCast-Nexus>
+- 安装包下载（公开）：<https://github.com/wanfneg/FunScriptCast-Nexus-Release/releases/latest>
 
-仓库：<https://github.com/wanfneg/FunScriptCast-Nexus>（`main` 分支，tag `v1.0.0`）
+原 `VR-DLNA` 与 `Subtitle Server` 两个独立项目已 vendor 进本仓库（`vendor\dlna`、`vendor\subtitle`）。
 
-原 `VR-DLNA`（抚物器）与 `Subtitle Server` 两个独立项目已 **vendor 进本仓库**，不再依赖 `E:\Development` 下的其他目录。
+## 功能
 
-> **推送注意**：本机 git 全局配了 `http.proxy=http://127.0.0.1:7897`（代理当前未开启），
-> 直连 GitHub 可用但走代理会失败。推送时显式清空代理：
->
-> ```powershell
-> git -c http.proxy= -c https.proxy= push origin main
-> ```
->
-> （`git config --local http.proxy ""` 无效——git 把空值当未设置，会回退到全局配置。）
+**DLNA 媒体服务**（vendor/dlna，纯标准库）
+- SSDP 自动发现 + UPnP ContentDirectory，DeoVR 兼容（UTF-8 文件名、外挂字幕 srt/ass/vtt 切换）
+- 媒体根目录界面管理，路径引号/空白自动规整
+
+**AI 实时字幕**（vendor/subtitle，FastAPI）
+- 识别：Qwen3-ASR（audio.cpp 常驻推理，日语 / 英语），安装包**内置 CPU 运行时**，零手工安置
+- 切句：混合切句——静音定界 + 语音检测赋时，整句出字、时间戳准
+- 渐进出字：句子未切出先发临时稿（partial），定稿自动覆盖
+- 翻译：本地 llama.cpp（GGUF），按源语言路由——日语 Sakura / 英语 Hy-MT2-7B，档位自选、自动热切换
+- 翻译预热：启动即付完系统提示词与首包账，首句字幕不等冷启动
+- 模型中心：7 个条目界面内一键下载（ModelScope/HF 镜像直连 + 系统代理兜底 + 断点续传），带显存标注与组合估算
+
+**设备同步**：脚本（.funscript）/ 视频经 adb 增量同步到 Quest / 手机
+
+## 下载与安装（普通用户看这里）
+
+从 [Releases](https://github.com/wanfneg/FunScriptCast-Nexus-Release/releases/latest) 下载 `FunScriptCast-Nexus-Setup-*.exe`：
+
+1. 安装向导选目录——**选空间充足的盘**（模型以十 GB 计），别用系统盘；
+2. 启动后进「识别与翻译」卡下载识别模型 + 翻译模型（下载完自动切换配置）；
+3. 「DLNA 服务器」添加媒体根目录；头显/播放器里设备名 **FunScriptCast-DLNA**；
+4. 播放时在 PC 端「AI 字幕」卡启动字幕服务（默认空闲 5 分钟自动回收显存）。
+
+用户数据（配置 / 模型 / 日志）全部落安装目录，C 盘一个字节不落；升级覆盖只动程序文件。
 
 ## ⚠️ 运行形态（改任何服务端代码前必读）
 
-**用户的日常运行形态有两种，共同点：字幕服务跑的都是 `vendor\subtitle` 的"快照"，不是仓库工作目录**：
+**字幕服务跑的永远是 `vendor\subtitle` 的"快照"，不是仓库工作目录**：
 
 | 形态 | 服务代码来源 | 说明 |
 |---|---|---|
-| **安装版（推荐）** | `dist-installer\*-Setup.exe` 安装后的 `vendor\subtitle` | 自包含：内嵌 `runtime\`（embeddable Python + 依赖，audiocpp 模式不需要 torch），装完即用，支持目录选择/桌面快捷方式/开机自启/卸载器 |
-| **便携目录** | `dist-app\`（exe + ui + vendor + runtime） | 绿色版，拷走即用 |
+| **安装版** | `dist-installer\*-Setup.exe` 安装后的目录 | 自包含：`runtime\`（embeddable Python + fastapi/uvicorn/numpy，约 111MB），装完即用 |
+| **便携目录** | `dist-app\`（exe + ui + vendor + runtime） | 绿色版，拷走即用；也是构建产物 |
 
-**开发/修复字幕服务的固定顺序（跳步 = 改了白改，2026-09-16 一整轮修复因此"看起来无效"）**：
+**开发/修复的固定顺序（跳步 = 改了白改，曾浪费一整轮）**：
 
-1. 在仓库 `vendor\subtitle\` 改代码与配置；
-2. 重新打包：`powershell -ExecutionPolicy Bypass -File builduild_installer.ps1`（自动串联 PyInstaller →
-   自带运行时 → Inno Setup；需要 ISCC.exe，winget 装 `JRSoftware.InnoSetup` 即可，中文语言包随仓库分发并自动装入编译器目录）；
-3. 快速验证（不重打安装包）时，把变更文件**同时**拷到 `dist-appendor\subtitle\`（和已安装目录的
-   `vendor\subtitle\`），再清 `cache\subtitles\`，重启服务；
-4. 判断当前进程跑的是哪份代码：`Get-CimInstance Win32_Process` 看命令行——`run_server.py` = 快照
-   （安装版/便携版），`-m uvicorn server_app:app` = 仓库源码。Nexus 界面出现"不是本程序启动的（PID xxx）"
-   黄色警告 = 端口被外来进程占用，点"结束并重启"。
+1. 在仓库 `vendor\subtitle\` 改代码；`ui\` 同理；
+2. 只同步代码：`powershell -ExecutionPolicy Bypass -File tools\sync_distapp.ps1`；
+   改了 `host_server.py`（宿主本体）则必须重编：`build\build_exe.ps1`；
+3. 部署到安装目录：把变更文件拷过去，**重启字幕服务**（改了宿主则重启整个应用）；
+4. 排障三件套：字幕服务 `/health` 的 `code_sig`（代码签名，两份对不上 = 跑的旧代码）、
+   UI 品牌区「（开发副本）」标记（exe 在 dist-app/Development 下自动亮明身份）、
+   `Get-CimInstance Win32_Process` 看命令行分辨快照与源码。
 
-自带运行时的解释器解析优先级（host_server._subtitle_python）：`runtime\python.exe`（自包含安装）→
-`.venv`（应用目录 → 上一级目录，非自包含的旧形态）→ PATH 上的 python（多半缺依赖）。
-`vendor\subtitlesr_engine` 的 torch/qwen_asr 已懒加载：轻量运行时只带 fastapi/uvicorn/numpy
-（约 79 MB），audiocpp 主路径不需要 torch。
+**自带运行时的解释器解析**（host_server._subtitle_python）：`runtime\python.exe`（自包含安装）→
+`.venv\`（应用目录 → 上一级）→ PATH 上的 python（多半缺依赖）。来源会记进启动日志。
 
-详细协议与排障见 [docs/AI-SUBTITLE-STATUS.md](docs/AI-SUBTITLE-STATUS.md)。
-
-## 赞助与支持
-
-## 运行
-
-```bat
-start.bat
-```
-
-或用自带 venv 直接跑：
-
-```powershell
-cd E:\Development\FunScriptCast-Nexus
-.\.venv\Scripts\python.exe host_server.py
-```
-
-调试（不开窗口，只起 API）：
-
-```powershell
-.\.venv\Scripts\python.exe host_server.py --no-window
-```
-
-可用环境变量覆盖：`NEXUS_PY`（Python 路径）、`FS_HOST_PORT`（默认 8790）、`FS_SUBTITLE_PORT`（默认 8756）、`VRDLNA_DIR` / `SUBTITLE_DIR` / `ASR_MODEL`。
-
-## 目录结构（自包含）
+## 目录结构
 
 ```
 FunScriptCast-Nexus\
-├── host_server.py          宿主进程：DLNA 控制 + 字幕子进程 + 静态托管 + JSON API
-├── start.bat               启动器
-├── ui\                     前端（index.html / styles.css / app.js，无框架）
-├── design\                 设计交付
-│   ├── DESIGN_SPEC.md      设计规范（Token / 布局 / 组件 / 动效 / 性能预算）
-│   ├── prototype.html      高保真交互原型（单文件，双击即看）
-│   ├── architecture.html   进程架构图（可交互）
-│   ├── architecture.json   架构图源（Archify 9/9 校验）
-│   └── _selfcheck.js       原型结构化自查
-├── vendor\dlna\            DLNA 服务（原 VR-DLNA，纯标准库）
-│   ├── vr_dlna.py          MediaLibrary / DlnaApp / DlnaHTTPServer / SSDPServer
-│   ├── funscript_sync.py   脚本文件夹同步
-│   ├── video_sync.py       视频文件夹同步
-│   └── tray_icon.py        托盘图标
-├── vendor\subtitle\        AI 字幕服务（原 Subtitle Server，FastAPI）
-│   ├── server_app.py       /health /transcribe /translate/*
-│   ├── asr_engine.py       Qwen3-ASR + ForcedAligner
-│   ├── translate_engine.py 翻译调度（local / ollama / openai 三种可插拔后端）
-│   ├── llama_backend.py    本地翻译模型：按需拉起并复用 llama-server（直读 GGUF）
-│   └── config.json         出厂模板（你的配置在 data\，见下节）
-├── vendor\llama\           llama.cpp（llama-server.exe + CUDA 运行时，约 1.1 GB）
-├── models\                 安装目录模型：ASR 约 8 GB + 翻译 Sakura GGUF 约 5 GB
-├── .venv\                  5.0 GB：torch(cu128) + transformers + fastapi + pywebview
-├── version.json            版本号（versionName / versionCode / channel）
-├── tools\make_icon.py      生成托盘 / 窗口图标（icon.ico + png 多尺寸）
-└── tests\                  自动化测试（ui_check.js / test_tray_run.py / test_frameless.py）
+├── host_server.py            宿主：DLNA 控制 + 字幕子进程 + 托管前端 + JSON API
+├── ui\                       前端（无框架，WebView2 渲染；字体/图标许可见 ui\fonts、ui\LICENSE-*）
+├── vendor\dlna\              DLNA（vr_dlna.py）+ funscript/video 同步 + 托盘
+├── vendor\subtitle\          AI 字幕服务
+│   ├── server_app.py         /health /transcribe(/stream) /translate/*；混合切句调度
+│   ├── hybrid_segmenter.py   混合切句状态机（静音定界 + VAD 赋时 + 段-组对齐）
+│   ├── translate_engine.py   批量 JSON / 逐句 MT / 按语言路由 / 熔断与兜底
+│   ├── llama_backend.py      llama.cpp 常驻翻译（热切换、Job Object 保护）
+│   ├── audiocpp_backend.py   audio.cpp 常驻识别 + silero VAD（错误脱敏回局域网）
+│   └── config.json           出厂模板（用户配置在 data\subtitle_config.json）
+├── vendor\audiocpp\          audio.cpp CPU 运行时 + silero（fetch_audiocpp.ps1 拉取/内置安装包）
+├── vendor\llama\             llama.cpp CUDA 运行时（fetch_llama.ps1 拉取；安装包不含，走下载条目）
+├── tools\                    sync_distapp / fetch_* / 图标生成 / 下载器
+├── build\                    build_exe.ps1 + nexus.spec（PyInstaller）
+├── installer\setup.iss       Inno Setup 安装包脚本
+├── docs\                     THIRD-PARTY-NOTICES.md（许可台账）、AI-SUBTITLE-STATUS.md、审查报告
+├── tests\                    test_pipeline_unit.py（17 项）/ test_merge_shards.py / 托盘·窗口·前端检查
+└── version.json              versionName / versionCode / channel
 ```
 
 ## 用户数据在哪（升级 / 重装 / 复位）
 
-**一处、一个寿命、一个清理入口 —— 全在你选的那个安装目录里，C 盘一个字节都不落。**
-装到 D 盘就全在 D 盘；装进移动硬盘就整个带走（便携）。
+**全在你选的安装目录里，C 盘一个字节都不落**（连 `%TEMP%` 该干的活——子进程配置、
+VAD 转储、下载暂存、WebView2 profile——都指到安装目录；唯一例外是 PyInstaller 单文件
+EXE 每次启动往 `%TEMP%` 解包自己，约 35MB，退出即删）。
 
 ```
 <安装目录>\
-├── FunScriptCast-Nexus.exe
-├── data\      ← 你的数据：subtitle_config.json（云端 key / 参数）、
-│                integrated_settings.json（DLNA 共享目录等）、vr_dlna_*.json、webview\（界面 profile）
-├── models\    ← 模型：ASR + 翻译 GGUF + hf-cache\（whisper 兜底模型约 1.4 GB）
-│                _download\（下载暂存，装完可删）
-├── logs\      ← host.log（宿主）+ run_server.log（字幕服务）+ llama_server_*.log + 托盘诊断
-├── run\       ← 运行时临时文件：子进程配置、VAD 转储、设备同步临时包（可随时删）
-├── ui\ vendor\ tools\ runtime\     ← 程序
-└── vendor\llama\                   ← llama.cpp 运行时（约 1.1 GB，首次用到时下载）
+├── data\     subtitle_config.json（字幕配置/云端 key）、integrated_settings.json（DLNA 目录等）
+├── models\   识别模型 + 翻译 GGUF + hf-cache\ + _download\（下载暂存，装完可删）
+├── logs\     host.log + run_server.log + llama_server_*.log
+├── run\      运行期临时文件（可随时删）
+└── ui\ vendor\ tools\ runtime\   程序
 ```
-
-**C 盘一个字节都不落。** 连本该在 `%TEMP%` 的东西（子进程配置、VAD 转储、同步临时包、
-下载暂存、WebView2 界面 profile、llama 日志）都指到安装目录里——因为 `%TEMP%` 在系统盘上，
-而装到 D 盘的用户往往正是因为 C 盘紧张；模型/运行时的压缩包更是要先在这儿占几个 GB，
-落在系统盘会直接下载失败。放安装目录还有个好处：与解压目标同卷，省一次跨盘拷贝。
-
-> 唯一的例外是 **PyInstaller 单文件 EXE 每次启动往 `%TEMP%` 解包自己**（约 35 MB，退出即删）
-> ——那是打包形态决定的，不由代码控制。要彻底消掉需改成单目录（onedir）形态。
 
 | 想要 | 怎么做 |
 |---|---|
-| **升级 / 覆盖安装** | 数据自动保留：`data\` 是运行期产物，安装包**不安装它、也不删它**，只在新装时铺一份出厂种子（`onlyifdoesntexist`） |
-| **彻底复位（恢复出厂）** | 关掉程序，删掉 `data\` 目录。这是唯一的复位入口 |
-| **备份 / 换机** | 拷走 `data\`（几十 KB 的 key、设置都在里面）；模型太大可不带 |
-| **老版本升上来** | 首次运行**自动迁移**：从 `%APPDATA%\FunScriptCast-Nexus\`（过渡版位置）或 `vendor\subtitle\`（最早的位置）把 key / 设置搬进 `data\`，日志打 `[paths] 已迁移用户数据：…` |
+| 升级 / 覆盖安装 | 数据自动保留（安装包不装也不删 `data\`，只在新装时铺出厂种子） |
+| 彻底复位 | 关程序，删 `data\`——唯一复位入口 |
+| 备份 / 换机 | 拷走 `data\`（几十 KB）；模型太大可不带 |
+| 老版本升上来 | 首次运行自动迁移（`%APPDATA%` → `data\`，日志有 `[paths] 已迁移…`） |
 
-> ⚠️ **安装目录要选在空间充足的盘上**（模型 20 GB 起），别用系统盘。
-> 安装向导里可以改路径；升级时沿用你上次选的目录。
-
-配置请走界面改（AI 字幕 → 翻译设置 → 保存），或直接编辑 `data\subtitle_config.json`。
-`vendor\subtitle\config.json` 只是**出厂模板 / 老版本迁移源**，改它不影响运行。
-
-> 一个必须记住的约定：用户配置是**首次运行时的快照**，之后不再随版本更新。
-> 所以新增配置键**必须在代码里带默认值**（`cfg.get("新键", 默认)`），不能指望模板传下去。
-
-> 路径规则**只写一份**：`vendor\subtitle\user_paths.py`（宿主与字幕服务共用），
-> DLNA 侧同规则在 `vendor\dlna\app_paths.py`。改数据位置只改这两处。
+配置走界面改，或直接编辑 `data\subtitle_config.json`。`vendor\subtitle\config.json` 只是
+出厂模板；**用户配置是首次运行的快照**，新增配置键必须在代码里带默认值。路径规则只在
+`vendor\subtitle\user_paths.py` 写一份（宿主与字幕服务共用）。
 
 ## 架构
 
 ```
-┌─ 宿主进程（host_server.py）──────────────────────────────┐
-│  · 托管前端静态资源 + JSON API   127.0.0.1:8790          │
-│  · DLNA 服务（import vendor/dlna）  0.0.0.0:8899         │
-│  · pywebview 窗口（WebView2）                            │
-└───────────────┬──────────────────────────────────────────┘
-                │ subprocess.Popen / terminate
-        ┌───────▼──────────────────────────────┐
-        │ 字幕服务子进程（vendor/subtitle）     │
-        │ FastAPI  127.0.0.1:8756              │
-        │ 模型：./models（绝对路径注入）        │
-        │ 停止即释放显存（约 3.9 GB）           │
-        └──────────────────────────────────────┘
+┌─ 宿主进程（host_server.py，PyInstaller 单文件）──────────┐
+│  · 前端托管 + JSON API        127.0.0.1:8790            │
+│  · DLNA（import vendor/dlna）      0.0.0.0:8899          │
+│  · 头显专用接口（白名单四路由）    0.0.0.0:8791          │
+│  · pywebview 窗口（WebView2）+ 托盘                      │
+└──────────────┬───────────────────────────────────────────┘
+               │ 子进程（停止即回收显存）
+       ┌───────▼───────────────────────────────┐
+       │ 字幕服务 vendor/subtitle   :8756       │
+       │ 识别 audio.cpp :8081（CPU/CUDA 可选）  │
+       │ 翻译 llama.cpp :8082（按语言热切换）   │
+       └───────────────────────────────────────┘
 ```
 
-- **单入口**：一个启动脚本、一个窗口；DLNA 与 UI 同进程。
-- **字幕服务独立子进程**：崩溃不拖垮主程序；停止后显存立刻回收——这是解决「ASR + Ollama 抢显存导致 67s 卡顿」的关键。
+- **字幕服务独立子进程**：崩溃不拖垮主程序；停止即释放显存；空闲 5 分钟自动回收退出（可配）。
+- **识别**（audio.cpp）：混合切句切出的整段交常驻服务转写，silero VAD 裁决语音区做对齐；
+  只注册一个 streaming 模型 id，离线请求同 id 复用（注册两个 = 权重驻留两遍，实测慢 6 倍）。
+- **翻译**（llama.cpp）：按请求语言热切换 GGUF（`translate.local.model_by_lang`），切换失败自动回滚；
+  批量 JSON + 键校验纠错 + 失败熔断；云端 OpenAI 兼容后端可选（不碰厂商专有协议）。
+- **显存档位估算**：/health 回 `vram_estimate`（识别 + max(日译, 英译) + 固定开销），8GB 卡选组合前先看它。
 
-### 翻译后端（本地 llama.cpp，2026-09-16 起为默认）
-
-翻译**不再依赖 Ollama**：模型以 GGUF 形式放在**安装目录的 `models\` 下**，由字幕服务
-按需拉起 `vendor\llama\llama-server.exe`（幂等复用、随字幕服务一起回收，父进程崩溃由
-Job Object 带走，不留孤儿显存）。配置见 `vendor\subtitle\config.json`：
-
-```jsonc
-"translate": {
-  "backend": "local",                                    // local | ollama | openai
-  "local": {
-    "model": "../../models/Sakura-7B-Qwen2.5-v1.0/sakura-7b-qwen2.5-v1.0-iq4xs.gguf",
-    "port": 8082, "ctx": 2048, "ngl": 99
-  }
-}
-```
-
-换模型 = 换 `models\` 下的文件 + 改这一行路径（`ollama` 段保留为可选回退）。
-
-### ASR 后端（audio.cpp，只注册一个 streaming 模型）
-
-`audiocpp_backend` 拉起 :8081 时写入的配置**只注册一个模型**，且必须是 `mode=streaming`：
-
-- 头显实时字幕走 `/transcribe/stream`，上游要求 `mode=streaming`（否则 500）；
-- 后端的离线请求用同一个 id **照样能跑**（实测 6s 音频 234ms），所以无需第二个注册。
-
-**不要注册成「离线 + 流式」两个**：同一份权重会驻留两遍（audiocpp 内存 737→2507 MB、
-总显存 7745/8188 MiB），把 llama-server 挤到 CPU —— 实测流式中位 0.29→2.34 s、整段 6× 变慢。
-
-ASR 权重同样取自**安装目录的 `models\`**（`asr.audiocpp.model = ../../models/Qwen3-ASR-0.6B`）。
-注意 audio.cpp 是按**它那份配置文件的所在目录**解析相对路径的，而临时配置写在 `%TEMP%` ——
-所以 `audiocpp_backend` 会先解析成绝对路径再写进去（否则上游找不到模型文件）。
-
-### 云端翻译（标准 OpenAI 兼容，可选）
-
-不接任何厂商专有协议，只有两条约定：`POST {base_url}/chat/completions` +
-`Authorization: Bearer <key>`（请求体只用 model / messages / temperature / max_tokens）。
-
-**UI 用法**：AI 字幕 → 翻译后端选 `openai（云端 / OpenAI 兼容）` → 填 base_url / 模型 / API Key
-→ 保存翻译设置 → 重启字幕服务 → 点「测试一句」。测试结果会同时给出**直连译文**、**管线译文**
-与**上游原始报错**（key 错、余额不足、模型名错一眼可辨）。
-
-```jsonc
-"translate": {
-  "backend": "openai",
-  "openai": {
-    "base_url": "https://api.openai.com/v1",   // 任何 OpenAI 兼容端点
-    "model": "gpt-4o-mini",
-    "api_key": "sk-…"                          // 留空则用环境变量 OPENAI_API_KEY
-  }
-}
-```
-
-命令行自测：`curl -X POST http://127.0.0.1:8790/api/subtitle/translate-test`
-（或直接 `curl http://127.0.0.1:8756/translate/selftest`）。
-
-⚠️ **改了 `host_server.py`（宿主本体）必须重编 exe 才生效**：`build\build_exe.ps1`。
-该脚本会重建 `dist-app`，**请检查 `dist-app\models` 与 `dist-app\.venv` 是否还在** ——
-不在了就用 `mklink /J` 重建（否则 ASR 找不到模型）。外置的 `ui\` 与 `vendor\` 改动则无需重打包。
-
-## 打包成 EXE
+## 打包与发布
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build\build_exe.ps1
+powershell -ExecutionPolicy Bypass -File build\build_exe.ps1      # exe + 组装 dist-app（自动递增版本号）
+powershell -ExecutionPolicy Bypass -File build\build_installer.ps1 # 串联 ISCC 出安装包
 ```
-
-产物在 `dist-app\`：
-
-| 内容 | 说明 |
-|---|---|
-| `FunScriptCast-Nexus.exe` | 应用本体，约 17.7 MB（含 pywebview / DLNA 模块） |
-| `ui\` `vendor\` `tools\` | **外置数据**：前端与两套服务源码，改完即生效，不用重打包 |
-| `version.json` | 版本号 |
-
-**为什么不做成「一个文件」**：torch 约 4 GB、模型约 8 GB，塞进 EXE 既慢又没意义。
-字幕服务继续以子进程调用 `.venv`，所以独立运行需要：
-
-```
-dist-app\
-├── FunScriptCast-Nexus.exe
-├── .venv\        ← 从仓库根目录复制（或建目录联接：mklink /J）
-└── models\       ← 同上（8 GB）
-```
-
-### 安装与升级
-
-生成安装包：`powershell -ExecutionPolicy Bypass -File build\build_installer.ps1`
-（内含 `build_exe`，会先清空 API Key、全树哨兵扫描、再调 ISCC；找不到 ISCC 时用
-`NEXUS_ISCC` 指定路径）。
 
 | 情形 | 行为 |
 |---|---|
-| **全新安装** | 向导里选目录。⚠ **选空间充足的盘**（模型 20 GB 起），别用系统盘 |
-| **升级安装** | 同一个 `AppId` ⇒ 认出已有安装并**沿用上次选的目录**，装成一份而不是两份；附加任务（桌面图标 / 开机自启）的选择也沿用 |
-| **覆盖了什么** | 只覆盖程序文件（`ui\ vendor\ tools\ runtime\` 与 exe，约 110 MB）。`data\`、`models\`、`cache\`、`logs\`、`vendor\llama` 一律不动 |
-| **同版本重装** | 弹窗确认后重新覆盖程序文件（可用来修复损坏的安装） |
-| **降级（装旧包）** | **默认拦下**：弹窗说明"已装的更新"，默认按钮是「否」。避免拿旧包静默覆盖新装 |
-| **运行中升级** | 宿主持有 `FunScriptCastNexusMutex`，安装器会要求先关闭程序 |
-| **装失败怎么查** | `%TEMP%\Setup Log*.txt`（`SetupLogging=yes`），里面有升级识别读到什么版本 |
+| 全新安装 | 选目录（选大盘）；`data\` 只铺出厂种子 |
+| 升级安装 | 同 AppId 沿用目录，只覆盖程序文件（约 110MB），`data\ models\ logs\` 不动 |
+| 降级保护 | 旧包默认拦下；运行中升级由互斥量引导先关程序 |
 
-安装包 EXE 的文件属性带版本号（`VersionInfoVersion`），右键→详细信息即可确认手里是哪个包。
+发行：安装包发布到公开仓库 wanfneg/FunScriptCast-Nexus-Release（源码仓私有，其 release 资产对外
+404，所以分发走独立公开仓）。`tools\fetch_llama.ps1` / `tools\fetch_audiocpp.ps1` 从该仓库
+复现两个运行时目录。构建前 `adb kill-server`（构建期文件锁死过一回）。
 
-**Inno 没有差分更新**：升级就是整包重下 + 覆盖程序文件。贵的部分（模型、llama 运行时、
-你的数据）不在安装范围内，所以不会被重下或清掉——这也是 `data\` 要跟代码分开的原因。
-
-不带 `.venv` 也能跑：DLNA、设备同步都正常，只有「启动字幕服务」会
-直接报 `ModuleNotFoundError: No module named 'uvicorn'` 这类可读错误。
-
-### 构建期踩到的坑（已修）
-
-`build\_pyi_patch.py`：Python 3.10.0 的 `dis._unpack_opargs()` 在遇到不带参数的
-指令时忘了重置 `extended_arg`，导致 `dis.get_instructions()` 在分析 `bottle.py`
-（pywebview 的依赖）时抛 `IndexError`，PyInstaller 直接崩。spec 里在分析前替换掉
-这个函数，不需要动系统 Python。
-
-## API
+## API（宿主 :8790，节选）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/state` | 全量状态（DLNA / 字幕 / 同步 / GPU / 设置 / 事件） |
-| GET/POST | `/api/settings` | 读写设置 |
-| POST | `/api/dlna/start` `/api/dlna/stop` | 启停 DLNA |
-| POST | `/api/subtitle/start` `/api/subtitle/stop` | 启停字幕子进程 |
-| GET/POST | `/api/subtitle/config` | 读写字幕服务 `config.json` |
-| GET | `/api/sync` | 同步状态（设备连接 / 两个槽位 / 日志） |
-| POST | `/api/sync/devices` | 扫描 adb 设备（含型号） |
-| POST | `/api/sync/connect` `/api/sync/disconnect` | 连接 / 断开设备 |
-| POST | `/api/sync/run` | 开始同步（`kind=script|video`，后台线程执行） |
-| POST | `/api/quit` | 退出应用 |
+| GET | `/api/state` | 全量状态（DLNA / 字幕 / 同步 / GPU / 事件） |
+| GET/POST | `/api/settings` `/api/subtitle/config` | 设置与字幕配置（key 打码回显） |
+| POST | `/api/dlna/start|stop` `/api/subtitle/start|stop|reclaim` | 服务控制 |
+| GET | `/api/models/catalog` | 模型目录（状态/进度/显存标注） |
+| POST | `/api/models/download` | 发起模型/运行时下载 |
+| POST | `/api/sync/run` | 设备同步（kind=script/video） |
+| POST | `/api/quit` | 退出 |
 
-前端 JS 桥（`window.pywebview.api`）：`win_minimize` / `win_close` / `win_hide` / `pick_folder`。
+字幕服务（:8756）：`GET /health`（含 code_sig / segmentation / vram_estimate / mt_warm）、
+`POST /transcribe?lang=&video_start_ms=&partial=`、`POST /transcribe/stream`（SSE）、
+`GET /translate/stats`、`GET /translate/selftest`。
 
-## 窗口与托盘
+## 第三方与许可
 
-- 窗口 **无边框自绘标题栏**（`frameless=True` + `.pywebview-drag-region` 拖动）；
-  `tune_frameless_window()` 用 `WS_THICKFRAME` 找回原生缩放边框并打开 DWM 圆角。
-- 托盘常驻：关闭按钮按设置「最小化到托盘」或直接退出；托盘菜单可显示/退出。
-- 「启动时直接隐藏到托盘」适合开机自启只跑服务的场景。
-
-## 已验证
-
-| 项 | 结果 |
-|---|---|
-| 宿主 API | `/api/state` 200，返回 LAN IP / GPU 占用 |
-| 静态资源 | `index.html` / `styles.css` / `app.js` 均 200 |
-| DLNA（vendor） | `running=true`，`http://192.168.2.2:8899`，`description.xml` 200，SOAP Browse 200 |
-| 字幕子进程（vendor） | 启动 → `ready`，模型从 `./models` 加载，`cuda:0` |
-| 翻译后端 | 本地 llama.cpp（`vendor\llama`，GGUF 取自安装目录 `models\`，**不依赖 Ollama**） |
-| 前端 | 控制台错误 0；溢出 0×0；DOM 545 节点（预算 <1500） |
-| 窗口 | pywebview + WebView2；无原生标题栏 + 可缩放 + 圆角；关闭→隐藏、托盘→恢复 |
-| 设备同步 | 真机 Quest 3（`192.168.2.129:5555`）脚本同步：本地 1 / 设备 2707 / 推送 1 |
-| 打包 EXE | 17.7 MB 单文件；DLNA `description.xml` 200；字幕服务 `ready` + `cuda:0` |
-| 显存回收 | 停止字幕服务后 5720 MB → 1736 MB |
-
-## 自动化测试
-
-```powershell
-# 前端渲染 + 数据绑定（需先启动 host_server.py）
-node tests\ui_check.js
-
-# 托盘：关闭到托盘、托盘恢复、/api/quit 真正退出
-.\.venv\Scripts\python.exe tests\test_tray_run.py
-
-# 无边框窗口：样式位 / 最小化 / 关闭到托盘 / 缩放边框
-.\.venv\Scripts\python.exe tests\test_frameless.py
-```
-
-## 显存说明
-
-字幕服务启动后 ASR 模型常驻约 **3.9 GB**（`Qwen3-ASR-0.6B` + `ForcedAligner`），这是实时字幕的必要代价。翻译模型（Sakura-7B Q4，约 4 GB）由 llama-server 在**首次翻译时**拉起、随字幕服务一起回收。8 GB 卡上两者同时驻留接近上限，因此：
-
-- 不用字幕时，在界面点「停止字幕服务」即可释放；
-- 或把翻译后端切到云端（`dashscope`），PC 端只留 ASR。
-
-## 待办
-
-1. 同步页的进度条（当前是日志 + 结果计数）
-2. 首次启动引导（自动检测 .venv / models，缺失时给出一键说明）
+第三方组件台账与许可证文本见 [docs/THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md)
+（分发物、运行时下载、参考项目一览）。发行物不含 GPL 组件；详细协议与排障史见
+[docs/AI-SUBTITLE-STATUS.md](docs/AI-SUBTITLE-STATUS.md)。
