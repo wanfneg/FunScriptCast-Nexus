@@ -2432,3 +2432,16 @@ vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；
 **发行仓库资产现状**（wanfneg/FunScriptCast-Nexus-Release，tag v1.0.20 名字未改）：Setup-1.0.30.exe(80MB) + llama-runtime-windows.zip(627MB, 固定 URL 未动) + audiocpp-runtime-windows-cpu.zip(25.75MB)，三 URL 均已验 200。
 
 **R70 追加（Release 仓库收尾，用户点名）**：v1.0.30 release 重建（tag/标题/说明与资产一致，含完整发布说明），三资产（Setup-1.0.30 80MB / llama-runtime 627MB / audiocpp-cpu 26MB）全部迁入并验 latest/download URL 200；旧 v1.0.18/1.0.19/1.0.20 连 tag 一并撤下（1.0.19 是已知致命 bug 版）。627MB 资产搬家走 gh CLI 认证通道（curl 直连会被重置——与下载器双通道教训同源）。
+
+---
+
+## R71 单一仓库迁移（79ba3c2，主仓转公开、Release 仓已删库）
+
+用户拍板：**FunScriptCast-Nexus-Release 删库，主仓转 Public，以后源码+分发单一项目**。迁移清单：
+1. **下载链**：llama-runtime catalog URL（编译在 exe 里→必须重编）+ fetch_audiocpp.ps1 → `wanfneg/FunScriptCast-Nexus/releases/latest/download/`。
+2. **发行资产**：v1.0.31 release 建在主仓（Setup-1.0.31 80MB + llama-runtime 627MB + audiocpp-cpu 26MB）。llama zip 从 D 盘 vendor/llama 重打包（657MB）——**顺带关闭"发行 zip 缺 LICENSE"遗留**（LICENSE-llama.cpp + LLVM-OpenMP 已随包）。
+3. **文档**：README 下载链接/发行措辞、NOTICES（llama zip 许可遗留项关闭）。
+4. D 盘已部署 1.0.31 实测起来正常。
+
+⚠️ **公开化提示**：仓库历史里含本机路径（E:\audiocpp-portable、C:\Users\admin 出现在历史日志/文档）与 QQ 号（README 本就公开），用户转公开时已知情；无密钥泄露（R69 已验模板 config 干净）。
+⚠️ **网络**：GitHub 直连间歇重置（000），资产校验以 gh API 列表为准；程序内下载器本就双通道兜底。
