@@ -247,17 +247,32 @@ except Exception as _e:      # pragma: no cover - 环境异常时不拦住宿主
 # 改管线/改配置立即全部生效，不存在旧结果被"当基线加载"的问题。
 
 # ---------------------------------------------------------------- 版本
+def _is_dev_copy() -> bool:
+    """R66 防呆：exe 在 dist-app（构建产物）或 Development（源码树）下运行 =
+    开发副本，UI 与日志必须亮明身份——用户曾因 E 盘构建产物与 D 盘安装版
+    '长得一模一样'反复启动错（R66 实录）。"""
+    try:
+        low = str(Path(sys.executable if getattr(sys, "frozen", False) else __file__)).lower()
+        return "dist-app" in low or "development" in low
+    except Exception:
+        return False
+
+
 def app_version() -> dict:
     """读取 version.json（每次调用都读，便于开发时直接改文件生效）。"""
     try:
         data = json.loads((APP_DIR / "version.json").read_text(encoding="utf-8"))
+        name = str(data.get("versionName") or "0.0.0")
+        if _is_dev_copy():
+            name += "（开发副本）"
         return {
-            "name": str(data.get("versionName") or "0.0.0"),
+            "name": name,
             "code": int(data.get("versionCode") or 0),
             "channel": str(data.get("channel") or "dev"),
+            "dev_copy": _is_dev_copy(),
         }
     except Exception:
-        return {"name": "0.0.0", "code": 0, "channel": "dev"}
+        return {"name": "0.0.0", "code": 0, "channel": "dev", "dev_copy": _is_dev_copy()}
 
 
 # ================================================================ 设置
@@ -1153,6 +1168,7 @@ def headset_status() -> dict:
         "asr": h.get("asr_model"),
         "translate": h.get("translate"),
         "version": app_version()["name"],
+        "dev_copy": app_version().get("dev_copy"),
         # ↓ 版本可追溯 + 档位联动（头显侧据此记录"哪个 APK 配哪个服务端版本"）
         "translate_backend": backend or None,
         "recommended_chunk_sec": 25 if cloud else 3,
@@ -1188,7 +1204,7 @@ MODELS_CATALOG = [
         "role": "asr",
         "label": "识别模型 · Qwen3-ASR-0.6B（显存约 1.3GB）",
         "dest_dir": MODELS_DIR / "Qwen3-ASR-0.6B",
-        "size_gb": 1.2,
+        "size_gb": 1.8,
         "files": [
             {"rel": "config.json",
              "url": "https://modelscope.cn/models/Qwen/Qwen3-ASR-0.6B/resolve/master/config.json"},
