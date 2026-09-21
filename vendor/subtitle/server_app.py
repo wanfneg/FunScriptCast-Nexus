@@ -109,6 +109,12 @@ _INFLIGHT_LOCK = threading.Lock()
 _MT_WARM = 0.0                   # 翻译预热完成时刻（0=未完成）：llama 端口就绪
                                  # ≠ 翻译热了，首条真实请求还欠系统提示词 prefill
                                  # + 首包 CUDA 路径的账（R63.2，预热请求补上后置时间戳）
+_LAST_PARTIAL_TS = 0.0           # 上次 partial 临时稿的发出时刻（monotonic 秒）。
+                                 # partial 每块都跑一遍 ASR 太费 GPU（连续说话时
+                                 # 切句周期间能挤进 2~3 次），2s 节流后 partial
+                                 # 频率与块节拍持平，定稿出字不受影响（R68）
+_HYBRID_LOCK = threading.Lock()  # _HYBRID/_HYBRID_VAD 懒初始化锁（R68）：并发首请求
+                                 # 此前可能各建一份缓冲/VAD 后端，后建者覆盖先建者
 
 # 上一块的字幕上下文：① 上一句原文进 ASR 热词（治人名/专名跨块听错，借鉴
 # realtime-subtitle 的 context carryover）② 上一句原文+译文进翻译提示词
@@ -465,15 +471,34 @@ def _hybrid_vad_fn(pcm):
     """
     global _HYBRID_VAD
     try:
-        if _HYBRID_VAD is None:
-            from audiocpp_backend import AudioCppBackend
-            _HYBRID_VAD = AudioCppBackend(
-                (CFG.get("asr", {}) or {}).get("audiocpp", {}) or {})
-        return _HYBRID_VAD.speech_spans(pcm)
+        with _HYBRID_LOCK:
+            if _HYBRID_VAD is None:
+                from audiocpp_backend import AudioCppBackend
+                _HYBRID_VAD = AudioCppBackend(
+                    (CFG.get("asr", {}) or {}).get("audiocpp", {}) or {})
+            vad = _HYBRID_VAD
+        return vad.speech_spans(pcm)
     except Exception as e:
         print(f"[hybrid] VAD 不可用（{type(e).__name__}: {e}），退 ASR 自报时间",
               flush=True)
         return None
+
+
+def _get_hybrid_buffer():
+    """HybridBuffer 单例（双检锁懒建，见 _HYBRID_LOCK 注释）。"""
+    global _HYBRID
+    with _HYBRID_LOCK:
+        if _HYBRID is None:
+            h = ((CFG.get("asr", {}) or {}).get("hybrid", {}) or {})
+            _HYBRID = HybridBuffer(
+                silence_threshold=float(h.get("silence_threshold", 0.01)),
+                silence_tail_sec=float(h.get("silence_tail_sec", 0.7)),
+                min_phrase_sec=float(h.get("min_phrase_sec", 2.0)),
+                max_phrase_sec=float(h.get("max_phrase_sec", 5.0)),
+                long_silence_tail_sec=float(h.get("long_silence_tail_sec", 0.4)),
+                long_phrase_sec=float(h.get("long_phrase_sec", 4.0)),
+                vad_fn=_hybrid_vad_fn)
+        return _HYBRID
 
 
 def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
@@ -484,33 +509,27 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
     无出句"，也让 whisper 二次兜底别拿半截缓冲去空跑（R62 教训：兜底只认
     "主引擎整段零输出"，混合模式下主引擎已经在完整句上跑过了）。
     """
-    global _HYBRID
+    global _HYBRID, _LAST_PARTIAL_TS
     from hybrid_segmenter import (HybridBuffer, SR as _SR,
                                   align_segments_to_groups, merge_regions)
-    if _HYBRID is None:
-        h = ((CFG.get("asr", {}) or {}).get("hybrid", {}) or {})
-        _HYBRID = HybridBuffer(
-            silence_threshold=float(h.get("silence_threshold", 0.01)),
-            silence_tail_sec=float(h.get("silence_tail_sec", 0.7)),
-            min_phrase_sec=float(h.get("min_phrase_sec", 2.0)),
-            max_phrase_sec=float(h.get("max_phrase_sec", 5.0)),
-            long_silence_tail_sec=float(h.get("long_silence_tail_sec", 0.4)),
-            long_phrase_sec=float(h.get("long_phrase_sec", 4.0)),
-            vad_fn=_hybrid_vad_fn)
-    span, span_ms, reason = _HYBRID.feed(pcm, lang, video_start_ms)
+    hbuf = _get_hybrid_buffer()
+    span, span_ms, reason = hbuf.feed(pcm, lang, video_start_ms)
     if span is None:
         # partial 渐进出字（R63.6，参考项目 sosv/realtime-subtitle 同思路）：
         # 句子还没切出来时，把当前缓冲的临时转写先发给**主动要了 partial 的
         # 客户端**（手机端；旧头显不带 partial=1 参数，行为零变化），客户端按
         # 「同文本覆盖」语义原位刷新，定稿到达后由跨块去重保留更完整的一条。
-        if want_partial:
-            snap = _HYBRID.snapshot()
+        # 节流（R68）：连续说话时切句周期能挤进 2~3 块，每块都全量转写一遍
+        # 缓冲纯属烧 GPU——2s 一发已与块节拍持平，观感无差。
+        if want_partial and time.monotonic() - _LAST_PARTIAL_TS >= 2.0:
+            snap = hbuf.snapshot()
             if snap is not None:
                 spcm, sms = snap
                 res = state["asr"].transcribe(
                     spcm, lang, sms, 0, None, seg_cfg, "")
                 psegs = res.get("segments") or []
                 if psegs:
+                    _LAST_PARTIAL_TS = time.monotonic()
                     for s in psegs:
                         s["partial"] = True
                     res["backend"] = "hybrid-partial"
@@ -523,8 +542,8 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
     # 对齐用语音区：VAD 裁决的切句直接复切句时的语音区（同一缓冲同一起点，
     # 免第二次 CLI）；RMS/硬切切的才现场跑。⚠ 组是 span 内相对毫秒，必须加
     # span_ms 换成视频绝对时间轴（R63 实测：漏加偏移 → 中位 −700ms）。
-    regions = _HYBRID.last_cut_regions
-    _HYBRID.last_cut_regions = None
+    regions = hbuf.last_cut_regions
+    hbuf.last_cut_regions = None
     if regions is None:
         regions = _hybrid_vad_fn(span)
     groups = ([(span_ms + ga, span_ms + gb) for ga, gb in merge_regions(regions)]
@@ -608,8 +627,11 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
         await run_in_threadpool(state["translator"].translate_segments,
                                 result["segments"], lang, tr_ctx)
         mt_ms = round((time.perf_counter() - t1) * 1000, 1)
-        # 更新滚动上下文：取时间上最后一条（下一块用它做翻译承接 + ASR 热词）
-        if result["segments"]:
+        # 更新滚动上下文：取时间上最后一条（下一块用它做翻译承接 + ASR 热词）。
+        # partial 临时稿**不进**上下文（R68）：半句话当"上一句"会把定稿翻译的
+        # 人称/场景衔接带偏；翻译照跑（客户端 partial 阶段显示的就是它）。
+        if result["segments"] and not any(s.get("partial")
+                                          for s in result["segments"]):
             last = result["segments"][-1]
             with _CTX_LOCK:
                 _LAST_CTX.update({"lang": lang,

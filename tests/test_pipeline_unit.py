@@ -486,6 +486,11 @@ def t_hybrid_align():
     out2 = align_segments_to_groups(
         [{"start_ms": 3050, "end_ms": 3150, "text": "ん"}], groups)
     assert out2[0]["start_ms"] == 1000 and out2[0]["text"] == "ん", out2
+    # 英文同组并句走 join_tokens（R68）：词间补空格——"".join 会粘成 "helloworld"
+    out3 = align_segments_to_groups(
+        [{"start_ms": 1000, "end_ms": 2000, "text": "hello"},
+         {"start_ms": 2000, "end_ms": 2900, "text": "world"}], groups)
+    assert out3[0]["text"] == "hello world", out3
     # 组空 / 段空的边界
     assert align_segments_to_groups([], groups) == []
     only = [{"start_ms": 100, "end_ms": 200, "text": "あ"}]

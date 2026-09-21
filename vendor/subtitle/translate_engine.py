@@ -698,33 +698,35 @@ class Translator:
         return out
 
     # ------------------------------------------------------ 逐句专攻 MT
-    def _mt_once(self, text: str, lang_key: str, context: str = "") -> str:
-        """单句调用专攻翻译模型；空/漏译/退化一律判失败返回空串。"""
+    def _mt_once(self, text: str, lang_key: str) -> str:
+        """单句调用专攻翻译模型；空/漏译/退化一律判失败返回空串。
+
+        不带上一句上下文（R68 清理）：曾支持把"上一句译文"拼在输入前做人称
+        衔接，实测会泄漏进上屏译文（MT 没有 JSON 校验兜底，拼进去什么模型就
+        可能吐出来什么），已弃用。"""
         lang = (lang_key or "").split("-")[0].strip().lower()
         user_prefix = self.mt_user_prefix_by_lang.get(lang) or self.mt_user_prefix
-        prefix = ""   # 上下文前缀实测会泄漏进上屏译文（MT 无 JSON 校验兜底），弃用
-        raw = str(self._chat(self.mt_system, prefix + user_prefix + text) or "").strip()
+        raw = str(self._chat(self.mt_system, user_prefix + text) or "").strip()
         out = raw.strip().strip('"“”「」『』').strip()
         if not out or self._has_untranslated(text, out) or self._is_degenerate(text, out):
             return ""
         return out
 
-    def _translate_mt(self, todo: list, lang_key: str, context: str = "") -> None:
+    def _translate_mt(self, todo: list, lang_key: str) -> None:
         """逐句专攻 MT（Sakura 系翻译特化模型）：单文本 + 专用系统提示词直翻。
 
         与批量 JSON 模式并行不悖：mt_system 配置非空才启用。带漏译/退化检查；
         并发 self.thread_num 路。失败句标记 translate_failed:mt_empty（头显跳过
         空译文行）。
 
-        context：上一块的译文（人称/语境衔接参考，Sakura v0.9 官方支持多行
-        上下文拼接）。只作为**参考前缀**拼在输入前（换行分隔）、不进 system
-        ——实测能显著减少人称错位（她↔我）。"""
+        不接收跨块上下文：参考前缀方案实测会泄漏进上屏译文（见 _mt_once），
+        管道已拆——调用方传了 context 也只会被忽略。"""
         from concurrent.futures import ThreadPoolExecutor
 
         def work1(s):
             text = (s.get("text") or "").strip()
             try:
-                out = self._mt_once(text, lang_key, context)
+                out = self._mt_once(text, lang_key)
             except Exception as e:
                 # 单句调用失败只报废这一句。此前异常会从 ex.map 一路炸穿
                 # _translate_mt，把同批其他句子**已经翻好的结果一起丢掉**
@@ -862,10 +864,9 @@ class Translator:
 
         # 逐句专攻 MT 模式（Sakura 等翻译特化模型；云端在 auto 下不走这里，见 __init__）。
         if self.use_mt:
-            ctx_note = ""
-            if context:
-                ctx_note = f"（上一句译文，供人称衔接参考，勿翻译：{context[:60]}）"
-            self._translate_mt(todo, lang_key, ctx_note)
+            # context 在 MT 模式不拼进请求（R68 清理）：参考前缀实测会泄漏进
+            # 上屏译文，管道已从 _translate_mt/_mt_once 拆除。
+            self._translate_mt(todo, lang_key)
             return
 
         # 分批

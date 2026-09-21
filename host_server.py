@@ -292,6 +292,13 @@ _SUBTITLE_FILE_LOCK = threading.RLock()
 # 非空 = 设置文件存在但解析失败（由 load_settings 写、save_settings 读）：
 # 此时内存里是默认值，绝不能拿它当基底整文件覆盖回去。
 _SETTINGS_READ_ERROR = ""
+# 解析成功的设置按 (mtime_ns, size) 缓存（R68）：一次 /api/state 轮询要调
+# load_settings 3~4 次（state 本体 + SYNC.public + 两个 slot），全都是全量
+# 读盘 + JSON 解析。缓存只存解析结果，返回时浅拷贝（调用方只整体改键、
+# 不就地改列表，dlna_roots 额外拷一层兜底）；save 走 os.replace，mtime
+# 必变，缓存自然失效。读失败（_SETTINGS_READ_ERROR）**不缓存**——
+# save_settings 靠每次重读来发现文件仍然坏着。
+_SETTINGS_CACHE: dict = {"key": None, "data": None}
 
 DEFAULT_SETTINGS = {
     "dlna_port": DLNA_PORT_DEFAULT,
@@ -316,6 +323,16 @@ DEFAULT_SETTINGS = {
 
 def load_settings() -> dict:
     global _SETTINGS_READ_ERROR
+    key = None
+    try:
+        st = SETTINGS_FILE.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None                 # 文件不存在：走默认值，不缓存
+    if key is not None and _SETTINGS_CACHE["key"] == key:
+        s = dict(_SETTINGS_CACHE["data"])
+        s["dlna_roots"] = list(s.get("dlna_roots") or [])
+        return s
     s = dict(DEFAULT_SETTINGS)
     _SETTINGS_READ_ERROR = ""
     try:
@@ -331,14 +348,19 @@ def load_settings() -> dict:
         # 打包版没有控制台，log.warning 谁也看不见——所以还要把状态传给 save_settings。
         _SETTINGS_READ_ERROR = f"{type(e).__name__}: {e}"
         log.warning("读取设置失败：%s", e)
+        return s                   # 读失败不缓存：下次（及 save_settings）必须重读
     # 兼容历史数据：早期版本会把用户粘进来的引号一起存下来（`"D:\my folder"`），
     # 那个路径永远不存在，DLNA 只会安静地列出空目录——头显里就是"文件夹是空的"，
     # 界面上却显示"已启用"。读的时候顺手修掉，落盘由 _migrate_settings 负责。
+    # （归一化只在缓存未命中时做一次，命中路径直接返回已归一的结果。）
     for k in PATH_KEYS:
         if isinstance(s.get(k), str):
             s[k] = norm_path(s[k])
     if isinstance(s.get("dlna_roots"), list):
         s["dlna_roots"] = [norm_path(x) for x in s["dlna_roots"] if norm_path(x)]
+    if key is not None:
+        _SETTINGS_CACHE["key"] = key
+        _SETTINGS_CACHE["data"] = dict(s)
     return s
 
 
@@ -1336,7 +1358,14 @@ def _download_once(opener, url: str, dest: Path, prog=None) -> None:
             ranged = bool(done) and r.status == 206
             if done and not ranged:
                 done = 0                     # 服务器不支持续传：全量重下
-            total = int(r.headers.get("Content-Length") or 0) + done
+            cl = int(r.headers.get("Content-Length") or 0)
+            if done and cl == 0:
+                # 206 却不带长度头（分块响应）：剩余量未知，无法证明 .part 已完整
+                # ——旧实现此时 total==done，会把半截文件**立刻当完整收货**
+                # （"断点续传 size>0 误判"的根因形态，R68 修复）。连长度都不给的
+                # 服务器，续传协议也没法可靠进行，推倒重下更稳。
+                done = 0
+            total = cl + done
             if total and done >= total:
                 os.replace(part, dest)       # 上次恰好在结尾中断，已完整
                 if prog:
@@ -1514,6 +1543,11 @@ def _merge_safetensor_shards(model_dir) -> None:
     audio.cpp 的 qwen3_asr 只认单文件权重；ModelScope/HF 官方仓对 1.7B 只发
     分片。纯字节拼接（safetensors 格式 = 8 字节头长 + JSON 头 + 数据区），
     不依赖 torch/safetensors 库。合并后删除分片与索引。
+
+    R68 重写为**流式两遍**：第一遍只读各分片的头（KB 级）算输出偏移，第二遍
+    按张量逐块从分片拷进输出——旧实现把全部分片读进内存后再攒一份输出，峰值
+    ≈ 2× 权重（1.7B 约 8.8GB，16GB 内存的机器上与宿主/翻译模型同跑会紧张）。
+    写临时文件 + os.replace：中途被杀只会留下 .tmp，不会留半截成品冒充完整。
     """
     import json as _json
     idx_path = model_dir / "model.safetensors.index.json"
@@ -1523,29 +1557,62 @@ def _merge_safetensor_shards(model_dir) -> None:
     weight_map = idx.get("weight_map") or {}
     if not weight_map:
         return
-    shard_hdrs = {}
-    shard_bytes = {}
-    for name in sorted(set(weight_map.values())):
-        fp = model_dir / name
-        with fp.open("rb") as fh:
-            n = int.from_bytes(fh.read(8), "little")
-            shard_hdrs[name] = _json.loads(fh.read(n))
-            shard_bytes[name] = fh.read()
-    out_hdr = {}
-    out_data = bytearray()
+    # 第一遍：只读头。weight_map 的遍历序是任意的，直接照它拷贝会在同一个
+    # 分片上反复 seek——这里按分片分组、组内按数据偏移排序，第二遍每个分片
+    # 只开一次、基本顺序读。
+    by_shard: dict = {}
     for tname, shard in weight_map.items():
-        meta = shard_hdrs[shard][tname]
-        s0, e0 = meta["data_offsets"]
-        raw = shard_bytes[shard][s0:e0]   # shard_bytes 已是纯数据区（8 字节头长在读取时已消费）
-        out_hdr[tname] = {"dtype": meta["dtype"], "shape": meta["shape"],
-                          "data_offsets": [len(out_data), len(out_data) + len(raw)]}
-        out_data += raw
-    hdr = _json.dumps(out_hdr, separators=(",", ":")).encode("utf-8")
-    hdr += b" " * ((8 - len(hdr) % 8) % 8)   # 头部按 8 字节对齐
-    (model_dir / "model.safetensors").write_bytes(
-        len(hdr).to_bytes(8, "little") + hdr + bytes(out_data))
-    for name in sorted(set(weight_map.values())):
-        fp = model_dir / name
+        by_shard.setdefault(shard, []).append(tname)
+    plan = []          # (shard, data_start, tname, s0, e0, dtype, shape)
+    for shard in sorted(by_shard):
+        with (model_dir / shard).open("rb") as fh:
+            n = int.from_bytes(fh.read(8), "little")
+            hdr = _json.loads(fh.read(n))
+        data_start = 8 + n
+        entries = []
+        for tname in by_shard[shard]:
+            meta = hdr[tname]
+            s0, e0 = meta["data_offsets"]
+            entries.append((tname, s0, e0, meta["dtype"], meta["shape"]))
+        entries.sort(key=lambda x: x[1])
+        plan.extend((shard, data_start) + e for e in entries)
+    out_hdr = {}
+    off = 0
+    for _, _, tname, s0, e0, dtype, shape in plan:
+        out_hdr[tname] = {"dtype": dtype, "shape": shape,
+                          "data_offsets": [off, off + (e0 - s0)]}
+        off += e0 - s0
+    hdr_bytes = _json.dumps(out_hdr, separators=(",", ":")).encode("utf-8")
+    hdr_bytes += b" " * ((8 - len(hdr_bytes) % 8) % 8)   # 头部按 8 字节对齐
+    out_path = model_dir / "model.safetensors"
+    tmp_path = model_dir / "model.safetensors.tmp"
+    with tmp_path.open("wb") as out:
+        out.write(len(hdr_bytes).to_bytes(8, "little"))
+        out.write(hdr_bytes)
+        # 第二遍：流式拷贝，峰值内存 = 一个 4MB 块
+        cur_shard, f = None, None
+        try:
+            for shard, data_start, tname, s0, e0, _dt, _sh in plan:
+                if shard != cur_shard:
+                    if f is not None:
+                        f.close()
+                    f = (model_dir / shard).open("rb")
+                    cur_shard = shard
+                f.seek(data_start + s0)
+                remaining = e0 - s0
+                while remaining:
+                    chunk = f.read(min(4 * 1024 * 1024, remaining))
+                    if not chunk:
+                        raise RuntimeError(
+                            f"分片 {shard} 数据提前结束（张量 {tname} 还差 {remaining} 字节）")
+                    out.write(chunk)
+                    remaining -= len(chunk)
+        finally:
+            if f is not None:
+                f.close()
+    os.replace(tmp_path, out_path)
+    for shard in sorted(by_shard):
+        fp = model_dir / shard
         if fp.exists():
             fp.unlink()
     if idx_path.exists():

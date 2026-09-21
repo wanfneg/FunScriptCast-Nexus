@@ -29,6 +29,8 @@ import threading
 
 import numpy as np
 
+from text_filters import join_tokens
+
 SR = 16000
 
 # realtime-subtitle 的切句口径（R61/R62 与参考项目对齐的那套默认值）
@@ -244,8 +246,11 @@ def align_segments_to_groups(segs: list, groups_ms: list,
         if not bucket:
             continue
         bucket.sort(key=lambda s: s.get("start_ms") or 0)
+        # join_tokens（R68 审查修复）：中日文直接相连，英文/数字之间补空格——
+        # 旧实现 "".join 会把英语 hybrid 模式同组的两段粘成 "helloworld"。
         out.append({"start_ms": int(ga), "end_ms": int(gb),
-                    "text": "".join((s.get("text") or "") for s in bucket).strip()})
+                    "text": join_tokens([(s.get("text") or "").strip()
+                                         for s in bucket]).strip()})
     out.extend(loose)
     return sorted(out, key=lambda s: s.get("start_ms") or 0)
 
