@@ -48,7 +48,7 @@ typing-inspection==0.4.4(MIT) typing_extensions==4.16.0(MIT) uvicorn==0.53.0(BSD
 | Qwen3-ASR-0.6B / 1.7B（识别模型） | Apache-2.0 | ModelScope: Qwen/Qwen3-ASR-* |
 | Sakura-7B / 1.5B GGUF（日译模型） | Apache-2.0（以模型卡为准） | HF 镜像/第三方量化仓（catalog 内直链） |
 | Hy-MT2-7B / 1.8B GGUF（英译模型） | **腾讯混元社区许可（非 OSI 自定义许可）**，≤1亿 MAU 免费商用 | ModelScope: Tencent-Hunyuan/Hy-MT2-*-GGUF |
-| llama-runtime-windows.zip | MIT（llama.cpp） | 本项目 GitHub Release（⚠️ zip 内补 MIT 文本，下次重建 release 时带上） |
+| llama-runtime-windows.zip | MIT（llama.cpp） | 本仓库 GitHub Releases（zip 已含 MIT + LLVM-OpenMP 许可文本） |
 | silero VAD | MIT | 随 audiocpp 运行时的 assets 分发 |
 
 ⚠️ 若分发形态从"引导用户自行下载"改为"打包进安装介质"，需重新评估（尤其混元社区许可）。

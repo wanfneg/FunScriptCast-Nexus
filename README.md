@@ -19,7 +19,7 @@
 面向 VR 观影的 PC 端控制中枢：**DLNA 媒体服务 + AI 实时字幕 + 设备同步**，一个窗口、一个托盘。
 
 - 源码仓库（私有）：<https://github.com/wanfneg/FunScriptCast-Nexus>
-- 安装包下载（公开）：<https://github.com/wanfneg/FunScriptCast-Nexus-Release/releases/latest>
+- 安装包下载：[Releases](https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest)
 
 原 `VR-DLNA` 与 `Subtitle Server` 两个独立项目已 vendor 进本仓库（`vendor\dlna`、`vendor\subtitle`）。
 
@@ -41,7 +41,7 @@
 
 ## 下载与安装（普通用户看这里）
 
-从 [Releases](https://github.com/wanfneg/FunScriptCast-Nexus-Release/releases/latest) 下载 `FunScriptCast-Nexus-Setup-*.exe`：
+从 [Releases](https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest) 下载 `FunScriptCast-Nexus-Setup-*.exe`：
 
 1. 安装向导选目录——**选空间充足的盘**（模型以十 GB 计），别用系统盘；
 2. 启动后进「识别与翻译」卡下载识别模型 + 翻译模型（下载完自动切换配置）；
@@ -159,8 +159,8 @@ powershell -ExecutionPolicy Bypass -File build\build_installer.ps1 # 串联 ISCC
 | 升级安装 | 同 AppId 沿用目录，只覆盖程序文件（约 110MB），`data\ models\ logs\` 不动 |
 | 降级保护 | 旧包默认拦下；运行中升级由互斥量引导先关程序 |
 
-发行：安装包发布到公开仓库 wanfneg/FunScriptCast-Nexus-Release（源码仓私有，其 release 资产对外
-404，所以分发走独立公开仓）。`tools\fetch_llama.ps1` / `tools\fetch_audiocpp.ps1` 从该仓库
+发行：安装包与两个运行时 zip 发布到**本仓库 Releases**（2026-09-22 起源码与分发同仓，
+单一项目）。`tools\fetch_llama.ps1` / `tools\fetch_audiocpp.ps1` 从该仓库
 复现两个运行时目录。构建前 `adb kill-server`（构建期文件锁死过一回）。
 
 ## API（宿主 :8790，节选）

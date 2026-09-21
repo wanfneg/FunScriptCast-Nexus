@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $dst = Join-Path $root 'vendor\audiocpp'
 $marker = Join-Path $dst '.fetched'
-$Url = 'https://github.com/wanfneg/FunScriptCast-Nexus-Release/releases/latest/download/audiocpp-runtime-windows-cpu.zip'
+$Url = 'https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest/download/audiocpp-runtime-windows-cpu.zip'
 
 if ((Test-Path $marker) -and -not $Force) {
     Write-Host "已完成（标记 $marker 内容 $((Get-Content $marker -Raw))）。-Force 可重下。"

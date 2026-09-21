@@ -1233,7 +1233,7 @@ MODELS_CATALOG = [
         "size_gb": 0.8,
         "files": [
             {"rel": "llama-runtime-windows.zip",
-             "url": "https://github.com/wanfneg/FunScriptCast-Nexus-Release/releases/latest/download/llama-runtime-windows.zip"},
+             "url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest/download/llama-runtime-windows.zip"},
         ],
     },
     {
