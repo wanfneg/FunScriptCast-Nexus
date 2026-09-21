@@ -2411,3 +2411,22 @@ vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；
 **参考痕迹全扫（用户点名要做）**：代码/注释里提及的第三方共 5 个——realtime-subtitle(MIT，参考最深：实现逻辑复现+思路，文件内均注明出处)、**VideoCaptioner(GPL-3.0！仅思路参考：批量JSON+键校验+兜底模式，零代码搬运→不构成衍生，已记台账)**、sub-title(MIT，RMS切分思路)、auto-caption(MIT，纯调研)、LiveSubtitles(GPL-2.0，纯调研无代码交叉)。**意外收获：Lucide 图标是逐字官方 svg 而非手绘（index.html:14 有记载），上一轮报告按"手绘"认定有误——已补 ISC 许可并在报告里纠错**。
 
 **遗留**：llama-runtime-windows.zip release 资产（GitHub 公开）内无 LICENSE 文本——fetch_llama.ps1 已修但需**下次重建 release 时重新上传**才对已分发出去的旧 zip 生效（改公开 release 资产需用户点头）；audiocpp（Apache-2.0）纳入分发前需附许可。
+
+---
+
+## R70 全新安装链路打通（7e357ce，已推 GitHub + 公网 release 发布 Setup-1.0.30）
+
+**回答"用户下载 .exe→网络下模型→能用吗"：此前不能，现在能（真·外来机模拟全绿）。**
+
+**三个缺口与修复**：
+1. **audio.cpp ASR 运行时从未进过分发链**（不在安装包、不可下载、模板写死 E:/audiocpp-portable）→ 修复：官方 v0.7.4 CPU 构建（+silero assets+LICENSE）打进安装包（27MB zip/64MB 内容），vendor/audiocpp 入 gitignore，tools/fetch_audiocpp.ps1 拉取，zip 传公开发行仓库。⚠️ **E 盘便携包的 cpu/ 是 7 月老构建（8.9MB），qwen3_asr 不认 streaming 注册→500 "currently supports offline sessions"**；gpu/ 是 9-13 的 v0.7.4（26.9MB）。教训：**cpu/gpu 构建版本可能不同步，捆绑前必须实测转录**。
+2. **llama-runtime 下载条目在重建 catalog 时误删**（zip 处理代码成死代码）→ 从 git 历史考古原样恢复（role=translate-runtime, kind=zip, 公开仓 llama-runtime-windows.zip）。
+3. **公网安装包脱节**（Setup-1.0.20 = whisper 时代）→ 发布 Setup-1.0.30（80MB，Inno 排除 vendor/llama 后从 434MB 降下来），撤 1.0.20。
+
+**附带真 bug（真语音探针抓的）**：R68 把 HybridBuffer 构造挪进 _get_hybrid_buffer 时漏带 import → NameError → 混合切句 500，且 /health 全绿看不出来——**D 盘自 R68 起转录实际是坏的，直到本次探针**。教训：/health 只验"活着"，上线验证必须发真实音频。
+
+**CPU vs GPU 实测数据（用户问询）**：质量完全一致（同权重）；速度 GPU 显著更快但 CPU 热稳态 ~2.4-3s/8s 块（12-23 线程，rtf≈0.3）可接受；⚠️ 模板曾写 threads:1 → 单线程 21-41s/块，已删键吃默认（核数-1）。首次请求另付一次模型惰性加载（CPU 冷加载数十秒）。**省出 ~1.3GB 显存给翻译**。D 盘实机已切 cpu+vendor/audiocpp（活配置），不爽可改回 cuda+E 盘路径。
+
+**真·外来机模拟（build/sim-machine，已清理）**：独立端口(18790/18756/18791)+独立目录，无 E 盘依赖——安装形态→catalog 7 条目（llama-runtime 回归）→目录 API 真下载 Sakura-1.5B（90s，自动切换 config）→mt_warm=True→探针「あのプロデューサー」→「那个制作人……」全绿。
+
+**发行仓库资产现状**（wanfneg/FunScriptCast-Nexus-Release，tag v1.0.20 名字未改）：Setup-1.0.30.exe(80MB) + llama-runtime-windows.zip(627MB, 固定 URL 未动) + audiocpp-runtime-windows-cpu.zip(25.75MB)，三 URL 均已验 200。
