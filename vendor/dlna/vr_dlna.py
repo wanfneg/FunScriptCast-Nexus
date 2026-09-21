@@ -53,7 +53,7 @@ HIDDEN_PREFIXES = (".", "$")
 # 注意：UDN 变更会让已缓存该服务器的客户端（DeoVR 等）重新发现并重建目录树。
 # 若客户端目录显示过期/空文件夹，可更换此 UUID 强制其重建缓存。
 DEVICE_UUID = "a3c9e1f7-4b2d-4e5a-9c8b-1d2e3f4a5b6c"
-SERVER_NAME = "抚物器"
+SERVER_NAME = "FunScriptCast-DLNA"
 SERVER_NAME_HTTP = "VR-DLNA"  # 协议头必须 ASCII
 DLNA_FLAGS = "01700000000000000000000000000000"
 
@@ -1575,11 +1575,11 @@ class DlnaApp:
   <device>
     <dlna:X_DLNADOC>DMS-1.50</dlna:X_DLNADOC>
     <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
-    <friendlyName>抚物器</friendlyName>
-    <manufacturer>抚物器</manufacturer>
+    <friendlyName>FunScriptCast-DLNA</friendlyName>
+    <manufacturer>FunScriptCast-DLNA</manufacturer>
     <manufacturerURL>http://localhost</manufacturerURL>
     <modelDescription>Lightweight DLNA MediaServer for cloud-mounted VR video folders</modelDescription>
-    <modelName>抚物器</modelName>
+    <modelName>FunScriptCast-DLNA</modelName>
     <modelNumber>1.0</modelNumber>
     <UDN>uuid:{DEVICE_UUID}</UDN>
     <serviceList>
