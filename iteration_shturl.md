@@ -2396,3 +2396,18 @@ vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；
 **验证**：py_compile 全过；单测 17+2 全过（新增 merge 两例+对齐器英文例）；use_model 拒绝不存在路径烟测 ✓；D 盘实机重启后 asr_ready=True、segmentation=hybrid、**mt_warm=True（改过的 LlamaBackend 启动链路实测正常）**、vram_estimate 正确、版本 1.0.29。
 
 **遗留**（审查时发现、本次未动）：_transcribe_span echo 重试的异常吞掉不打类别；reap_orphan_audiocpp 与字幕服务自启的理论竞态（实践不可达）；catalog 无 per-file 期望大小（下载完整性靠 Content-Length 判定，已加固）。
+
+---
+
+## R69 开源许可合规审查 + 整改（685896f，报告 docs/开源许可合规审查-R69.md）
+
+**审查结论**：无 GPL 代码复制进自有源码；两个发行物问题（zhconv GPLv2+ 被 free_translators 可选 import、PyAV 捆绑 FFmpeg LGPL DLL 零引用）+ 一批缺许可证文本。
+
+**整改落地**：
+1. runtime 卸载 zhconv/av/faster-whisper/ctranslate2/onnxruntime/tokenizers/sympy/mpmath/flatbuffers/coloredlogs/humanfriendly（**239MB**；embeddable 无 pip，按目录+dist-info 手删，注意 .pth/egg-info/isympy.py 残留变体）。卸后烟测 asr_ready/mt_warm 全绿 ✓。
+2. 许可证文本补齐（全部逐字取自上游 raw 正本，不手抄）：tools/adb Apache-2.0+NOTICE、ui/fonts×3 OFL-1.1、ui Lucide ISC、vendor/llama llama.cpp MIT（E:/dist-app/D 三处落盘 + **fetch_llama.ps1 重建时自动写入**——治本，因为 vendor/llama 是 gitignore 的）。
+3. docs/THIRD-PARTY-NOTICES.md 建账（分发物/runtime 29 包/运行时下载/参考项目台账）；requirements.txt 删 torch/qwen-asr 陈旧说明。
+
+**参考痕迹全扫（用户点名要做）**：代码/注释里提及的第三方共 5 个——realtime-subtitle(MIT，参考最深：实现逻辑复现+思路，文件内均注明出处)、**VideoCaptioner(GPL-3.0！仅思路参考：批量JSON+键校验+兜底模式，零代码搬运→不构成衍生，已记台账)**、sub-title(MIT，RMS切分思路)、auto-caption(MIT，纯调研)、LiveSubtitles(GPL-2.0，纯调研无代码交叉)。**意外收获：Lucide 图标是逐字官方 svg 而非手绘（index.html:14 有记载），上一轮报告按"手绘"认定有误——已补 ISC 许可并在报告里纠错**。
+
+**遗留**：llama-runtime-windows.zip release 资产（GitHub 公开）内无 LICENSE 文本——fetch_llama.ps1 已修但需**下次重建 release 时重新上传**才对已分发出去的旧 zip 生效（改公开 release 资产需用户点头）；audiocpp（Apache-2.0）纳入分发前需附许可。
