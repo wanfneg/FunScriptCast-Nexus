@@ -2375,3 +2375,24 @@ Hy-MT2 翻译全部出中文 ✓；日语多块喂入 → お疲れ様です/ラ
 vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；英语/日语音频实测均正常。
 ⚠️ /api/state 的 version 显示 1.0.19 = exe 内嵌的陈旧版本常量（nexus.spec 未随版本更新），
 纯显示问题记录备查。
+
+---
+
+## R68 代码审查 11 项全修（69f9158 + 版本提交，已部署 D 盘 1.0.29/30）
+
+**全量精读**（server_app/hybrid_segmenter/translate_engine/llama_backend/audiocpp_backend/stream_bridge/text_filters/host_server 全部）后发现并修复：
+
+**P1 新装机"双语全断"链（三件叠加）**：
+1. **出厂模板 model_by_lang.en 路径少一层目录**（`../../models/Hy-MT2-7B-Q4_K_M.gguf` → 实际落盘在 `Hy-MT2-7B/` 子目录）——新装机下载 Hy-MT2 后第一句英语即触发切模型→路径不存在→翻译全死。D 盘活配置当时已手修，模板一直带病。已补目录层（仓库+dist-app 同步覆盖）。
+2. **llama_backend 的 Job Object 是 audiocpp 修两个 bug 前的旧拷贝**：① CreateJobObjectW 未声明 restype（句柄 ≥2^31 截断→保护静默失效）② stop_server 只置 None 不 CloseHandle（每次启停泄漏内核句柄；按语言热切换=每次切语言泄漏一次）。已把 audiocpp 版实现整体搬齐。
+3. **use_model 无验证无回滚**：切前不查文件存在、切后不验加载。已加存在性校验（拒绝切换+沿用当前模型）+ ensure 失败自动回滚上一模型（新模型跑顺后回滚点作废）。
+
+**P2**：④ hybrid 段拼接 `"".join`→join_tokens（英文 hybrid 会粘成 helloworld；对齐器单测加英文用例）；⑤ partial 临时稿不写 _LAST_CTX（半句话污染定稿翻译的人称衔接）+ 2s 节流（连续说话时省 ~一半 partial ASR）；⑥ 下载器秒完成判定要求 Content-Length（206 无长度头时 total==done 会把半截 .part 当完整收货——R66.1"size>0 误判"的根因形态）；⑦ 分片合并改流式两遍（峰值 2×权重≈8.8GB→4MB 块；写 .tmp+os.replace 防半截成品；tests/test_merge_shards.py 交错分片守护）。
+
+**P3**：⑧ 拆 MT 死上下文管道（ctx_note 精心构造→_mt_once 里 prefix="" 弃用——参数接了不用，docstring 还宣称有效）；⑨ _HYBRID/_HYBRID_VAD 懒初始化加锁；⑩ load_settings (mtime_ns,size) 缓存（一轮询 3~4 次全量读盘；读失败不缓存保 save_settings 自保逻辑）。
+
+**⚠️ 纠正 R66.1 的一条错误记录**：侧栏 v1.0.19 **不是**"exe 内嵌常量（nexus.spec）"——nexus.spec 里根本没有版本常量；真因是 **D 盘安装目录的 version.json 文件从 1.0.19 起从未被更新过**（app.js 每次从 /api/state → APP_DIR/version.json 现读）。本次部署覆盖 version.json 后实机显示 1.0.29 ✓。教训：**D 盘部署清单必须含 version.json**（此前只记得 exe/vendor/ui）。
+
+**验证**：py_compile 全过；单测 17+2 全过（新增 merge 两例+对齐器英文例）；use_model 拒绝不存在路径烟测 ✓；D 盘实机重启后 asr_ready=True、segmentation=hybrid、**mt_warm=True（改过的 LlamaBackend 启动链路实测正常）**、vram_estimate 正确、版本 1.0.29。
+
+**遗留**（审查时发现、本次未动）：_transcribe_span echo 重试的异常吞掉不打类别；reap_orphan_audiocpp 与字幕服务自启的理论竞态（实践不可达）；catalog 无 per-file 期望大小（下载完整性靠 Content-Length 判定，已加固）。
