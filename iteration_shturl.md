@@ -2430,3 +2430,5 @@ vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；
 **真·外来机模拟（build/sim-machine，已清理）**：独立端口(18790/18756/18791)+独立目录，无 E 盘依赖——安装形态→catalog 7 条目（llama-runtime 回归）→目录 API 真下载 Sakura-1.5B（90s，自动切换 config）→mt_warm=True→探针「あのプロデューサー」→「那个制作人……」全绿。
 
 **发行仓库资产现状**（wanfneg/FunScriptCast-Nexus-Release，tag v1.0.20 名字未改）：Setup-1.0.30.exe(80MB) + llama-runtime-windows.zip(627MB, 固定 URL 未动) + audiocpp-runtime-windows-cpu.zip(25.75MB)，三 URL 均已验 200。
+
+**R70 追加（Release 仓库收尾，用户点名）**：v1.0.30 release 重建（tag/标题/说明与资产一致，含完整发布说明），三资产（Setup-1.0.30 80MB / llama-runtime 627MB / audiocpp-cpu 26MB）全部迁入并验 latest/download URL 200；旧 v1.0.18/1.0.19/1.0.20 连 tag 一并撤下（1.0.19 是已知致命 bug 版）。627MB 资产搬家走 gh CLI 认证通道（curl 直连会被重置——与下载器双通道教训同源）。
