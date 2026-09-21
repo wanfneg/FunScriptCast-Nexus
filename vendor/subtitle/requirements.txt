@@ -1,6 +1,12 @@
-# 说明：torch 必须从 CUDA 源装（PyPI 的 Windows wheel 是 CPU 版）：
-#   uv pip install --python .venv/Scripts/python.exe torch --index-url https://download.pytorch.org/whl/cu128
-# 下面这些走普通 PyPI / 清华源即可。
-qwen-asr
-modelscope
+# 字幕服务运行依赖（R69 更新：R58 删 PyTorch 引擎后只剩这三个 + 标准库）。
+# 打包版用的是安装目录 runtime\（embeddable Python），本文件仅供源码环境重建用。
+fastapi
+uvicorn
 numpy
+#
+# 历史备注：
+#   · torch 曾从 CUDA 源装（PyPI 的 Windows wheel 是 CPU 版）——R58 起识别引擎
+#     只有 audiocpp（外部 audio.cpp 常驻进程），torch/qwen-asr/modelscope 全部退役。
+#   · zhconv（GPLv2+）曾用于免费兜底翻译的繁→简归一，R69 合规整改时从发行
+#     runtime 移除；free_translators._to_hans 有 ImportError 降级，源码环境想用
+#     可自行 pip install zhconv（GPL，注意许可义务）。

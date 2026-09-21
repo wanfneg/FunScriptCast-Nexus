@@ -31,8 +31,9 @@ import urllib.request
 
 def _to_hans(text: str) -> str:
     """繁体→简体归一：免费后端（Google/Bing）偶发输出繁体（实测全片 1 句
-    "有時候覺得…"）。zhconv 为可选依赖：未安装时原样返回。已经是简体的
-    文本经 zh-cn 转换是无操作。"""
+    "有時候覺得…"）。zhconv 为可选依赖（R69 合规整改：GPLv2+ 许可，已从发行
+    runtime 移除）——未安装时原样返回。免费兜底默认关闭，影响面仅限显式
+    开启兜底且上游输出繁体的少数句子。已经是简体的文本经 zh-cn 转换是无操作。"""
     try:
         from zhconv import convert
     except ImportError:

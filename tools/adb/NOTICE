@@ -1,0 +1,5 @@
+Android platform-tools (adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll)
+Copyright (C) The Android Open Source Project
+
+本目录的二进制来自 Android platform-tools 官方发布，按 Apache License 2.0
+（见同目录 LICENSE.txt）再分发。上游：https://developer.android.com/tools/releases/platform-tools

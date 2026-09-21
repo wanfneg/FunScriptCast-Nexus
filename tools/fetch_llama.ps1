@@ -110,6 +110,34 @@ try {
         Write-Host "      $n"
     }
 
+    # R69 合规：上游 zip 不带 LICENSE，MIT 要求再分发时保留版权与许可声明。
+    # 下载 zip → 解压 → 手写许可证文本进目录，运行时 zip 与 vendor\llama 永远自带。
+    $licPath = Join-Path $dst 'LICENSE-llama.cpp'
+    @'
+MIT License
+
+Copyright (c) 2023 Georgi Gerganov
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+'@ | Set-Content -Path $licPath -Encoding UTF8
+    Write-Host "      已写入 llama.cpp MIT 许可文本（LICENSE-llama.cpp）"
+
     Write-Host "[5/6] 自检" -ForegroundColor Cyan
     if (-not (Test-Path $exe)) { throw "解压后仍缺 llama-server.exe：$exe" }
     foreach ($n in $needFiles) {
