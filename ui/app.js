@@ -598,6 +598,26 @@
     });
   }
 
+  /* 识别模型下拉（R72）：选项来自 /api/subtitle/asr-models（服务端扫描 models\
+     下支持格式），本地没有的模型不出现在选项里。 */
+  function fillAsrModelSelect(current) {
+    var sel = $("#asrModel");
+    if (!sel) return;
+    api("/api/subtitle/asr-models").then(function (r) {
+      if (busyEditing(sel)) return;
+      var models = (r && r.ok) ? (r.models || []) : [];
+      sel.innerHTML = "";
+      models.forEach(function (m) {
+        var o = document.createElement("option");
+        o.value = m.value;
+        o.textContent = m.name;
+        sel.appendChild(o);
+      });
+      sel.value = models.some(function (m) { return m.value === current; }) ? current : "";
+      S.asrModelPrev = sel.value;
+    });
+  }
+
   /* ---------- 模型下载：识别 / 翻译模型缺什么下什么（走 hf-mirror，宿主负责） ---------- */
   var MODEL_NAMES = {
     "qwen3-asr-0.6b": "识别模型 · Qwen3-ASR-0.6B（显存约 1.3GB）",
@@ -674,11 +694,9 @@
       var asrSel = $("#asrBackend");
       asrSel.value = "audiocpp";   // R65：whisper 转录已剔除，引擎仅 audiocpp
       S.asrBackendPrev = asrSel.value;   // 引擎即改即存，失败时弹回这个值
-      /* 识别模型档位（R66）：audiocpp.model 路径含 1.7B 即高精度档 */
-      var ac = asr.audiocpp || {};
-      var tier = String(ac.model || "").indexOf("1.7B") >= 0 ? "1.7b" : "0.6b";
-      var tierSel = $("#asrModelTier");
-      if (tierSel && !busyEditing(tierSel)) tierSel.value = tier;
+      /* 识别模型下拉（R72）：只列 models\ 下实际存在的 qwen3_asr 模型，本地
+         没有的不出现；配置指向的模型不在列表时保持空选，不静默改配置。 */
+      fillAsrModelSelect(String((asr.audiocpp || {}).model || ""));
       // 兜底必须与 index.html 里 <select> 的首项一致（local）。写成 "ollama" 的话，
       // 配置里 backend 为空时会把选择器指向 Ollama，用户一保存就把后端切成
       // 本地根本没在跑的 Ollama（翻译整条挂掉）。
@@ -887,15 +905,17 @@
         box.innerHTML = lines.map(function (s) { return "<div>" + esc(s) + "</div>"; }).join("");
       });
     });
-    /* 识别引擎即改即存（选错自动弹回）；其余识别参数不进界面 */
-    $("#asrModelTier").addEventListener("change", function () {
-      var sel = this, tierPath = sel.value === "1.7b"
-        ? "../../models/Qwen3-ASR-1.7B" : "../../models/Qwen3-ASR-0.6B";
-      api("/api/subtitle/config", "POST", { asr: { audiocpp: { model: tierPath } } }).then(function (r) {
+    /* 识别模型/引擎即改即存（失败弹回上一个值）；其余识别参数不进界面 */
+    $("#asrModel").addEventListener("change", function () {
+      var sel = this, val = sel.value, prev = S.asrModelPrev || "";
+      if (!val || val === prev) return;
+      api("/api/subtitle/config", "POST", { asr: { audiocpp: { model: val } } }).then(function (r) {
         if (r.ok) {
-          toast("识别模型已保存", "字幕服务正在重启以加载 " + (sel.value === "1.7b" ? "1.7B" : "0.6B"), "ok");
+          S.asrModelPrev = val;
+          toast("识别模型已保存", "字幕服务正在重启以加载 " + (sel.options[sel.selectedIndex] || {}).text, "ok");
           restartSubForConfig();
         } else {
+          sel.value = prev;
           toast("保存失败", r.error || "", "err");
         }
       });

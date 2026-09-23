@@ -1909,6 +1909,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(subtitle_config())
             elif path == "/api/subtitle/models":
                 self._json(subtitle_models())
+            elif path == "/api/subtitle/asr-models":
+                self._json(asr_models())
             elif path == "/api/models/catalog":
                 self._json(models_catalog_payload())
             elif path in ("/", "/index.html"):
@@ -2147,6 +2149,34 @@ class HeadsetHandler(BaseHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------- 字幕服务配置
+def asr_models() -> dict:
+    """枚举可选的识别模型：扫描 models\ 下支持格式（R72）。
+
+    支持格式 = audio.cpp qwen3_asr 吃的 HF 单文件形态——目录含
+    model.safetensors + config.json，且 config 顶层 model_type 是
+    qwen3_asr。用户自己下载的更好模型放进 models\ 即出现在下拉里，
+    不受内置目录清单约束；清单里的模型本地没有同样不出现。
+    value 与 config 既有格式一致（相对 vendor\subtitle 的路径），
+    选什么存什么，引擎侧零改动。
+    """
+    out = []
+    if MODELS_DIR.exists():
+        for d in sorted(MODELS_DIR.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            cfg_file = d / "config.json"
+            if not ((d / "model.safetensors").is_file() and cfg_file.is_file()):
+                continue
+            try:
+                mt = str((json.loads(cfg_file.read_text(encoding="utf-8")) or {}).get("model_type") or "")
+            except Exception:
+                continue
+            if mt != "qwen3_asr":
+                continue
+            out.append({"name": d.name, "value": "../../models/" + d.name})
+    return {"ok": True, "models": out}
+
+
 def subtitle_models() -> dict:
     """枚举安装目录 models\ 下的 GGUF（UI 本地翻译模型下拉的数据源）。
 

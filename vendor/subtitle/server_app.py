@@ -385,6 +385,21 @@ def _tier_mb(path: str) -> int:
     for key, mb in _VRAM_TIERS:
         if key.lower() in low:
             return mb
+    # 清单外自装模型（R72）：档表没命中就按模型文件实际大小估（+~10% 运行开销）。
+    # 识别是模型目录里的单文件；翻译可能是目录也可能是裸 GGUF 文件。
+    try:
+        p = (Path(__file__).resolve().parent / str(path or "")).resolve()
+        if p.is_file():
+            return int(p.stat().st_size / (1024 * 1024) * 1.1)
+        f = p / "model.safetensors"
+        if not f.is_file():
+            ggufs = sorted(p.glob("*.gguf")) if p.is_dir() else []
+            if not ggufs:
+                return 0
+            f = ggufs[0]
+        return int(f.stat().st_size / (1024 * 1024) * 1.1)
+    except Exception:
+        pass
     return 0
 
 

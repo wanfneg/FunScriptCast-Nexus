@@ -427,10 +427,8 @@
             </label>
             <label class="field">
               <span>识别模型</span>
-              <select class="input" id="asrModelTier">
-                <option value="0.6b">Qwen3-ASR-0.6B（显存约 1.3GB）</option>
-                <option value="1.7b">Qwen3-ASR-1.7B（显存约 3.6GB，转录质量更高）</option>
-              </select>
+              <!-- 选项由 app.js 按 /api/subtitle/asr-models 动态填：只列 models\ 下实际存在的模型（R72） -->
+              <select class="input" id="asrModel"></select>
             </label>
             <label class="field">
               <span>翻译后端</span>
