@@ -2482,3 +2482,15 @@ vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；
 用户截图抓到：弹窗从页面加载起就半透明悬在仪表盘上且拦截全屏点击。根因一：`.modal-ov{display:flex}` 是作者样式，压过 `hidden` 属性的 UA 规则 → 弹窗常驻（静态默认文案"发现新版本"直接露出）；根因二：`--panel` 本身是 0.024 透明度设计值，弹窗卡片透底。修复：`.modal-ov[hidden]{display:none}` + 卡片换实底 `--raise`（toast 同款）。随后浏览器实测又抓到同族问题：`.btn` 的 display:inline-flex 同样压过 hidden → "下载更新"按钮在"已是最新"态仍然可见——补全局 `[hidden]{display:none !important}` 根治。
 
 ⚠️ 教训（两次踩同一颗雷）：**本工程 hidden 属性会被任何显式设 display 的类压过**，显隐一律走全局 `[hidden]` 规则兜底；**接口全绿 ≠ 界面对**（R68 /health≠能用 的 UI 版）——UI 改动必须真开页面看一眼，本轮用内置浏览器截图验证：仪表盘无遮挡、设置页更新卡检查返回"已是最新 v1.0.35"、按钮/弹窗显隐正确。修复经热修 D 盘 + dist-app + 仓库三处同步（样式改动无需重编 exe，刷新页面即生效）。
+
+---
+
+## R74 移除 adb 路径自定义入口（<hash>，v1.0.36）
+
+用户点名：设备同步页的 adb 路径输入框是"用户自己填本机 adb"时代的设计，如今项目自带 adb（tools/adb/adb.exe 随包分发），这个入口没有存在意义。
+
+实现：
+1. **UI**：删 index.html 的「adb 路径」字段 + app.js 的回填行、change 保存处理器、runSync 落盘清单里的 syncAdbPath；扫描 toast 不再附 adb exe 路径（现在是固定内部细节，展示属噪音）。
+2. **服务端收口**：`_resolve_adb()` 删掉配置分支，永远返回自带 adb——否则老用户 settings 里存过的 adb_path 还会被静默使用；DEFAULT_SETTINGS 与 PATH_KEYS（路径键白名单）同步移除 adb_path，存量配置里的历史值成为无人读取的死数据（无害，不专门清洗）。
+
+测试：py_compile/node --check 绿；进程内断言 `_resolve_adb()` 恒返回自带路径且文件存在、DEFAULT_SETTINGS/PATH_KEYS 无 adb_path；D 盘 1.0.36 浏览器实测设备同步页无该字段、页面正常。

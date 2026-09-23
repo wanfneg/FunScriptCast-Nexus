@@ -315,7 +315,6 @@ DEFAULT_SETTINGS = {
     "device_folder": "/sdcard/Movies",
     "device_folder_script": "/sdcard/Funscript",
     "device_folder_video": "/sdcard/Movies",
-    "adb_path": "",
     "sync_force_full": False,
     "sync_delete_extra": False,
 }
@@ -414,7 +413,7 @@ def _migrate_settings() -> None:
 
 # 会被当成路径的键：写入前统一规整
 PATH_KEYS = ("script_folder", "video_folder", "device_folder",
-             "device_folder_script", "device_folder_video", "adb_path")
+             "device_folder_script", "device_folder_video")
 # 用户可能带上的引号：半角成对、以及中文输入法的全角引号
 _QUOTES = ('"', "'", "“", "”", "‘", "’")
 
@@ -2460,15 +2459,12 @@ class SyncService:
 
     # ---- 懒加载 vendor 模块 ----
     def _resolve_adb(self) -> str:
-        """adb 只有两个可能：界面填的路径，否则永远是自带的 tools/adb/adb.exe。
+        """adb 永远用自带的 tools/adb/adb.exe（R74 起界面不再有自定义入口，
+        配置里的历史 adb_path 一律无视）。
 
         不做任何系统探测：自带版本经过验证，避免悄悄用上用户机器上
         版本不明/位置不明的 adb。tools/fetch_adb.ps1 负责把 adb 放进来。
         """
-        s = load_settings()
-        p = str(s.get("adb_path") or "").strip()
-        if p:
-            return p
         return str(APP_DIR / "tools" / "adb" / "adb.exe")
 
     def _controller(self, kind: str):

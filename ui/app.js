@@ -426,7 +426,6 @@
       ? ("已连接 · " + (sy.serial || ""))
       : "未连接 · 请先扫描并连接 Quest";
 
-    if (!busyEditing($("#syncAdbPath"))) $("#syncAdbPath").value = sy.adb_path || "";
     if (!busyEditing($("#syncForce"))) $("#syncForce").checked = !!sy.force_full;
     if (!busyEditing($("#syncDelete"))) $("#syncDelete").checked = !!sy.delete_extra;
 
@@ -486,8 +485,7 @@
       renderDeviceList(SY.devices, "");
       if (notify) {
         if (!r.ok) toast("扫描失败", r.error || "adb 不可用", "err");
-        else toast(SY.devices.length ? "发现 " + SY.devices.length + " 台设备" : "未发现设备",
-          r.adb ? r.adb : "");
+        else toast(SY.devices.length ? "发现 " + SY.devices.length + " 台设备" : "未发现设备", "");
       }
       return r;
     });
@@ -501,8 +499,7 @@
     if (btn) btn.disabled = true;
     // 先把这一类别的路径/开关落盘，再发起同步：服务端是按**已保存设置**取的目录，
     // 不等待就 /api/sync/run 会用上一次的旧路径去同步（用户看着新路径、实际同步旧目录）。
-    var ids = ["sync" + cap + "Local", "sync" + cap + "Device", "syncAdbPath",
-               "syncForce", "syncDelete"];
+    var ids = ["sync" + cap + "Local", "sync" + cap + "Device", "syncForce", "syncDelete"];
     flushSettings(ids).then(function () {
       // 有保存失败的项就别开工：此时屏幕上的值和真正会执行的目录不一致，
       // 硬跑下去等于"按用户没确认过的路径"同步（甚至删除多余文件）。
@@ -965,10 +962,6 @@
     });
     $("#syncRunScript").addEventListener("click", function () { runSync("script"); });
     $("#syncRunVideo").addEventListener("click", function () { runSync("video"); });
-    $("#syncAdbPath").addEventListener("change", function () {
-      markDirty(this);
-      saveSetting("syncAdbPath", "adb_path", this.value.trim());
-    });
     $("#syncForce").addEventListener("change", function () {
       markDirty(this);
       saveSetting("syncForce", "sync_force_full", this.checked);
