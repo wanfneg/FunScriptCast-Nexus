@@ -408,7 +408,8 @@ html[data-motion="reduced"] .brand-mark{ animation-duration:24s; }
 
 .stack{ margin-top:16px; }
 .span-2{ grid-column:1 / -1; }
-.grid{ display:grid; gap:16px; align-items:start; }
+/* 同一行卡片拉伸到等高（缺省 stretch）：内容多寡不同也要底边平齐（R75） */
+.grid{ display:grid; gap:16px; }
 .g2{ grid-template-columns:repeat(2,minmax(0,1fr)); }
 /* 不对称分栏：内容量差得多的两块并排时，1:1 会显得两边都空 */
 .g2b{ grid-template-columns:minmax(0,1.45fr) minmax(0,1fr); }

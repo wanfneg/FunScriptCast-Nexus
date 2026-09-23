@@ -430,7 +430,8 @@
               <!-- 选项由 app.js 按 /api/subtitle/asr-models 动态填：只列 models\ 下实际存在的模型（R72） -->
               <select class="input" id="asrModel"></select>
             </label>
-            <label class="field">
+          </div>
+          <label class="field">
               <span>翻译后端</span>
               <select class="input" id="mtBackend">
                 <option value="local">本地 · llama.cpp</option>
@@ -438,8 +439,7 @@
                 <option value="ollama">本地 · Ollama</option>
                 <option value="none">关闭翻译</option>
               </select>
-            </label>
-          </div>
+          </label>
 
             <!-- 本地（llama.cpp）：只显示这一组 -->
             <div class="mt-group" data-mt-group="local">
@@ -521,17 +521,19 @@
             </div>
             <span class="badge" id="syncDevBadge">未连接</span>
           </div>
-          <div class="grid g2 gap-3 top-3">
-            <label class="field">
-              <span>选择设备</span>
-              <select class="input mono" id="syncDeviceSel"></select>
-            </label>
-          </div>
-          <div class="row flush top-1">
-            <div class="grow"><div class="name">全量同步（忽略增量判断）</div></div>
-            <label class="switch"><input type="checkbox" id="syncForce"><span class="track"></span><span class="knob"></span></label>
-            <div class="grow gap-l"><div class="name">删除设备上多余文件</div></div>
-            <label class="switch"><input type="checkbox" id="syncDelete"><span class="track"></span><span class="knob"></span></label>
+          <label class="field top-3">
+            <span>选择设备</span>
+            <select class="input mono" id="syncDeviceSel"></select>
+          </label>
+          <div class="grid g2 gap-3 top-1">
+            <div class="row flush">
+              <div class="grow"><div class="name">全量同步（忽略增量判断）</div></div>
+              <label class="switch"><input type="checkbox" id="syncForce"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">删除设备上多余文件</div></div>
+              <label class="switch"><input type="checkbox" id="syncDelete"><span class="track"></span><span class="knob"></span></label>
+            </div>
           </div>
         </div>
 
