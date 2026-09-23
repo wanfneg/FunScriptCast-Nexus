@@ -1043,6 +1043,43 @@
       markDirty(this);
       saveSetting("setCloseTray", "close_to_tray", this.checked);
     });
+
+    /* 更新（R73）：手动检查 / 状态区按钮 / 弹窗按钮 */
+    $("#chkUpdate").addEventListener("click", function () {
+      var btn = this;
+      btn.disabled = true;
+      api("/api/update/check", "POST").then(function (r) {
+        btn.disabled = false;
+        if (!r || !r.ok) { toast("检查更新失败", (r && r.error) || "网络不可用", "err"); return; }
+        var st = S.lastState ? JSON.parse(JSON.stringify(S.lastState)) : {};
+        st.update = r;
+        renderUpdate(st);
+      });
+    });
+    $("#updAction").addEventListener("click", function () {
+      var u = (S.lastState || {}).update || {};
+      if (u.state === "ready") {
+        api("/api/update/install", "POST").then(function (r) {
+          if (!r || !r.ok) toast("无法安装", (r && r.error) || "", "err");
+        });
+      } else if (u.state === "available") {
+        api("/api/update/download", "POST").then(function (r) {
+          if (r && r.ok) toast("开始下载", "完成后会询问是否安装", "ok");
+          else toast("无法下载", (r && r.error) || "", "err");
+        });
+      }
+    });
+    $("#updModalGo").addEventListener("click", function () {
+      $("#updModal").hidden = true;
+      $("#updAction").click();
+    });
+    $("#updModalLater").addEventListener("click", function () {
+      $("#updModal").hidden = true;
+      if (S.updMode === "download") {
+        var u = (S.lastState || {}).update || {};
+        S.updDismissed = u.latest;   // 本次启动不再弹，设置页仍可手动下载
+      }
+    });
     $("#setStartMin").addEventListener("change", function () {
       markDirty(this);
       saveSetting("setStartMin", "start_minimized", this.checked);
@@ -1145,13 +1182,48 @@
   }
 
   /* ---------------------------------------------------------- 轮询 */
+  /* ---- 更新（R73）：状态渲染 + 弹窗。启动自动检查与手动检查共用一条状态流。 ---- */
+  function renderUpdate(st) {
+    var u = st.update || {};
+    var box = $("#updTitle"), desc = $("#updDesc"), act = $("#updAction");
+    if ($("#updCurrent")) $("#updCurrent").textContent = "v" + (u.current || st.version || "—");
+    if (!box) return;
+    if (u.state === "checking") { box.textContent = "正在检查…"; desc.textContent = ""; act.hidden = true; }
+    else if (u.state === "downloading") { box.textContent = "正在下载 v" + (u.latest || "?") + "（" + (u.pct || 0) + "%）"; desc.textContent = "下载完成后可就地安装"; act.hidden = true; }
+    else if (u.state === "ready") { box.textContent = "v" + u.latest + " 安装包已就绪"; desc.textContent = "安装会关闭应用，完成后自动重新启动"; act.hidden = false; act.textContent = "立即安装"; }
+    else if (u.state === "available") { box.textContent = "发现新版本 v" + u.latest; desc.textContent = "当前 v" + (u.current || st.version || "?"); act.hidden = false; act.textContent = "下载更新"; }
+    else if (u.state === "error") { box.textContent = "检查更新失败"; desc.textContent = u.error || "网络不可用"; act.hidden = true; }
+    else if (u.state === "none") { box.textContent = "已是最新版本"; desc.textContent = "当前 v" + (u.current || st.version || "?"); act.hidden = true; }
+    else { box.textContent = "尚未检查"; desc.textContent = "应用启动时会自动检查一次"; act.hidden = true; }
+    /* 弹窗：有新版且本次启动没忽略过 → 提醒；下载完成 → 询问是否就地安装 */
+    if (u.state === "available" && u.has_update && S.updDismissed !== u.latest) {
+      showUpdateModal("发现新版本 v" + u.latest,
+        "当前 v" + (u.current || st.version || "?") + "，可下载更新安装包（约 " +
+        Math.max(1, Math.round((u.size || 0) / 1048576)) + " MB）。安装会关闭应用，完成后自动重启。",
+        "download");
+    } else if (u.state === "ready" && S.updReadyFor !== u.latest) {
+      S.updReadyFor = u.latest;
+      showUpdateModal("安装包已下载完成",
+        "v" + u.latest + " 已就绪。立即安装会关闭应用，安装完成后自动重新启动。", "install");
+    }
+  }
+  function showUpdateModal(title, text, mode) {
+    $("#updModalTitle").textContent = title;
+    $("#updModalText").textContent = text;
+    S.updMode = mode;
+    $("#updModalGo").textContent = mode === "install" ? "立即安装" : "下载更新";
+    $("#updModal").hidden = false;
+  }
+
   function poll(once) {
     api("/api/state").then(function (st) {
       if (st && st.ok) {
         // 渲染异常绝不能吃掉后面的重排定时器：此前 render 抛一次异常，整条轮询链
         // 就永久停摆（数值冻结在最后一帧，只有切标签页或点按钮才能救回来）。
         try {
+          S.lastState = st;          // 此前只被读过从未赋值（updateVramEstimate 一直拿到 undefined）
           render(st);
+          renderUpdate(st);
         } catch (e) {
           console.error("render 失败（已跳过本帧，轮询继续）", e);
         }

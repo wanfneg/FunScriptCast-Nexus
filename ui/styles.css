@@ -728,3 +728,7 @@ html[data-theme="light"] .logbox{ background:#eef2f8; }
 .toast.ok .ic{ color:var(--ok); } .toast.err .ic{ color:var(--bad); } .toast.warn .ic{ color:var(--warn); }
 .toast .tt{ font:600 12.5px/1.4 var(--f-ui); }
 .toast .td{ color:var(--ink-3); font-size:11.5px; margin-top:3px; word-break:break-word; }
+
+/* ---- 更新弹窗（R73） ---- */
+.modal-ov{ position:fixed; inset:0; z-index:90; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.45); }
+.modal-card{ width:min(420px, calc(100vw - 48px)); }

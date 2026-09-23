@@ -664,6 +664,23 @@
           <div class="panel card">
             <div class="panel-head">
               <div>
+                <div class="eyebrow">Update</div>
+                <h2>更新</h2>
+              </div>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">当前版本</div><div class="sub" id="updCurrent">—</div></div>
+              <button class="btn ghost" id="chkUpdate">检查更新</button>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name" id="updTitle">尚未检查</div><div class="sub" id="updDesc">应用启动时会自动检查一次</div></div>
+              <button class="btn primary" id="updAction" hidden>下载更新</button>
+            </div>
+          </div>
+
+          <div class="panel card">
+            <div class="panel-head">
+              <div>
                 <div class="eyebrow">AI Subtitle</div>
                 <h2>AI 字幕</h2>
               </div>
@@ -717,6 +734,23 @@
 </div>
 
 <div class="toasts" id="toasts"></div>
+
+<div class="modal-ov" id="updModal" hidden>
+  <div class="panel card modal-card">
+    <div class="panel-head">
+      <div>
+        <div class="eyebrow">Update</div>
+        <h2 id="updModalTitle">发现新版本</h2>
+      </div>
+    </div>
+    <p class="sub" id="updModalText" style="margin:0 0 12px"></p>
+    <div class="row flush">
+      <div class="grow"></div>
+      <button class="btn ghost" id="updModalLater">稍后</button>
+      <button class="btn primary" id="updModalGo">下载更新</button>
+    </div>
+  </div>
+</div>
 <script src="app.js"></script>
 </body>
 </html>

@@ -1806,6 +1806,7 @@ def state_payload() -> dict:
         "subtitle": sub_state(),
         "translate": sub_translate_stats(),
         "sync": SYNC.public(),
+        "update": _update_status(),
         "gpu": gpu_info(),
         "sys": sys_info(),
         "settings": s,
@@ -1911,6 +1912,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(subtitle_models())
             elif path == "/api/subtitle/asr-models":
                 self._json(asr_models())
+            elif path == "/api/update/check":
+                self._json(update_check())
             elif path == "/api/models/catalog":
                 self._json(models_catalog_payload())
             elif path in ("/", "/index.html"):
@@ -2002,6 +2005,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(save_subtitle_config(body))
             elif path == "/api/models/download":
                 self._json(model_download_start(body))
+            elif path == "/api/update/check":
+                self._json(update_check())
+            elif path == "/api/update/download":
+                self._json(update_download())
+            elif path == "/api/update/install":
+                self._json(update_install())
             elif path == "/api/subtitle/translate-test":
                 self._json(sub_translate_selftest((body.get("text") or "").strip()))
             elif path == "/api/sync/devices":
@@ -2043,6 +2052,140 @@ class ExclusiveHTTPServer(ThreadingHTTPServer):
     """
 
     allow_reuse_address = False
+
+
+# ---------------------------------------------------------------- 应用更新（R73）
+# 启动时后台查一次 + 设置页手动查：对比 GitHub 最新 release 与本地 version.json。
+# 有新版时 UI 弹窗提醒，确认后用既有双通道下载器拉 Setup 安装包，下载完可就地
+# 静默升级（收尾进程等本进程退出后跑安装器，装完自动把应用拉起来）。
+_UPDATE_LOCK = threading.Lock()
+_UPDATE: dict = {"state": "idle"}
+_GH_LATEST_API = "https://api.github.com/repos/wanfneg/FunScriptCast-Nexus/releases/latest"
+_SETUP_RE = re.compile(r"^FunScriptCast-Nexus-Setup-(\d+\.\d+\.\d+)\.exe$")
+
+
+def _ver_tuple(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in str(v).strip().lstrip("vV").split("."))
+    except Exception:
+        return (0,)
+
+
+def _update_status() -> dict:
+    with _UPDATE_LOCK:
+        st = dict(_UPDATE)
+    st["ok"] = True
+    st.setdefault("pct", 0)
+    return st
+
+
+def _parse_release(data: dict) -> tuple:
+    """从 release JSON 取 (最新版本号, Setup 资产 URL, 字节数)。
+
+    版本优先取 Setup 资产文件名（资产与版本一一对应，比 tag 可靠）；
+    没有 Setup 资产就退回 tag 名，URL 留空（无可下载项）。
+    """
+    url, size, latest = "", 0, ""
+    for a in (data.get("assets") or []):
+        m = _SETUP_RE.match(str(a.get("name") or ""))
+        if m:
+            latest = m.group(1)
+            url = str(a.get("browser_download_url") or "")
+            size = int(a.get("size") or 0)
+            break
+    if not latest:
+        latest = str(data.get("tag_name") or "").lstrip("vV")
+    return latest, url, size
+
+
+def update_check() -> dict:
+    """查 GitHub 最新 release 并与本地版本比对（网络失败如实报 error）。"""
+    with _UPDATE_LOCK:
+        if _UPDATE.get("state") == "downloading":
+            return _update_status()
+        _UPDATE.update(state="checking", error="")
+    try:
+        req = urllib.request.Request(_GH_LATEST_API, headers={
+            "User-Agent": "FunScriptCast-Nexus",
+            "Accept": "application/vnd.github+json"})
+        # GitHub 直连常被重置：与下载器同策略，系统代理通道优先
+        with _DL_OPENER_SYSTEM.open(req, timeout=15) as r:
+            latest, url, size = _parse_release(json.loads(r.read().decode("utf-8")))
+    except Exception as e:
+        with _UPDATE_LOCK:
+            _UPDATE.update(state="error", error=f"{type(e).__name__}: {e}")
+        return _update_status()
+    cur = app_version()["name"]
+    has_update = bool(latest) and _ver_tuple(latest) > _ver_tuple(cur)
+    with _UPDATE_LOCK:
+        _UPDATE.update(state="available" if has_update else "none",
+                       latest=latest, current=cur, has_update=has_update,
+                       asset_url=url, size=size, pct=0, file="",
+                       checked_ts=time.time(), error="")
+    return _update_status()
+
+
+def _update_dl_worker(url: str, dest: Path, size: int) -> None:
+    try:
+        def prog(done: int, total: int) -> None:
+            if total:
+                _UPDATE.update(pct=int(done * 100 / total))
+        _download_to_file(url, dest, prog)
+        if size and dest.stat().st_size != size:
+            raise RuntimeError(f"安装包大小不符：本地 {dest.stat().st_size} / 远端 {size}")
+        with _UPDATE_LOCK:
+            _UPDATE.update(state="ready", pct=100, file=str(dest))
+        RT.add_log(f"更新安装包已下载：{dest.name}", "info")
+    except Exception as e:
+        with _UPDATE_LOCK:
+            _UPDATE.update(state="error", error=f"{type(e).__name__}: {e}", pct=0)
+
+
+def update_download() -> dict:
+    """下载检查到的更新安装包到 data/update/（同一时间只允许一个在途）。"""
+    with _UPDATE_LOCK:
+        if _UPDATE.get("state") in ("downloading", "ready"):
+            return _update_status()
+        url = str(_UPDATE.get("asset_url") or "")
+        latest = str(_UPDATE.get("latest") or "")
+        size = int(_UPDATE.get("size") or 0)
+        if not url or not latest:
+            return {"ok": False, "error": "请先检查更新"}
+        dest = DATA_DIR / "update" / f"FunScriptCast-Nexus-Setup-{latest}.exe"
+        _UPDATE.update(state="downloading", pct=0, error="", file=str(dest))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for old in dest.parent.glob("FunScriptCast-Nexus-Setup-*.exe"):
+        if old != dest:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    threading.Thread(target=_update_dl_worker, args=(url, dest, size), daemon=True).start()
+    return _update_status()
+
+
+def update_install() -> dict:
+    """就地静默升级：spawn 托管收尾进程（等本进程退出 → 跑安装器 → 拉起应用），
+    然后走统一退出。开发副本没有安装器形态，拒绝并提示。"""
+    with _UPDATE_LOCK:
+        st = dict(_UPDATE)
+    if st.get("state") != "ready" or not st.get("file"):
+        return {"ok": False, "error": "安装包还没下载完成"}
+    if not getattr(sys, "frozen", False):
+        return {"ok": False, "error": "开发副本不支持就地安装，请直接运行 dist-installer 里的安装包"}
+    app_exe = Path(sys.executable)
+    if not app_exe.is_file():
+        return {"ok": False, "error": "找不到应用可执行文件"}
+    # setup.iss 的自启项是 skipifsilent，静默装完不会拉起应用——收尾进程在安装器
+    # 退出后补上；ping 是无控制台环境下可靠的等待（timeout 命令需要控制台）。
+    cmd = ('ping -n 4 127.0.0.1 >nul'
+           ' & start /wait "" "{s}" /SILENT /SUPPRESSMSGBOXES /DIR="{d}"'
+           ' & start "" "{a}"').format(s=st["file"], d=APP_DIR, a=app_exe)
+    detached = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen(["cmd", "/d", "/c", cmd], creationflags=detached, cwd=str(APP_DIR))
+    RT.add_log("更新安装器已接管，应用即将退出…", "warn")
+    request_quit()
+    return {"ok": True}
 
 
 class HeadsetHandler(BaseHTTPRequestHandler):
@@ -2819,6 +2962,14 @@ def run(open_window: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
     _setup_file_logging()
     _create_app_mutex()
+    # 启动后台查一次新版本（R73）：不阻塞启动，结果经 /api/state 轮询推给 UI 弹窗
+    def _startup_update_check() -> None:
+        time.sleep(4)          # 让启动流程先走完，别让网络检查抢在窗口前面
+        try:
+            update_check()
+        except Exception as e:
+            log.warning("启动检查更新失败（忽略）：%s", e)
+    threading.Thread(target=_startup_update_check, daemon=True).start()
     _migrate_settings_location()  # 设置先搬进安装目录 data\，再谈读它
     _migrate_settings()          # 先把历史设置里带引号的路径修掉，再读
     s = load_settings()

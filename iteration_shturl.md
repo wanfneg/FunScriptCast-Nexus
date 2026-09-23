@@ -2460,3 +2460,19 @@ vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；
 测试：沙盒扫描（好模型/异类型/仅分片/缺 config/隐藏目录 → 只留好模型）、仓库扫描（0.6B 在、1.7B 不在）、_tier_mb 四态（档表命中/目录估算/裸 GGUF/回 0）全过；D 盘 1.0.34 实测 /api/subtitle/asr-models 返回 0.6B+1.7B（与本地实存一致）。
 
 ⚠️ 教训：仓库根曾出现 `nul` 残留（Git Bash 里 `> nul` 会创建真文件）挡住 git add -A，已删并加 .gitignore；仓库 .git/hooks/prepare-commit-msg 强制提交标题=项目名（用户要求勿改）——提交详情以本文件为准。
+
+---
+
+## R73 应用内更新检测 + 就地升级（<hash>，v1.0.35）
+
+用户需求：① 启动时检测新版本并弹窗提醒、可下载更新安装包；② 设置页加手动检查更新按钮。
+
+实现：
+1. **检查**：GET/POST /api/update/check → GitHub API releases/latest，版本优先取 Setup 资产文件名（_SETUP_RE），无资产退回 tag；_ver_tuple 整数逐段比对（v1.0.9<1.0.10 位数坑已测）。检查走 _DL_OPENER_SYSTEM（GitHub 系统代理优先，与下载器同策略）。run() 里 daemon 线程延迟 4s 自检一次，结果进 _UPDATE 状态机，经 state_payload("update" 键) 轮询推给 UI。
+2. **下载**：POST /api/update/download → 复用 _download_to_file 双通道（.part 断点续传 + 90s 停滞看门狗）下到 data\update\，自动清旧版本安装包；下载完按 API size 字节级校验；进度写 _UPDATE.pct。
+3. **就地安装**：POST /api/update/install → spawn 托管收尾进程（`ping -n 4 >nul` 等本进程退出——timeout 命令需控制台不可用 → `start /wait` Setup /SILENT /SUPPRESSMSGBOXES /DIR=安装目录 → `start` 拉起应用。setup.iss 自启项是 skipifsilent，静默装完不会自己起来，必须补这一步）→ request_quit()。开发副本（非 frozen）拒绝就地安装。
+4. **UI**：设置页「更新」卡（当前版本/检查更新按钮/状态行 + 下载/立即安装按钮）；极简弹窗（.modal-ov 遮罩 + 卡片）：有新版且本次启动未忽略 → 提醒弹窗（稍后=本次启动不再弹，设置页仍可下载）；下载完成 → 询问立即安装。顺带修了 S.lastState 从未被赋值的死引用（updateVramEstimate 一直拿 undefined）。
+
+测试：_ver_tuple/_parse_release/状态机离线单测全过；D 盘 1.0.35 实测——check 返回真实 release（1.0.31 资产 83,870,416B，本地更新 → has_update:false 正确）；download 实测下载 83MB 包进度 0→100%、字节级校验过、状态 ready（测试包已删并重启归位，避免误装降级包）；重启后启动自检自动跑完 state=none。**install 的收尾进程链未实测**（会真降级安装 1.0.31），其组成命令与今日三次手工静默安装完全一致；首次真实发版（release > 本地版本）时走一遍即完成闭环。
+
+⚠️ 注意：发版纪律从此变化——**发新版 release 前先确保 Setup 资产名严格为 FunScriptCast-Nexus-Setup-x.y.z.exe**（版本解析依赖它）；用户点「立即安装」会关应用升级到 release 版，若本地 dev 版比 release 新（如现在 1.0.35>1.0.31）has_update 判 false 不会弹窗，但设置页手动下载仍可拉旧包，安装前无版本二次确认——已知取舍，靠 has_update 引导正常路径。
