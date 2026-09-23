@@ -741,3 +741,7 @@ html[data-theme="light"] .logbox{ background:#eef2f8; }
 .modal-ov[hidden]{ display:none; }
 /* 卡片用实底 --raise（.panel 的背景是 0.024 透明度的设计值，做弹窗会透底） */
 .modal-card{ width:min(420px, calc(100vw - 48px)); background:var(--raise); border:1px solid var(--line-2); box-shadow:var(--sh-2); }
+
+/* ---- 更新下载进度条（R76） ---- */
+.upd-bar{ height:8px; border-radius:4px; background:var(--line); overflow:hidden; }
+.upd-bar i{ display:block; height:100%; width:0; background:var(--accent); border-radius:4px; transition:width .3s var(--ease-out, ease); }

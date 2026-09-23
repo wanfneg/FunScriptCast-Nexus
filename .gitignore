@@ -61,3 +61,4 @@ models/_download/
 # ASR 运行时（audio.cpp CPU 版，fetch_audiocpp.ps1 拉取/构建内置）
 vendor/audiocpp/
 nul
+build/_release-carry/

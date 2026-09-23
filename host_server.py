@@ -2164,8 +2164,13 @@ def update_download() -> dict:
 
 
 def update_install() -> dict:
-    """就地静默升级：spawn 托管收尾进程（等本进程退出 → 跑安装器 → 拉起应用），
-    然后走统一退出。开发副本没有安装器形态，拒绝并提示。"""
+    """就地静默升级（R76 重做交接进程）。
+
+    旧实现 cmd+ping 有两个实锤问题：DETACHED_PROCESS 下 ping 会自己弹一个
+    可见命令行窗口；固定等 3 秒赌宿主退出速度，赌输就是"安装器撞上还在跑的
+    宿主"静默放弃。现在改用自带运行时起一个**无窗口**等待进程：轮询宿主端口
+    真正释放后再装，装完全程写 data/update/install.log 可追溯。
+    """
     with _UPDATE_LOCK:
         st = dict(_UPDATE)
     if st.get("state") != "ready" or not st.get("file"):
@@ -2173,15 +2178,45 @@ def update_install() -> dict:
     if not getattr(sys, "frozen", False):
         return {"ok": False, "error": "开发副本不支持就地安装，请直接运行 dist-installer 里的安装包"}
     app_exe = Path(sys.executable)
+    py = APP_DIR / "runtime" / "python.exe"
     if not app_exe.is_file():
         return {"ok": False, "error": "找不到应用可执行文件"}
-    # setup.iss 的自启项是 skipifsilent，静默装完不会拉起应用——收尾进程在安装器
-    # 退出后补上；ping 是无控制台环境下可靠的等待（timeout 命令需要控制台）。
-    cmd = ('ping -n 4 127.0.0.1 >nul'
-           ' & start /wait "" "{s}" /SILENT /SUPPRESSMSGBOXES /DIR="{d}"'
-           ' & start "" "{a}"').format(s=st["file"], d=APP_DIR, a=app_exe)
-    detached = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(["cmd", "/d", "/c", cmd], creationflags=detached, cwd=str(APP_DIR))
+    if not py.is_file():
+        return {"ok": False, "error": "找不到自带运行时 runtime\\python.exe"}
+    # setup.iss 的自启项是 skipifsilent，静默装完不会拉起应用——等待进程补上。
+    code = (
+        "import ctypes, socket, subprocess, sys, time\n"
+        "setup, appdir, app, logfile, port, pid = sys.argv[1:7]\n"
+        "log = open(logfile, 'w', encoding='utf-8')\n"
+        "def say(m):\n"
+        "    log.write(m + chr(10)); log.flush()\n"
+        "def pid_alive(p):\n"
+        "    h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(p))\n"
+        "    if h:\n"
+        "        ctypes.windll.kernel32.CloseHandle(h); return True\n"
+        "    return False\n"
+        "say('等待宿主进程（PID %s）完全退出…' % pid)\n"
+        "deadline = time.time() + 60\n"
+        "while time.time() < deadline and pid_alive(pid):\n"
+        "    time.sleep(0.4)\n"
+        "if pid_alive(pid):\n"
+        "    say('超时：宿主进程仍在运行，放弃安装'); sys.exit(2)\n"
+        "say('宿主已退出，开始静默安装')\n"
+        "rc = 5\n"
+        "for attempt in (1, 2):\n"
+        "    rc = subprocess.run([setup, '/SILENT', '/SUPPRESSMSGBOXES', '/DIR=' + appdir]).returncode\n"
+        "    say('第 %d 次安装器退出码 %d' % (attempt, rc))\n"
+        "    if rc == 0:\n"
+        "        break\n"
+        "    time.sleep(5)\n"
+        "subprocess.Popen([app], cwd=appdir)\n"
+        "say('应用已重新启动')\n"
+    )
+    no_window = 0x08000000                  # CREATE_NO_WINDOW：绝不闪命令行窗口
+    subprocess.Popen(
+        [str(py), "-c", code, str(st["file"]), str(APP_DIR), str(app_exe),
+         str(DATA_DIR / "update" / "install.log"), str(UI_API_PORT), str(os.getpid())],
+        creationflags=no_window, cwd=str(APP_DIR))
     RT.add_log("更新安装器已接管，应用即将退出…", "warn")
     request_quit()
     return {"ok": True}

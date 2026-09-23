@@ -1188,24 +1188,30 @@
     else if (u.state === "error") { box.textContent = "检查更新失败"; desc.textContent = u.error || "网络不可用"; act.hidden = true; }
     else if (u.state === "none") { box.textContent = "已是最新版本"; desc.textContent = "当前 v" + (u.current || st.version || "?"); act.hidden = true; }
     else { box.textContent = "尚未检查"; desc.textContent = "应用启动时会自动检查一次"; act.hidden = true; }
-    /* 弹窗：有新版且本次启动没忽略过 → 提醒；下载完成 → 询问是否就地安装 */
-    if (u.state === "available" && u.has_update && S.updDismissed !== u.latest) {
+    /* 弹窗全流程前台（R76）：下载中实时进度、不进后台，完成即转安装询问 */
+    if (u.state === "downloading") {
+      showUpdateModal("正在下载 v" + (u.latest || ""), "下载进度：" + (u.pct || 0) + "%", "progress", u.pct || 0);
+    } else if (u.state === "available" && u.has_update && S.updDismissed !== u.latest) {
       showUpdateModal("发现新版本 v" + u.latest,
         "当前 v" + (u.current || st.version || "?") + "，可下载更新安装包（约 " +
         Math.max(1, Math.round((u.size || 0) / 1048576)) + " MB）。安装会关闭应用，完成后自动重启。",
         "download");
     } else if (u.state === "ready" && S.updReadyFor !== u.latest) {
       S.updReadyFor = u.latest;
-      showUpdateModal("安装包已下载完成",
+      showUpdateModal("下载完成",
         "v" + u.latest + " 已就绪。立即安装会关闭应用，安装完成后自动重新启动。", "install");
     }
   }
-  function showUpdateModal(title, text, mode) {
+  function showUpdateModal(title, text, mode, pct) {
     $("#updModalTitle").textContent = title;
     $("#updModalText").textContent = text;
-    S.updMode = mode;
+    $("#updBar").hidden = mode !== "progress";
+    if (mode === "progress") $("#updBarFill").style.width = (pct || 0) + "%";
+    $("#updModalGo").hidden = mode === "progress";    // 下载中无可点按钮：前台进度不被打断
+    $("#updModalLater").hidden = mode === "progress";
     $("#updModalGo").textContent = mode === "install" ? "立即安装" : "下载更新";
     $("#updModal").hidden = false;
+    S.updMode = mode;
   }
 
   function poll(once) {
