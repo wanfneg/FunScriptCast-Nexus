@@ -2445,3 +2445,18 @@ vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；
 
 ⚠️ **公开化提示**：仓库历史里含本机路径（E:\audiocpp-portable、C:\Users\admin 出现在历史日志/文档）与 QQ 号（README 本就公开），用户转公开时已知情；无密钥泄露（R69 已验模板 config 干净）。
 ⚠️ **网络**：GitHub 直连间歇重置（000），资产校验以 gh API 列表为准；程序内下载器本就双通道兜底。
+
+---
+
+## R72 识别模型下拉动态化 + models\ 自装模型发现（0f08caa，v1.0.34）
+
+用户点名两件事：① 本地不存在的模型不该出现在选择项里还能被选中；② models\ 里任意支持格式的模型都应自动识别可选——高配用户自行下载更好的模型放进去就能用，不受内置清单约束。
+
+实现：
+1. **服务端 asr_models() + GET /api/subtitle/asr-models**：扫描 models\ 顶层目录，支持格式 = 含 model.safetensors + config.json 且顶层 model_type=="qwen3_asr"（audio.cpp qwen3_asr 的指纹）；value 沿用 "../../models/<目录名>"（与既有 config 格式一致，引擎侧零改动）。
+2. **前端**：删 index.html 静态两选项（#asrModelTier→#asrModel），app.js fillAsrModelSelect 动态填充；配置指向的模型不在列表时保持空选（不静默改配置）；保存失败弹回 S.asrModelPrev（原实现失败只 toast 不回弹，下拉会和实际配置脱节）。
+3. **_tier_mb 回退**（server_app）：档表未命中按模型文件实际大小 ×1.1 估显存（识别=目录内单文件，翻译=目录或裸 GGUF），估不出回 0——自装模型的显存提示不再显示 0。
+
+测试：沙盒扫描（好模型/异类型/仅分片/缺 config/隐藏目录 → 只留好模型）、仓库扫描（0.6B 在、1.7B 不在）、_tier_mb 四态（档表命中/目录估算/裸 GGUF/回 0）全过；D 盘 1.0.34 实测 /api/subtitle/asr-models 返回 0.6B+1.7B（与本地实存一致）。
+
+⚠️ 教训：仓库根曾出现 `nul` 残留（Git Bash 里 `> nul` 会创建真文件）挡住 git add -A，已删并加 .gitignore；仓库 .git/hooks/prepare-commit-msg 强制提交标题=项目名（用户要求勿改）——提交详情以本文件为准。
