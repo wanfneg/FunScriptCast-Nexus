@@ -729,6 +729,14 @@ html[data-theme="light"] .logbox{ background:#eef2f8; }
 .toast .tt{ font:600 12.5px/1.4 var(--f-ui); }
 .toast .td{ color:var(--ink-3); font-size:11.5px; margin-top:3px; word-break:break-word; }
 
+/* ⚠ 全局：本工程 .btn/.modal-ov 等类都显式设 display，会压过 hidden 属性的
+   UA 规则（R73 弹窗常驻事故的根因）——凡用 hidden 控制显隐的元素都靠这条兜底 */
+[hidden]{ display:none !important; }
+
 /* ---- 更新弹窗（R73） ---- */
-.modal-ov{ position:fixed; inset:0; z-index:90; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.45); }
-.modal-card{ width:min(420px, calc(100vw - 48px)); }
+/* ⚠ [hidden] 规则必须保留：.modal-ov 的 display:flex 是作者样式，会压过 hidden
+   属性的 UA 规则——少了这条，弹窗从页面加载起就常驻全屏并拦截所有点击。 */
+.modal-ov{ position:fixed; inset:0; z-index:90; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.5); }
+.modal-ov[hidden]{ display:none; }
+/* 卡片用实底 --raise（.panel 的背景是 0.024 透明度的设计值，做弹窗会透底） */
+.modal-card{ width:min(420px, calc(100vw - 48px)); background:var(--raise); border:1px solid var(--line-2); box-shadow:var(--sh-2); }

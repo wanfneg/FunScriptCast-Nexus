@@ -2476,3 +2476,9 @@ vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；
 测试：_ver_tuple/_parse_release/状态机离线单测全过；D 盘 1.0.35 实测——check 返回真实 release（1.0.31 资产 83,870,416B，本地更新 → has_update:false 正确）；download 实测下载 83MB 包进度 0→100%、字节级校验过、状态 ready（测试包已删并重启归位，避免误装降级包）；重启后启动自检自动跑完 state=none。**install 的收尾进程链未实测**（会真降级安装 1.0.31），其组成命令与今日三次手工静默安装完全一致；首次真实发版（release > 本地版本）时走一遍即完成闭环。
 
 ⚠️ 注意：发版纪律从此变化——**发新版 release 前先确保 Setup 资产名严格为 FunScriptCast-Nexus-Setup-x.y.z.exe**（版本解析依赖它）；用户点「立即安装」会关应用升级到 release 版，若本地 dev 版比 release 新（如现在 1.0.35>1.0.31）has_update 判 false 不会弹窗，但设置页手动下载仍可拉旧包，安装前无版本二次确认——已知取舍，靠 has_update 引导正常路径。
+
+### R73 追加（同日）：更新弹窗常驻事故与 hidden 全局规则
+
+用户截图抓到：弹窗从页面加载起就半透明悬在仪表盘上且拦截全屏点击。根因一：`.modal-ov{display:flex}` 是作者样式，压过 `hidden` 属性的 UA 规则 → 弹窗常驻（静态默认文案"发现新版本"直接露出）；根因二：`--panel` 本身是 0.024 透明度设计值，弹窗卡片透底。修复：`.modal-ov[hidden]{display:none}` + 卡片换实底 `--raise`（toast 同款）。随后浏览器实测又抓到同族问题：`.btn` 的 display:inline-flex 同样压过 hidden → "下载更新"按钮在"已是最新"态仍然可见——补全局 `[hidden]{display:none !important}` 根治。
+
+⚠️ 教训（两次踩同一颗雷）：**本工程 hidden 属性会被任何显式设 display 的类压过**，显隐一律走全局 `[hidden]` 规则兜底；**接口全绿 ≠ 界面对**（R68 /health≠能用 的 UI 版）——UI 改动必须真开页面看一眼，本轮用内置浏览器截图验证：仪表盘无遮挡、设置页更新卡检查返回"已是最新 v1.0.35"、按钮/弹窗显隐正确。修复经热修 D 盘 + dist-app + 仓库三处同步（样式改动无需重编 exe，刷新页面即生效）。
