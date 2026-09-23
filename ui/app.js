@@ -33,6 +33,12 @@
     body[key] = value;
     var p = api("/api/settings", "POST", body).then(function (r) {
       if (r && r.ok) clearDirty(document.getElementById(id));
+      else if (r && r.error) {
+        // 保存失败必须让用户看见并保持 dirty：dirty 没清，runSync 的落盘闸门
+        // 会拒绝按"屏幕上的值"开工；此前失败被当成成功，同步会拿未保存的目录跑。
+        // 网络失败由 api() 统一 toast（同 addRoots 口径），这里只报服务端明确拒绝。
+        toast("设置保存失败", r.error, "err");
+      }
       if (onDone) onDone(r);
       return r;
     });
@@ -680,9 +686,18 @@
       var ollama = tr.ollama || {};
       $("#mtModel").value = ollama.model || "";
       $("#mtBase").value = ollama.base_url || "";
-      /* 本地 llama.cpp：下拉选模型（数据来自 /api/subtitle/models） */
+      /* 本地 llama.cpp：下拉选模型（数据来自 /api/subtitle/models）。
+         英语模型（model_by_lang.en）必须回填进第二个下拉——此前从不回填，
+         保存时会把下拉的"列表首项回退值"当成用户选择写进 model_by_lang.en，
+         英语片从此被路由到错误模型。同时记下配置里 en 的原始状态（有没有非空值）
+         与"用户动过英语下拉没有"，保存时据此决定写不写 model_by_lang。 */
       var loc = tr.local || {};
-      renderLocalModelSelect(loc.model || "");
+      var enFromCfg = (loc.model_by_lang || {}).en;
+      /* 空串按"没配"算：translate_engine 的 or 链同样把空串当缺失走回退；
+         把空串当"已有"会让二次保存把下拉首项回退值写进 en，复现 F10。 */
+      S.mtLocalEnFromCfg = enFromCfg ? String(enFromCfg) : null;
+      S.mtLocalEnTouched = false;
+      renderLocalModelSelect(loc.model || "", S.mtLocalEnFromCfg || "");
       /* 云端：标准 OpenAI 兼容（base_url + model + key），key 不回明文，只显示尾号 */
       var oa = tr.openai || {};
       $("#mtCloudBase").value = oa.base_url || "";
@@ -750,11 +765,22 @@
       });
       if (!added) { toast(dup ? "这些目录已经在列表里了" : "请先选择或输入目录", "", "warn"); return; }
       api("/api/dlna/roots", "POST", { roots: roots }).then(function (r) {
+        /* 保存失败必须可见：服务端写盘失败回 ok:false，此时不清输入框、不报成功
+           （网络失败由 api() 统一 toast）。与 saveSetting 的处理同口径。 */
+        if (!r || r.ok === false) {
+          if (r && r.error) toast("媒体根目录保存失败", r.error, "err");
+          return;
+        }
         $("#newRoot").value = "";
         if (r.missing && r.missing.length) {
           toast("已添加，但这些目录不存在", r.missing.join("；"), "err");
         } else {
           toast("已添加 " + added + " 个媒体根目录");
+        }
+        // DLNA 运行中改媒体根不会热重载（媒体库是启动期构建的），必须明示
+        // "要重启才生效"，否则用户只会在头显里看到"文件夹还是空的"。
+        if (r.need_restart) {
+          toast("需重启 DLNA 生效", r.restart_hint || "运行中的 DLNA 不会自动加载新目录", "warn");
         }
         poll(true);
       });
@@ -810,13 +836,17 @@
     });
     $("#mtBackend").addEventListener("change", syncMtGroups);
     $("#saveMt").addEventListener("click", function () {
+      /* model_by_lang.en：配置里本来就有 → 无条件回写当前选择；配置里没有 →
+         只有用户真的动过英语下拉才写。否则会把 fill() 的"空值回退到列表首项"
+         当成用户选择存进配置，把英语路由覆盖成错误模型（F10）。 */
+      var localSave = { model: $("#mtLocalModel").value };
+      if (S.mtLocalEnFromCfg != null || S.mtLocalEnTouched) {
+        localSave.model_by_lang = { en: $("#mtLocalModelEn").value };
+      }
       var body = {
         translate: {
           backend: $("#mtBackend").value,
-          local: {
-            model: $("#mtLocalModel").value,
-            model_by_lang: { en: $("#mtLocalModelEn").value }
-          },
+          local: localSave,
           openai: {
             base_url: $("#mtCloudBase").value,
             model: $("#mtCloudModel").value
@@ -1165,10 +1195,13 @@
     // 配置输入框时不要覆盖他的输入
     setTimeout(function () { if (!S.subCfgDirty) loadSubtitleConfig(); }, 2500);
     // 配置输入一旦被用户动过就标记：之后的自动回填一律让路
-    ["asrBackend", "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtCloudBase", "mtCloudModel", "mtCloudKey", "subIdleRelease"
+    ["asrBackend", "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtLocalModelEn", "mtCloudBase", "mtCloudModel", "mtCloudKey", "subIdleRelease"
     ].forEach(function (id) {
       var el = document.getElementById(id);
-      if (el) el.addEventListener("input", function () { S.subCfgDirty = true; });
+      if (el) el.addEventListener("input", function () {
+        S.subCfgDirty = true;
+        if (id === "mtLocalModelEn") S.mtLocalEnTouched = true;   // 用户亲手选过英语模型
+      });
     });
     // 字体是异步落地的，加载完行高会变，指示块与分段滑块要重新对齐
     if (document.fonts && document.fonts.ready) {

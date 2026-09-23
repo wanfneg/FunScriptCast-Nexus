@@ -111,9 +111,12 @@ def _prewarm_subtitle(key: str) -> None:
         return
     _sub_prewarm_ts[key] = now
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", 8790, timeout=3)
+        # 宿主端口随 FS_HOST_PORT 环境变量（host_server.py 同一约定），不能写死
+        # 8790——用户改端口后预热会静默失败，首句字幕退回冷启动（F13）。
+        host_port = int(os.environ.get("FS_HOST_PORT") or 8790)
+        conn = http.client.HTTPConnection("127.0.0.1", host_port, timeout=3)
         conn.request("POST", "/api/subtitle/start", body=b"",
-                     headers={"Origin": "http://127.0.0.1:8790"})
+                     headers={"Origin": f"http://127.0.0.1:{host_port}"})
         resp = conn.getresponse()
         resp.read()
         conn.close()

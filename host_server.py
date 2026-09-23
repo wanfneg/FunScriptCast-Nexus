@@ -341,6 +341,13 @@ def load_settings() -> dict:
             for k in DEFAULT_SETTINGS:
                 if k in data:
                     s[k] = data[k]
+            # 不在当前 schema 里的键**原样透传**（F16）：版本降级/多副本互换时文件里
+            # 可能有本版本不认识的键——此前只拷已知键，_migrate_settings 一比较就判
+            # "不同"并整文件重写，未知键被每次启动静默剪掉，用户的配置无声丢失。
+            # 透传后 save_settings 的整文件写回会原样带上它们。
+            for k, v in data.items():
+                if k not in DEFAULT_SETTINGS:
+                    s[k] = v
     except Exception as e:
         # "文件不存在"（给默认值是对的）和"文件存在却读不出来"（给默认值就是错的）
         # 必须分开：后者会让下一次 save_settings（它以本函数返回值作整文件写盘基底）
@@ -395,8 +402,10 @@ def _migrate_settings() -> None:
             return
         raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
         fixed = load_settings()
-        if json.dumps(raw, sort_keys=True, ensure_ascii=False) != \
-           json.dumps(fixed, sort_keys=True, ensure_ascii=False):
+        # 只比较**已知键**：未知键已由 load_settings 原样透传、save_settings 也会
+        # 原样写回，它们本身不构成"需要重写"的理由——旧实现拿两份全量 dumps 比较，
+        # 文件里只要存在未知键就必然判"不同"，重写时把未知键静默剪掉（F16）。
+        if any(raw.get(k) != fixed.get(k) for k in DEFAULT_SETTINGS):
             save_settings({})
             RT.add_log("已修正设置里带引号的路径（历史数据）", "warn")
     except Exception as e:
@@ -474,7 +483,13 @@ def save_settings(patch: dict) -> dict:
             tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(tmp, SETTINGS_FILE)
         except Exception as e:
-            log.warning("保存设置失败：%s", e)
+            # 写盘失败必须如实上报（F11）：此前仅 log.warning 后照常返回内存结果，
+            # /api/settings 把它包进外层 ok:true，前端据此清 dirty——保存明明没成功，
+            # 同步却按屏幕上"看似已保存"的目录开工（sync_delete 还可能删文件）。
+            msg = f"设置写盘失败：{type(e).__name__}: {e}"
+            log.warning(msg)
+            RT.add_log(msg, "err")
+            return {"ok": False, "error": msg}
         return s
 
 
@@ -1442,6 +1457,17 @@ def _model_installed(e: dict) -> bool:
             commit = e["commit"]
         snap = repo / "snapshots" / commit
         return all((snap / f["rel"]).is_file() for f in e["files"])
+    if e.get("merge_shards"):
+        # 分权重条目：下载完会把分片+index 合并成单文件 model.safetensors 并删掉
+        # 分片（见 _merge_safetensor_shards，audio.cpp 只认单文件）——按原清单逐个
+        # 核对会永远 False，重启后 UI 翻回"未下载"。已安装 = 单文件在 + 其余
+        # 非分片文件都在。
+        if not (e["dest_dir"] / "model.safetensors").is_file():
+            return False
+        return all((e["dest_dir"] / f["rel"]).is_file()
+                   for f in e["files"]
+                   if not f["rel"].startswith("model-")
+                   and f["rel"] != "model.safetensors.index.json")
     return all((e["dest_dir"] / f["rel"]).is_file() for f in e["files"])
 
 
@@ -1787,6 +1813,11 @@ def state_payload() -> dict:
     }
 
 
+class _BodyTooLarge(ValueError):
+    """请求体超过上限。与"JSON 解析失败"（普通 ValueError → 400）分开，便于 do_POST
+    分别回 413 / 400。"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "FSHost/1.0"
 
@@ -1799,6 +1830,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _host_allowed(self) -> bool:
+        """DNS rebinding 栅栏：浏览器发起的请求一定带 Host，且值是地址栏里的域名。
+
+        恶意网页把自己的域名 DNS rebinding 到 127.0.0.1 后与 8790 "同源"，就能读
+        /api/state（设置、媒体根、日志、内网 IP）。放行范围与 do_POST 的 Origin
+        栅栏同一套（127.0.0.1 / localhost + 本端口）；不带 Host 头的 HTTP/1.0
+        客户端（本机脚本）也放行——rebinding 攻击必然带 Host，缺 Host 只可能是
+        老客户端，宁可少拦也不误伤。"""
+        host = (self.headers.get("Host") or "").strip().lower()
+        if not host:
+            return True
+        return host in (f"127.0.0.1:{UI_API_PORT}", f"localhost:{UI_API_PORT}")
 
     def _file(self, rel: str) -> None:
         p = (UI_DIR / rel).resolve()
@@ -1835,15 +1879,22 @@ class Handler(BaseHTTPRequestHandler):
         if n > self.MAX_BODY_BYTES:
             # 不读体直接返回错误（读掉才是标准做法，但此处直接断开更省事——
             # 合法客户端永远不会触发这条路）
-            raise ValueError("请求体过大")
+            raise _BodyTooLarge("请求体过大")
         try:
             return json.loads(self.rfile.read(n).decode("utf-8"))
-        except Exception:
-            return {}
+        except Exception as e:
+            # 坏 JSON 绝不能吞成 {}：对 /api/settings 这类补丁式接口，那等于把
+            # "请求根本没生效"变成一次成功的"无改动保存"并照常回 ok（F15）。
+            raise ValueError(f"请求体 JSON 解析失败：{e}") from None
 
     # ---- 路由 ----
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?")[0]
+        # 与 do_POST 的 Origin 栅栏配对：POST 防的是跨站**写**，GET 的 Host 校验
+        # 防的是 rebinding 之后的跨站**读**（读路径此前完全裸奔，F12）。
+        if not self._host_allowed():
+            self._json({"ok": False, "error": "Host 校验失败（疑似 DNS rebinding）"}, 403)
+            return
         try:
             if path == "/api/state":
                 self._json(state_payload())
@@ -1880,15 +1931,24 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": "跨站请求被拒绝"}, 403)
                     return
             body = self._body()
-        except ValueError as e:
+        except _BodyTooLarge as e:
             self._json({"ok": False, "error": str(e)}, 413)
+            return
+        except ValueError as e:
+            self._json({"ok": False, "error": str(e)}, 400)
             return
         except Exception as e:
             self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
             return
         try:
             if path == "/api/settings":
-                self._json({"ok": True, "settings": save_settings(body)})
+                res = save_settings(body)
+                # save_settings 失败时返回 {"ok": False, "error": ...}：必须原样
+                # 透传成响应顶层字段，让前端保持 dirty 并弹错（F11）。
+                if res.get("ok") is False:
+                    self._json(res)
+                else:
+                    self._json({"ok": True, "settings": res})
             elif path == "/api/win/show":
                 # 供「重复启动」唤起已有实例的窗口（见 run() 开头的单实例处理）。
                 # 托盘图标可能被系统收进溢出面板、用户找不到入口，这条路始终可用。
@@ -1903,17 +1963,35 @@ class Handler(BaseHTTPRequestHandler):
                 roots = body.get("roots")
                 if isinstance(roots, list):
                     roots = [norm_path(x) for x in roots if norm_path(x)]
-                    save_settings({"dlna_roots": roots})
+                    saved = save_settings({"dlna_roots": roots})
+                    # save_settings 成功返回设置字典本身（不含 ok），只有失败才带
+                    # ok=False：判失败必须 is False（同 /api/settings）。真值判断
+                    # 会把成功恒判成失败，下面的 missing/need_restart 全不可达。
+                    if saved.get("ok") is False:
+                        # 写盘失败如实上报（与 /api/settings 同口径）：沉默会让
+                        # 前端按"已添加"提示，目录却根本没存下来。
+                        self._json(saved)
+                        return
                     # 立刻校验：路径不存在的话 DLNA 会安静地列出空目录，
                     # 那头显里就只是"文件夹是空的"，完全猜不到是路径写错了。
                     bad = missing_roots(roots)
                     if bad:
                         RT.add_log(f"这些媒体根目录不存在：{'；'.join(bad)}", "err")
-                    self._json({"ok": True, "roots": roots, "missing": bad})
+                    # 媒体库是 DLNA 启动期一次性构建的，运行中改 roots 不会热重载；
+                    # 不提示的话用户只会在头显里看到"新目录没出现"而无所适从（F14）。
+                    running = dlna_running()
+                    self._json({
+                        "ok": True, "roots": roots, "missing": bad,
+                        "need_restart": running,
+                        "restart_hint": "DLNA 正在运行，停止并重新启动 DLNA 后新目录才会生效" if running else "",
+                    })
                 else:
                     self._json({"ok": True, "roots": s.get("dlna_roots")})
             elif path == "/api/subtitle/start":
-                self._json(sub_start())
+                res = sub_start()
+                # 契约 B：启动响应也带档位建议（数值，秒），客户端据此自适应分块
+                res["recommended_chunk_sec"] = headset_status()["recommended_chunk_sec"]
+                self._json(res)
             elif path == "/api/subtitle/stop":
                 self._json(sub_stop())
             elif path == "/api/subtitle/reclaim":
@@ -1933,7 +2011,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/sync/run":
                 self._json(SYNC.sync((body.get("kind") or "").strip()))
             elif path == "/api/sync/settings":
-                self._json({"ok": True, "settings": save_settings(body)})
+                res = save_settings(body)          # 失败透传 ok/error，同 /api/settings（F11）
+                if res.get("ok") is False:
+                    self._json(res)
+                else:
+                    self._json({"ok": True, "settings": res})
             elif path == "/api/quit":
                 self._json({"ok": True})
                 request_quit()
@@ -2044,7 +2126,11 @@ class HeadsetHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/subtitle/start":
                 RT.add_log(f"头显（{self.client_address[0]}）请求启动字幕服务", "info")
-                self._json(sub_start())
+                res = sub_start()
+                # 契约 B：启动响应带档位建议（数值，秒；与 /api/headset/status、
+                # 8756 /transcribe 同一口径），客户端据此自适应音频分块时长
+                res["recommended_chunk_sec"] = headset_status()["recommended_chunk_sec"]
+                self._json(res)
             elif path == "/api/subtitle/cache/save":
                 # 兼容桩：缓存已删，如实回失败——旧版头显会忽略它，照常继续
                 self._json({"ok": False, "error": "字幕缓存功能已移除"})
@@ -2778,7 +2864,7 @@ def run(open_window: bool = True) -> None:
     threading.Thread(target=httpd.serve_forever, daemon=True, name="ui-api").start()
     log.info("UI/API: http://127.0.0.1:%d", UI_API_PORT)
 
-    # 头显接口：绑局域网，但只放开四个路由（见 HeadsetHandler）。
+    # 头显接口：绑局域网，但只放开两个路由（见 HeadsetHandler）。
     # 起不来（端口被占）不该拖垮整个程序——PC 端自己的功能不受影响。
     try:
         lan = ExclusiveHTTPServer(("0.0.0.0", LAN_API_PORT), HeadsetHandler)

@@ -40,6 +40,7 @@ user_paths.apply_hf_env()
 
 import asyncio  # noqa: E402
 import hashlib  # noqa: E402
+import hmac  # noqa: E402
 import json  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -317,6 +318,47 @@ class _LoopbackGuard(BaseHTTPMiddleware):
 app.add_middleware(_LoopbackGuard)
 
 
+# ---------------------------------------------------------------- 访问令牌（可选鉴权）
+# 8756 的 /transcribe* 对整个局域网开放，而 config.json 里可能带着云端翻译的明文
+# API Key——不设防的话同网任意设备都能借 /transcribe?translate=true 烧额度。
+# server.auth_token **非空**时，/transcribe 与 /transcribe/stream 必须携带同值请求头
+# `X-FSC-Subtitle-Token`，否则 401；/health 保持开放（宿主与头显的探测不携带令牌）。
+# auth_token 为空串（默认）时行为与过去完全一致——不校验，向后兼容。
+_AUTH_HEADER = "X-FSC-Subtitle-Token"
+
+
+def _auth_token() -> str:
+    try:
+        return str((CFG.get("server") or {}).get("auth_token") or "")
+    except Exception:
+        return ""
+
+
+class _TokenGuard(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if _auth_token() and request.url.path.startswith("/transcribe"):
+            # 常数时间比较：普通 != 按前缀逐字节短路，会泄漏最长匹配前缀的长度。
+            if not hmac.compare_digest((request.headers.get(_AUTH_HEADER) or "").encode("utf-8"),
+                                       _auth_token().encode("utf-8")):
+                return JSONResponse({"error": "字幕服务令牌缺失或不匹配"},
+                                    status_code=401)
+        return await call_next(request)
+
+
+app.add_middleware(_TokenGuard)
+
+
+def _recommended_chunk_sec() -> int:
+    """档位建议（秒，契约 B）：云端翻译单块实测 6.6–15s，客户端固定 3s 块会结构性
+    追不上（块尾落后即被丢弃）。与宿主 headset_status() 同一口径：云端 25 / 其余 3。
+    每次 /transcribe 的应答都带上，客户端据此自适应分块时长。"""
+    backend = str((CFG.get("translate") or {}).get("backend") or "")
+    t = state.get("translator")
+    if t is not None and getattr(t, "backend", ""):
+        backend = t.backend            # 归一后的实际后端（cloud/dashscope → openai）
+    return 25 if backend in ("openai", "cloud") else 3
+
+
 def _gpu_used_gb() -> float:
     """（已废弃，恒 0）原为 PyTorch 引擎的 torch 显存监控；两个现役引擎
     （whisper=CTranslate2 / audiocpp=独立进程）的显存都不归 torch 管，
@@ -569,16 +611,21 @@ async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0
     oversize = {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
                 "skipped": True, "error": f"请求体超过上限 {MAX_BODY_BYTES // (1024*1024)}MB"}
     if cl.isdigit() and int(cl) > MAX_BODY_BYTES:
+        oversize["recommended_chunk_sec"] = _recommended_chunk_sec()
         return oversize
     from stream_bridge import read_capped_body
     body = await read_capped_body(request, MAX_BODY_BYTES)
     if body is None:
+        oversize["recommended_chunk_sec"] = _recommended_chunk_sec()
         return oversize
     with _INFLIGHT_LOCK:
         _INFLIGHT += 1
     try:
-        return await _transcribe_impl(body, lang, video_start_ms, keep_from_ms, translate,
-                                      partial == 1)
+        result = await _transcribe_impl(body, lang, video_start_ms, keep_from_ms, translate,
+                                        partial == 1)
+        # 契约 B：每个应答都带档位建议（含"音频过短"等提前返回，都会流经这里）
+        result["recommended_chunk_sec"] = _recommended_chunk_sec()
+        return result
     finally:
         with _INFLIGHT_LOCK:
             _INFLIGHT -= 1

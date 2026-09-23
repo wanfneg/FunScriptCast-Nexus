@@ -1,0 +1,17 @@
+【FunScriptCast-Nexus v1.0.31】VR 观影的 PC 端小工具，免费使用
+
+一个挂在电脑托盘上的小东西，干三件事：
+
+🎮 DLNA 媒体服务 —— 头显/DeoVR 里直接刷电脑上的片库，中文文件名不乱码，外挂字幕随便切
+🈶 AI 实时字幕 —— 看日语/英语片实时出中文字幕：本地 AI 识别+翻译，整句出字、自动追节奏，片库全程不过云端
+📁 一键同步 —— funscript 脚本和视频增量推送到 Quest/手机
+
+✅ 有 N 卡（8G 显存）体验最好，没 N 卡也能跑
+✅ 识别引擎已内置安装包，装完在界面里点两下下载模型就能用
+✅ 免费，源码公开
+
+📦 下载：本群文件「FunScriptCast-Nexus-Setup-1.0.31.zip」，解压后双击安装
+（能上 GitHub 的也可以走 releases 页拿最新版：https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest）
+
+装好三步：加片库 → 下模型 → 启动字幕服务
+BUG 反馈/功能建议直接群里喊我

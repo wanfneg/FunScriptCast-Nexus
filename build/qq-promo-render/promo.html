@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FunScriptCast-Nexus 介绍</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1280px; background: #07090f; color: #e8ecf4;
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    padding: 56px 72px 48px;
+  }
+  .hero { text-align: center; padding: 8px 0 36px; border-bottom: 1px solid #1c2333; }
+  .badge { display: inline-block; font-size: 15px; letter-spacing: 4px; color: #6ea8ff;
+           border: 1px solid #24406e; border-radius: 999px; padding: 6px 22px; margin-bottom: 22px; }
+  h1 { font-size: 46px; font-weight: 800; letter-spacing: 1px; }
+  h1 .tail { color: #4f8cff; }
+  .tagline { margin-top: 14px; font-size: 19px; color: #aeb8ca; }
+  .pills { margin-top: 20px; font-size: 15px; color: #8fa0bb; }
+  .pills span { border: 1px solid #232c40; border-radius: 8px; padding: 5px 14px; margin: 0 6px; }
+  section { margin-top: 46px; }
+  h2 { font-size: 27px; margin-bottom: 6px; color: #ffffff; }
+  h2::before { content: "§ "; color: #4f8cff; }
+  .sub { font-size: 15px; color: #7d8aa3; margin-bottom: 18px; }
+  img.shot { width: 100%; border-radius: 12px; border: 1px solid #1e2740; display: block;
+             margin: 14px 0 10px; }
+  .caption { font-size: 13.5px; color: #66738c; text-align: center; margin-bottom: 8px; }
+  .steps { counter-reset: step; margin-top: 8px; }
+  .step { position: relative; background: #0d1220; border: 1px solid #1b2438; border-radius: 12px;
+          padding: 18px 22px 16px 74px; margin-bottom: 14px; }
+  .step::before { counter-increment: step; content: counter(step);
+          position: absolute; left: 20px; top: 18px; width: 38px; height: 38px; border-radius: 10px;
+          background: #16305c; color: #9cc1ff; font-size: 20px; font-weight: 700;
+          display: flex; align-items: center; justify-content: center; }
+  .step b { font-size: 18px; }
+  .step p { font-size: 14.5px; color: #9aa7bd; margin-top: 5px; line-height: 1.65; }
+  ul.feat { list-style: none; margin-top: 4px; }
+  ul.feat li { font-size: 15.5px; color: #c4cde0; line-height: 1.9; padding-left: 24px; position: relative; }
+  ul.feat li::before { content: "▸"; position: absolute; left: 4px; color: #4f8cff; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14.5px; }
+  th, td { border: 1px solid #1c2436; padding: 9px 14px; text-align: left; }
+  th { background: #0e1526; color: #9fb3d6; font-weight: 600; }
+  td { color: #c4cde0; background: #0a0e19; }
+  .qa { background: #0d1220; border: 1px solid #1b2438; border-radius: 12px;
+        padding: 16px 22px; margin-bottom: 12px; }
+  .qa b { color: #ffd479; font-size: 15.5px; }
+  .qa p { color: #a7b2c7; font-size: 14.5px; margin-top: 6px; line-height: 1.7; }
+  .footer { margin-top: 52px; border-top: 1px solid #1c2333; padding-top: 28px; text-align: center; }
+  .dl { display: inline-block; background: #16407c; color: #eaf2ff; font-size: 18px; font-weight: 700;
+        border-radius: 12px; padding: 14px 40px; }
+  .dl small { display: block; font-weight: 400; font-size: 12.5px; color: #a9c4ee; margin-top: 4px; }
+  .contact { margin-top: 18px; font-size: 14.5px; color: #8fa0bb; }
+  .contact code { background: #101a30; border: 1px solid #1e2c4a; border-radius: 6px; padding: 2px 10px; color: #cfe0ff; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="badge">VR 观影 · PC 端 · 免费</div>
+  <h1>FunScriptCast <span class="tail">NEXUS</span></h1>
+  <div class="tagline">DLNA 媒体服务 + AI 实时字幕 + 设备同步 —— 一个窗口、一个托盘</div>
+  <div class="pills"><span>v1.0.31</span><span>Windows 10 / 11</span><span>识别运行时已内置</span><span>片库全程本地</span></div>
+</div>
+
+<section>
+  <h2>四步出字幕</h2>
+  <div class="sub">装好后跟着走一遍，之后就是「打开播放器看片」这么简单</div>
+  <div class="steps">
+    <div class="step"><b>安装</b>
+      <p>下载 FunScriptCast-Nexus-Setup，向导里选安装目录。选空间充足的盘（模型以十 GB 计），C 盘一个字节都不落。</p></div>
+    <div class="step"><b>添加媒体库</b>
+      <p>「DLNA 服务器」页添加电脑上的视频目录，服务自动启动；头显 / DeoVR 在同一局域网会自动发现设备 FunScriptCast-DLNA。</p></div>
+    <div class="step"><b>下载模型</b>
+      <p>「AI 字幕」页模型列表点下载：至少一个识别模型（0.6B 够用 / 1.7B 更强），再选一个翻译模型（日语 Sakura / 英语 Hy-MT2，各有低显存与高画质两档）。支持断点续传。</p></div>
+    <div class="step"><b>开字幕</b>
+      <p>点「启动服务」，状态变「就绪」即可。播放器正常播放，中文字幕自动上屏；空闲 5 分钟（可调）自动回收显存，下次播放自动再起。</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>仪表盘：服务状态一目了然</h2>
+  <div class="sub">DLNA / 字幕服务 / GPU 遥测 / 事件流，全部实时</div>
+  <img class="shot" src="screenshots/dashboard.png">
+</section>
+
+<section>
+  <h2>DLNA 媒体服务</h2>
+  <div class="sub">面向 DeoVR 的轻量媒体服务</div>
+  <img class="shot" src="screenshots/dlna.png">
+  <ul class="feat">
+    <li>头显 / 播放器自动发现，中文文件名不乱码</li>
+    <li>视频同目录的外挂字幕（.srt / .ass / .vtt）播放时直接切换</li>
+    <li>媒体根目录随意加几个盘，路径带引号空格自动规整</li>
+  </ul>
+</section>
+
+<section>
+  <h2>AI 实时字幕</h2>
+  <div class="sub">本地识别 + 本地翻译，片库全程不过云端</div>
+  <img class="shot" src="screenshots/subtitle-engine.png">
+  <ul class="feat">
+    <li>识别：Qwen3-ASR 本地常驻推理，日语 / 英语（CPU 运行时已内置安装包，N 卡可切 CUDA 提速）</li>
+    <li>混合切句：静音定界 + 语音检测赋时，整句出字、时间戳准；长句渐进出字，临时稿先上屏</li>
+    <li>翻译按片源语言自动路由：日语走 Sakura 系、英语走 Hy-MT2 系，热切换不重启</li>
+    <li>翻译预热：启动即付完冷启动的账，首句字幕不卡</li>
+    <li>「测试一句」真翻一句给你看：直连译文 / 管线译文 / 上游报错三段分明</li>
+  </ul>
+</section>
+
+<section>
+  <h2>模型中心：一键下载、档位自选</h2>
+  <div class="sub">状态与进度可见，断点续传，装完自动接好配置</div>
+  <img class="shot" src="screenshots/subtitle-models.png">
+  <table>
+    <tr><th>类别</th><th>条目</th><th>显存约</th><th>说明</th></tr>
+    <tr><td>识别</td><td>Qwen3-ASR-0.6B</td><td>1.3GB</td><td>默认档，速度质量均衡</td></tr>
+    <tr><td>识别</td><td>Qwen3-ASR-1.7B</td><td>3.6GB</td><td>转录质量更高（分片自动合并）</td></tr>
+    <tr><td>日语翻译</td><td>Sakura-7B / 1.5B</td><td>4.4 / 1.4GB</td><td>7B 质量更好，1.5B 低显存推荐</td></tr>
+    <tr><td>英语翻译</td><td>Hy-MT2-7B / 1.8B</td><td>4.7 / 1.2GB</td><td>7B 质量更好，1.8B 低显存推荐</td></tr>
+    <tr><td>运行时</td><td>llama.cpp（CUDA）</td><td>—</td><td>本地翻译必需，一键获取</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>设备同步</h2>
+  <div class="sub">funscript 脚本与视频，adb 增量推送到 Quest / 手机</div>
+  <img class="shot" src="screenshots/sync.png">
+</section>
+
+<section>
+  <h2>常见问题</h2>
+  <div class="qa"><b>显存不够 / 提示降档？</b><p>翻译换低显存档（Sakura-1.5B / Hy-MT2-1.8B），或把识别换回 0.6B。</p></div>
+  <div class="qa"><b>首句字幕特别慢？</b><p>多为服务刚启动的一次性成本（模型加载 + 预热），之后正常。</p></div>
+  <div class="qa"><b>播放没有字幕？</b><p>仪表盘看「AI 字幕服务」是否就绪；模型未安装会在下载列表标出。</p></div>
+  <div class="qa"><b>下载中断了？</b><p>直接重试，断点续传接着下。</p></div>
+  <div class="qa"><b>想彻底重来？</b><p>关程序后删安装目录里的 data\，即恢复出厂（模型不受影响）。</p></div>
+</section>
+
+<div class="footer">
+  <div class="dl">下载：FunScriptCast-Nexus-Setup-1.0.31<small>本群文件 · 解压即装 · 识别运行时已内置</small></div>
+  <div class="contact">GitHub（最新版）：<code>github.com/wanfneg/FunScriptCast-Nexus/releases</code></div>
+  <div class="contact">BUG 反馈 / 功能建议 · 群里直接喊我</div>
+</div>
+
+</body>
+</html>
