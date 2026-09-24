@@ -3076,3 +3076,68 @@ URL/缓存的兼容性）；多根分支不动。
 只有"全失败且至少一句是后端级"才 `streak += 1`。教训延续 R87：**新测试写完必须对着
 旧代码跑一遍**——这一条我在写测试时顺手把"内容级不得推高熔断"也写成了断言，才把
 自己的 v1 抓出来；只测"该修的修好了"是抓不到这种"修过头"的。
+
+---
+
+## R89 审查报告第十三批修复：F23（按语言切模型的三处竞态）
+
+### F23 [中] 热切换与在飞请求竞态、逐块切换、预热标记不失效 —— 属实（三条全部核实）
+
+报告点名三处，逐条对着代码核实：
+
+1. **伪 BackendDown 累积熔断**：`_chat_local` 先 `be.ensure_server()`（那一刻才持锁、
+   随即释放）再 `self._post(...)` —— 请求在飞期间不持锁。而 `use_model` 在**自己的
+   RLock 内** `stop_server()`（terminate 常驻进程）⇒ 在飞请求连接必被重置 ⇒ `_post`
+   的 `except (URLError, TimeoutError, OSError)` 判成 `BackendDown` ⇒ 计入熔断。
+   叠加 R88 修好的 F21/F24 之后更危险：切几次就能把翻译整场熔断掉。
+2. **逐块切换付冷启动**：`_translate_inner` 每块都 `_apply_local_lang_model`，
+   旧实现无条件 `use_model(target)`（同模型时 `LlamaBackend` 内部幂等返回，但**换语言
+   就是真重启**）。触发路径不止多设备：`/translate/selftest` 写死 `"ja"`
+   （server_app.py 的 `t.translate_segments(segs, "ja")`）—— 用户看英语内容、在 PC 端点
+   一次「测试」，模型就被切回日语（6.3s 冷启动 + 掐在飞请求 + 记一次熔断）。
+3. **`_MT_WARM` 只置位不复位**：全仓只有一处赋值（启动预热完成），`/health` 直接
+   `_MT_WARM > 0` ⇒ 换过权重照样报 `mt_warm=true`。
+
+### 修法（四处，判据都只写一份）
+
+1. **模型代次 + 重发一次**：`LlamaBackend.model_epoch`（每次**真**切换 +1，同模型
+   `use_model` 不计数）。`_chat_local` 在发请求前记 `epoch0`，被掐断（`BackendDown`）
+   且 `model_epoch != epoch0` 时判定"是我们自己切的"，`ensure_server()` 拉起新权重后
+   **重发一次**；代次没变还失败 = 真故障，照旧抛出。上限一次，不掩盖后端挂掉。
+2. **滞回**：`local.switch_after_blocks`（默认 2）—— 只有"连续 2 块都是新语言"才真切；
+   **首块立即定位**（纯英语视频第一块就用对模型，不必先错一块）。这一条同时把
+   第 2 条的「测试」按钮路径也挡住了（单块 ja 只是候选，不触发切换）。
+3. **预热状态搬进 `Translator` 并按代次记账**：`_warm_epoch` / `_warm_ts`，
+   由 `_chat_local` 在**任何一次成功请求**后打点（prefill/首包的钱由那一次付掉，
+   所以"服务过一次"就是"热了"）；`warm_info()` 是 `/health` 的 `mt_warm` /
+   `mt_warm_ts` / `mt_warm_epoch` 三个字段的**唯一来源**，server_app 不再存副本
+   （`_MT_WARM` / `_MT_WARM_EPOCH` 全局连同 `_model_epoch_of` 一起删除）。
+   比"只失效不恢复"更好：换模型后 false，新模型跑完第一句**自动回到 true**，
+   不会让一个恒 false 的字段把用户/头显长期误导成"翻译永远没热"。
+4. **诊断请求不改路由**：`translate_segments(..., route=False)`，`/translate/selftest`
+   传 `route=False` —— 自检只验"当前配置通不通"，不该动用户正在用的模型。
+
+### 验证（`tests/test_pipeline_unit.py` 新增 `t_model_switch_race_hysteresis_warm`）
+
+牙齿证明分两半跑，避免第一条断言把后面的掩盖掉：
+
+| 项 | 新代码 | 旧代码 | 层次 |
+|---|---|---|---|
+| 真切换才 +1 代次（同模型幂等） | ✅ 0→1→1→2 | `AttributeError: model_epoch` | ⚠️ 浅（API 缺失，如实记录） |
+| 被切换掐断 → 重发一次并成功 | ✅ 返回译文、`_post` 2 次 | ❌ `BackendDown` 逃出去（计入熔断） | ✅ 行为级 |
+| 代次没变 → 不重发、照旧抛 | ✅ 1 次 | ❌ 不适用（旧代码本来就抛） | ✅ 行为级 |
+| 滞回（ja,en,ja,en,en,en,ja） | ✅ 只切 2 次调用（=**1 次真重启**） | ❌ 7 次调用（=**4 次真重启**，约 25s 冷启动） | ✅ 行为级 |
+| 自检不改路由 | ✅ `switched=[]` | ❌ `switched=['ja.gguf']`（英语会话被切回日语） | ✅ 行为级 |
+| 换模型后 `mt_warm` | ✅ true→**false**→（跑完一句）→true | ❌ true→**true**→true | ✅ 行为级 |
+| 启动预热仍点着 `mt_warm` | ✅ true | ❌ 不适用（旧实现另有记账点） | ✅ 行为级 |
+
+（新旧对比用 `git stash push -q vendor/subtitle/{translate_engine,server_app}.py` 跑同一套；
+另外单独 stash `llama_backend.py` 跑了一遍，确认那条 AttributeError 确实是浅失败。）
+
+⚠️ 关于"旧代码 7 次调用 vs 4 次真重启"：`use_model` 对同一路径是幂等空操作，所以
+调用次数 ≠ 重启次数。7 次调用对应 4 次**真重启**（每次约 6.3s 就绪）——报告写的
+"逐块付 6.3s"要按**语言翻转次数**算，不是按块数。写在这里免得下次引用时算错。
+
+⚠️ 这次改动顺手**搬了状态**（预热记账：server_app 全局 → Translator），搬完立刻补了
+第 (6) 条"启动预热路径仍要把 mt_warm 点着"的回归锁 —— 搬迁类改动最大的风险是
+把别人依赖的信号弄丢，而 `mt_warm` 是头显/界面判断"翻译热了没"的公开字段。
