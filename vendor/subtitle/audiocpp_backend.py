@@ -103,13 +103,14 @@ class AudioCppBackend:
         # 兼容历史绝对路径（开发机 E:\audiocpp-portable 的活配置照常工作）。
         _d = Path(str(cfg.get("dir") or AUDIOCPP_DIR))
         self.dir = _d if _d.is_absolute() else (BASE_DIR / _d).resolve()
-        self.backend = str(cfg.get("backend", "cpu"))          # cpu | cuda
-        # GPU 运行时缺失兜底（R96）：cuda 配了但 gpu\audiocpp_server.exe 不在
-        # （没下载过/被删/换机），若照常启动会用 exe_dir=gpu\ 找不到可执行文件、
-        # VAD CLI 也一起消失 → 整条字幕链路瘫痪（块块 skipped）。静默回退 CPU。
-        if self.backend != "cpu" and not (self.dir / "gpu" / "audiocpp_server.exe").is_file():
-            print("[asr] audiocpp backend=cuda 但 gpu\\audiocpp_server.exe 不存在，回退 cpu", flush=True)
-            self.backend = "cpu"
+        # R97：识别只跑 GPU，backend 不再是配置项（config 里残留的 cpu 键被忽略）。
+        # gpu\ 运行时缺失时**立刻报错**而不是悄悄降级 CPU——静默回退会让 VAD CLI
+        # 一起消失、字幕块块 skipped 且界面毫无征兆（R96 的教训反面）。在此 fail-fast，
+        # 服务起不来 → /health error → 手机端明确提示去模型列表下载。
+        self.backend = "cuda"
+        if not (self.dir / "gpu" / "audiocpp_server.exe").is_file():
+            raise AudioCppError(
+                "GPU 识别运行时未安装：请在模型列表下载「识别运行时 · CUDA」（约 1.1GB，需 NVIDIA 显卡）")
         self.threads = int(cfg.get("threads", max(1, (os.cpu_count() or 4) - 1)))
         self.port = int(cfg.get("port", DEFAULT_PORT))
         self.host = str(cfg.get("host", "127.0.0.1"))

@@ -621,7 +621,7 @@
 
   /* ---------- 模型下载：识别 / 翻译模型缺什么下什么（走 hf-mirror，宿主负责） ---------- */
   var MODEL_NAMES = {
-    "audiocpp-cuda": "识别运行时 · GPU 加速（CUDA，需 NVIDIA 显卡，识别更快）",
+    "audiocpp-cuda": "识别运行时 · CUDA（需 NVIDIA 显卡）",
     "qwen3-asr-0.6b": "识别模型 · Qwen3-ASR-0.6B（显存约 1.3GB）",
     "qwen3-asr-1.7b": "识别模型 · Qwen3-ASR-1.7B（显存约 3.6GB，转录质量更高）",
     "sakura-7b": "翻译模型 · Sakura-7B（日语，显存约 4.4GB，翻译质量更好）",
@@ -710,24 +710,8 @@
       if (!r.ok) return;
       var c = r.config || {};
       var asr = c.asr || {}, tr = c.translate || {};
-      /* 识别引擎下拉（R96 改造）：引擎固定 Qwen3（audiocpp，R65 起 whisper 已剔除），
-         下拉改选**运行后端** CPU/GPU。GPU 项只在 gpu\ 运行时已下载时出现
-         （/api/subtitle/config 的 asr_gpu_runtime）；配置写了 cuda 但运行时缺失时
-         服务端会自动回退 cpu（audiocpp_backend），下拉如实显示 CPU。选项每次
-         重建而不是只改值：下载完成刚装上 GPU 运行时，已渲染的旧选项要能补出来。 */
-      var asrSel = $("#asrBackend");
-      asrSel.innerHTML = "";
-      var asrCpuOpt = document.createElement("option");
-      asrCpuOpt.value = "cpu"; asrCpuOpt.textContent = "CPU";
-      asrSel.appendChild(asrCpuOpt);
-      if (r.asrGpuRuntime) {
-        var asrGpuOpt = document.createElement("option");
-        asrGpuOpt.value = "cuda"; asrGpuOpt.textContent = "GPU";
-        asrSel.appendChild(asrGpuOpt);
-      }
-      var cfgAb = String((asr.audiocpp || {}).backend || "cpu").toLowerCase();
-      asrSel.value = (cfgAb !== "cpu" && r.asrGpuRuntime) ? "cuda" : "cpu";
-      S.asrBackendPrev = asrSel.value;   // 引擎即改即存，失败时弹回这个值
+      /* 识别引擎下拉已删（R97）：引擎固定 Qwen3（audiocpp），且只跑 GPU——
+         gpu\ 运行时缺失时服务端直接报错提示下载，无 CPU 选项/回退。 */
       /* 识别模型下拉（R72）：只列 models\ 下实际存在的 qwen3_asr 模型，本地
          没有的不出现；配置指向的模型不在列表时保持空选，不静默改配置。 */
       fillAsrModelSelect(String((asr.audiocpp || {}).model || ""));
@@ -959,22 +943,6 @@
         if (r.ok) {
           S.asrModelPrev = val;
           toast("识别模型已保存", "字幕服务正在重启以加载 " + (sel.options[sel.selectedIndex] || {}).text, "ok");
-          restartSubForConfig();
-        } else {
-          sel.value = prev;
-          toast("保存失败", r.error || "", "err");
-        }
-      });
-    });
-    $("#asrBackend").addEventListener("change", function () {
-      var sel = this, prev = S.asrBackendPrev || sel.value;
-      // 注意写的是 asr.audiocpp.backend（cpu|cuda），不是 asr.backend（引擎选择，
-      // R65 起固定 audiocpp）——写错层会覆写引擎键而 GPU 开关根本不生效。
-      api("/api/subtitle/config", "POST", { asr: { audiocpp: { backend: sel.value } } }).then(function (r) {
-        if (r.ok) {
-          S.asrBackendPrev = sel.value;
-          toast(sel.value === "cuda" ? "已切换为 GPU 识别" : "已切换为 CPU 识别",
-                "字幕服务正在重启", "ok");
           restartSubForConfig();
         } else {
           sel.value = prev;
@@ -1362,7 +1330,7 @@
     // 配置输入框时不要覆盖他的输入
     setTimeout(function () { if (!S.subCfgDirty) loadSubtitleConfig(); }, 2500);
     // 配置输入一旦被用户动过就标记：之后的自动回填一律让路
-    ["asrBackend", "mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtLocalModelEn", "mtCloudBase", "mtCloudModel", "mtCloudKey", "subIdleRelease"
+    ["mtBackend", "mtModel", "mtBase", "mtLocalModel", "mtLocalModelEn", "mtCloudBase", "mtCloudModel", "mtCloudKey", "subIdleRelease"
     ].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) el.addEventListener("input", function () {

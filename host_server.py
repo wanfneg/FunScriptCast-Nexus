@@ -1355,7 +1355,7 @@ MODELS_CATALOG = [
         # audiocpp_backend.py），所以这条目装没装都不破坏 CPU 路径。
         "id": "audiocpp-cuda",
         "role": "asr-runtime",
-        "label": "识别运行时 · GPU 加速（CUDA，需 NVIDIA 显卡，识别更快）",
+        "label": "识别运行时 · CUDA（需 NVIDIA 显卡）",
         "kind": "zip",
         "check_file": "gpu/audiocpp_server.exe",
         "dest_dir": APP_DIR / "vendor" / "audiocpp",
@@ -1660,14 +1660,14 @@ def _model_dl_worker(e: dict) -> None:
                 _MODEL_DL[id_].update(state="done", pct=100)
             RT.add_log("模型下载完成：" + e["label"], "ok")
             if e.get("role") == "asr-runtime":
-                # R96：GPU 运行时到手即启用——用户下它就是为了 GPU；想回 CPU
-                # 在界面「识别引擎」里切（gpu\ 缺失时后端也会自动回退，双保险）。
+                # R97：GPU 运行时到手即启用。backend 已在 audiocpp_backend 硬编
+                # cuda（不再是配置项），这里只需把在跑的服务重启加载它；
+                # 没在跑则下次播放按需拉起，自然用上。
                 try:
-                    save_subtitle_config({"asr": {"audiocpp": {"backend": "cuda"}}})
-                    RT.add_log("识别后端已切换为 GPU（cuda）", "ok")
+                    RT.add_log("GPU 识别运行时已就绪，重启字幕服务加载", "ok")
                     _restart_sub_if_running()
                 except Exception as ex:
-                    print("[models] 自动切换 GPU 后端失败（忽略）：", ex, flush=True)
+                    print("[models] 重启字幕服务失败（忽略）：", ex, flush=True)
             return
         if e.get("repo_dirname"):
             # 修复历史损坏：此前版本给 refs/main 写过带换行的值，faster-whisper
@@ -2671,13 +2671,7 @@ def subtitle_config() -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
     # API Key 不回明文给前端（只回 api_key_set / api_key_tail，前端显示占位符）
-    return {
-        "ok": True,
-        "path": str(cfg_file),
-        "config": _mask_translate_secrets(cfg),
-        # R96：GPU 识别运行时在不在——界面据此决定「识别引擎」下拉要不要出 GPU 项
-        "asr_gpu_runtime": (APP_DIR / "vendor" / "audiocpp" / "gpu" / "audiocpp_server.exe").is_file(),
-    }
+    return {"ok": True, "path": str(cfg_file), "config": _mask_translate_secrets(cfg)}
 
 
 def save_subtitle_config(patch: dict) -> dict:

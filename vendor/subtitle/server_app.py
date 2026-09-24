@@ -295,7 +295,9 @@ def _make_asr(cfg: dict):
     except Exception as e:
         print(f"[server] ⚠️ audiocpp 不可用（{type(e).__name__}: {e}），进入未就绪模式"
               f"（下载识别模型后重启字幕服务即恢复）")
-        return _AsrUnavailable()
+        be = _AsrUnavailable()
+        be.error = str(e)    # R97：实例级覆盖兜底文案——缺 GPU 运行时 ≠ 缺模型，原因要如实透出
+        return be
 
 
 def _warm_translator() -> None:

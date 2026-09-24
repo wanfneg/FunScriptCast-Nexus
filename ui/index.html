@@ -420,13 +420,6 @@
           </div>
           <div class="grid g2 gap-2">
             <label class="field">
-              <span>识别引擎</span>
-              <!-- R96：CPU/GPU 后端选择；GPU 项由 app.js 在 gpu\ 运行时已下载时才补出 -->
-              <select class="input" id="asrBackend">
-                <option value="cpu">CPU</option>
-              </select>
-            </label>
-            <label class="field">
               <span>识别模型</span>
               <!-- 选项由 app.js 按 /api/subtitle/asr-models 动态填：只列 models\ 下实际存在的模型（R72） -->
               <select class="input" id="asrModel"></select>

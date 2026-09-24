@@ -3590,3 +3590,31 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
   _restart_sub_if_running、断点续传全部实战通过。下载中宿主进程曾消失一次（疑手动关闭），
   重启后测试继续，条目状态机无残留损伤。
 - 遗留不变：8791 卡死 bug、手机 UI 8756 文案、DLNA IP 预填。
+
+## R97（2026-09-25）：识别只跑 GPU——删 CPU 选项 + 缺失即报错
+
+**用户输入**："不要CPU跑，就只留gpu"。R96 的 CPU/GPU 下拉发布不到一小时即被否——产品取向：GPU 是唯一识别路径。
+
+**改动**：
+1. **UI（index.html/app.js）**：识别引擎下拉整个删掉（grid 只剩识别模型）；R96 的
+   选项重建/回显/保存 handler、asrGpuRuntime 消费、dirty 列表条目全部移除。
+2. **audiocpp_backend**：`self.backend = "cuda"` 硬编（config 残留 cpu 键被忽略）；
+   gpu\audiocpp_server.exe 缺失 → `__init__` 直接 raise AudioCppError（明确引导下载）。
+   **不再静默回退 cpu**——回退会让 VAD CLI 一起消失、字幕块块 skipped 且界面无征兆，
+   与"不许静默失败"原则冲突。fail-fast → 服务进未就绪模式 → /health asr_ready=False。
+3. **server_app._make_asr**：except 分支 `_AsrUnavailable()` 改为实例级 `be.error = str(e)`
+   ——否则类属性兜底文案"识别模型未安装"会掩盖真实原因（缺的是运行时不是模型）。
+4. **宿主**：下载钩子简化（backend 不再是配置项，只 `_restart_sub_if_running`）；
+   catalog 标签改「识别运行时 · CUDA（需 NVIDIA 显卡）」；asr_gpu_runtime 字段删除。
+5. **版本**：Setup-1.0.43（128.4MB）。E 盘 dev vendor\audiocpp 补 gpu\（构建后才补，
+   否则 2GB 进安装包——dist-app 已验证只有 cpu+assets）。
+
+**验证（D 盘实机）**：1.0.43 静默升级 → 正常路径 cuda+真实音频识别翻译 ✓；
+缺失路径：gpu\ 改名 → 日志明确报"GPU 识别运行时未安装：请在模型列表下载…" →
+未就绪模式（不再假 ready）→ 恢复后重启转录正常 ✓。
+
+**取舍说明**：无 N 卡的机器本地识别不再可用（本地翻译本来就依赖 CUDA llama，
+受影响人群只剩"无 N 卡+云端翻译"组合）；安装包仍内置 cpu\（13MB 死重，保留作
+应急回退，fetch_audiocpp 构建链不动）。
+
+**遗留**：R95 的 8791 卡死 bug；手机端 8756 文案 + DLNA IP 预填。
