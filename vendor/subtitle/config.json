@@ -72,7 +72,7 @@
       "max_tokens": 2048,
       "start_timeout_sec": 180,
       "model_by_lang": {
-        "en": "../../models/Hy-MT2-7B/Hy-MT2-7B-Q4_K_M.gguf"
+        "en": "../../models/Hy-MT2-7B-Q4_K_M.gguf"
       }
     },
     "mode": "auto",

@@ -30,6 +30,7 @@ import json
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -103,6 +104,17 @@ def _normalize_jsonish(s: str) -> str:
     return t
 
 
+class ContentBad(RuntimeError):
+    """后端**活着**，但这一批的内容不合格：HTTP 200 却空译文、或 200 但不是 JSON。
+
+    与 BatchPartial 同一条分类学：**绝不能计入熔断**（评审 F22）。实测事故：云端
+    返回 `finish_reason=length` 且 content 为空（推理类模型把 max_tokens 花在思考上），
+    旧实现把它当普通 RuntimeError ⇒ `_fail_streak += 1`；一次 4 段调用（2 批）就能把
+    streak 推满，再叠上"熔断只熔不恢复"（F21）就是整场播放永久跳过 LLM。
+    同族还有 `_post` 里对 200 非 JSON 响应的 json 解析失败。
+    """
+
+
 class BatchPartial(Exception):
     """模型**有响应**，但这一批没完全达标（缺键 / 漏译没修好）。
 
@@ -138,6 +150,19 @@ class BackendDown(RuntimeError):
 
     所以后端级故障必须是一个**能被上层认出来**的类型：熔断抛它、_post 连不上/
     超时抛它，`work()` 见到它就跳过逐句补救、全局补救也跳过对应段，只留空 + 留痕。
+    """
+
+
+class CircuitOpen(BackendDown):
+    """熔断**跳过**（不是后端的回答）。
+
+    必须与"后端失败"分开计数（评审 F21 的修法要点）：若跳过也走失败分支，持续推流时
+    每一批都会刷新冷却时钟 `_last_fail_ts`，`since` 永远接近 0 ⇒ 半开探测永远轮不到
+    ⇒ 还是"只熔不恢复"。所以跳过只计 skipped_batches：不累加 streak、不动冷却时钟、
+    不算 fail_batches（它压根没发请求）。
+
+    仍继承 BackendDown：上层据此**跳过逐句补救**（对着同一个熔断后端逐句重试只是白等），
+    与原来的熔断路径行为一致。
     """
 
 
@@ -219,6 +244,10 @@ class Translator:
         fb_enabled = bool(fb.get("enabled", False))
         self.fallback_kind = str(fb.get("backend", "bing")) if fb_enabled else ""
         self.fallback_after = max(1, int(fb.get("after_fail_batches", 2)))
+        # 熔断后的**半开冷却**（评审 F21）：只熔不恢复 = 一次瞬时抖动锁死整场播放。
+        # 距上次失败超过这个秒数就放一批过去探测；成功即复位。默认 60s。
+        self.fallback_cooldown_sec = max(5.0, float(fb.get("cooldown_sec", 60)))
+        self._last_fail_ts = 0.0
         self._fallback = None
         self._fail_streak = 0
         # 同后端逐句补救的总预算（**每次调用**共享，不是每批）。逐句补救有价值
@@ -233,6 +262,7 @@ class Translator:
                       "fix_rounds": 0, "leak_rounds": 0, "degenerate_rounds": 0,
                       "fail_batches": 0,
                       "fail_kinds": {}, "skipped_batches": 0, "partial_batches": 0,
+                      "half_open_probes": 0,
                       "fallback_batches": 0, "fallback_errors": 0,
                       "fallback_error": "", "degraded": False, "segments": 0,
                       "leak_kept": 0,
@@ -279,7 +309,7 @@ class Translator:
             headers={"Content-Type": "application/json", **(headers or {})})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError:
             # 后端**有响应**（鉴权/参数/额度错误）：不是"连不上"，上层照原样处理
             raise
@@ -290,6 +320,14 @@ class Translator:
             # 一个 timeout。
             raise BackendDown(
                 f"后端不可达（{url}）：{getattr(e, 'reason', None) or e}") from e
+        # 走到这里说明 **HTTP 200**（后端活着），只是 body 不是 JSON。这属于内容级
+        # 不合格，必须与"连不上"分开（评审 F22）：旧实现让 json 解析异常一路冒到
+        # 熔断计数里，一次抖动就能把 streak 推满。
+        try:
+            return json.loads(raw)
+        except ValueError as e:
+            raise ContentBad(
+                f"后端返回的不是 JSON（HTTP 200，{len(raw)} 字节）：{e}") from e
 
     def _chat(self, system: str, user: str) -> str:
         """一次 LLM 对话（local=本地 llama.cpp / ollama / openai 兼容）。"""
@@ -421,7 +459,9 @@ class Translator:
         text = (data["choices"][0]["message"]["content"] or "").strip()
         if not text:
             fr = data["choices"][0].get("finish_reason") or "?"
-            raise RuntimeError(
+            # ContentBad 而不是 RuntimeError：HTTP 200 说明后端活着，空译文是**内容**
+            # 问题（推理模型把预算花在思考上），不能拿它累加熔断（评审 F22）。
+            raise ContentBad(
                 f"云端返回空译文（finish_reason={fr}）：推理类模型可能把预算都花在思考上，"
                 "请调大 max_tokens 或换非推理模型")
         return text
@@ -917,10 +957,27 @@ class Translator:
                 # 死后端（只是不切换到免费后端而已）。此前 `self.fallback_kind and`
                 # 这个门控让默认配置（fallback.enabled=false）下熔断恒不触发。
                 if streak >= self.fallback_after:
+                    # **半开探测**（评审 F21）：熔断不能是永久的。旧实现只熔不恢复——
+                    # 唯一的复位点在成功之后，而熔断批次根本到不了那里，于是云端一次
+                    # 瞬时抖动（三连失败）之后，整场剩余播放全部跳过 LLM，直到字幕服务
+                    # 重启；默认 fallback.enabled=false 时连兜底都没有。
+                    # 现在距上次失败超过冷却期就放**一批**过去探一次：
+                    # 成功 → 下面的复位把它拉回来；失败 → 刷新时间戳、继续熔断。
+                    since = time.monotonic() - self._last_fail_ts
+                    if since < self.fallback_cooldown_sec:
+                        with self._lock:
+                            self.stats["skipped_batches"] += 1
+                        # CircuitOpen（BackendDown 的子类）：上层据此跳过逐句补救；
+                        # 但**不计失败、不刷新冷却时钟**——否则持续推流时每批都刷新，
+                        # 冷永远走不完，"只熔不恢复"照旧（见 CircuitOpen 的注释）。
+                        raise CircuitOpen(f"LLM 后端已连续 {streak} 批失败，跳过重试"
+                                          f"（{self.fallback_cooldown_sec - since:.0f}s 后"
+                                          f"放一批探测）")
                     with self._lock:
-                        self.stats["skipped_batches"] += 1
-                    # 抛 BackendDown（而非普通 RuntimeError）：下面据此跳过逐句补救
-                    raise BackendDown(f"LLM 后端已连续 {streak} 批失败，跳过重试")
+                        self.stats["half_open_probes"] += 1
+                    print(f"[translate] 熔断半开探测：距上次失败 {since:.0f}s，"
+                          f"放行本批试探（已跳过 {self.stats['skipped_batches']} 批）",
+                          flush=True)
                 out = self._translate_batch(texts, indices, system, lang_key, context)
                 with self._lock:
                     self._fail_streak = 0
@@ -933,15 +990,23 @@ class Translator:
                 # down = 后端级故障（连不上/超时/熔断）：这类失败**不能**再逐句
                 # 重试——对着同一个死后端，每句都要白等一个完整 timeout。
                 down = isinstance(e, BackendDown)
-                alive = isinstance(e, BatchPartial)
+                # 后端还活着？BatchPartial（模型回了 JSON 但内容不达标）与 ContentBad
+                # （HTTP 200 却空译文 / 不是 JSON）都是**内容级**问题，一律**不计熔断**
+                # ——这与模块自己的分类学一致，也是评审 F22 的修复点。
+                alive = isinstance(e, (BatchPartial, ContentBad))
+                # 熔断跳过（CircuitOpen）压根没发请求：只计 skipped_batches，
+                # 不累加 streak、不刷新冷却时钟（F21）。
+                opened = isinstance(e, CircuitOpen)
                 with self._lock:
-                    self.stats["fail_batches"] += 1
-                    self.stats["fail_kinds"][type(e).__name__] = (
-                        self.stats["fail_kinds"].get(type(e).__name__, 0) + 1)
-                    if alive:
-                        self._fail_streak = 0
-                    else:
-                        self._fail_streak += 1
+                    if not opened:
+                        self.stats["fail_batches"] += 1
+                        self.stats["fail_kinds"][type(e).__name__] = (
+                            self.stats["fail_kinds"].get(type(e).__name__, 0) + 1)
+                        if alive:
+                            self._fail_streak = 0
+                        else:
+                            self._fail_streak += 1
+                            self._last_fail_ts = time.monotonic()   # 半开冷却起点（F21）
                         if self._fail_streak >= self.fallback_after:
                             # 与上面的熔断判据同一口径：没配兜底时"后端已挂"也要可见
                             self.stats["degraded"] = True

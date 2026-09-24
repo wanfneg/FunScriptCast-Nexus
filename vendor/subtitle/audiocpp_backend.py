@@ -166,6 +166,28 @@ class AudioCppBackend:
         except Exception:
             return False
 
+    def _ensure_alive(self, reason: str = "") -> bool:
+        """上游还活着吗？不活就**重拉一次**（评审 F12 的自愈闭环）。
+
+        为什么必须有这条路径：`ensure_server()` 此前只在 lifespan 启动时调一次，
+        而 audiocpp_server.exe 运行中崩溃/被杀之后，没有任何请求会重拉它——
+        VAD 走的是一次性 CLI 所以照常成功，只有逐段 POST 全线失败，于是**每一段都空**：
+        用户看到"字幕突然全没了"，宿主侧看不到异常（旧 /health 的 asr_ready 是类属性，
+        恒为 True）。这里失败重拉，成功返回 True；重拉也失败就返回 False，
+        调用方据此把"整块都废了"如实报出去，而不是静默给空字幕。
+
+        RLock 可重入，且本方法不持有锁调 ensure_server，避免与 lifespan 抢锁。
+        """
+        if self.probe():
+            return True
+        print(f"[asr] 上游 audiocpp 服务无响应（{reason}）→ 重拉一次", flush=True)
+        try:
+            self.ensure_server()
+        except Exception as ex:
+            print(f"[asr] 重拉上游失败：{type(ex).__name__}: {ex}", flush=True)
+            return False
+        return True
+
     def _registered_models(self, timeout: float = 3.0) -> list | None:
         """上游 /v1/models 里已注册的模型 id；查不到返回 None（不阻断主流程）。"""
         try:
@@ -591,7 +613,13 @@ class AudioCppBackend:
         # 热词 = 上一句转写原文（借鉴 realtime-subtitle 的 context carryover）：
         # 治人名/专名跨块听错。
         context = (extra_context or "").strip()
+        # 进循环前先确认上游活着，必要时重拉一次（评审 F12 的自愈闭环）。
+        # 放在这里而不是只在 lifespan：上游崩了之后**没有任何请求路径**会重拉，
+        # 于是后面每一段都失败、每段都空，用户看到的是"字幕突然全没了"。
+        self._ensure_alive("转写前")
         segs = []
+        healed = False          # 本次转写是否已经重拉过一次上游
+        failed_spans = 0        # 连接级/超时级别的失败段数（用于判断"整块都废了"）
         for i, (s, e) in enumerate(merged):
             a = max(0, int((s - pad) * SR))
             b = min(len(pcm), int((e + pad) * SR))
@@ -610,15 +638,36 @@ class AudioCppBackend:
                                              echo_ref=extra_context,
                                              timeout=span_timeout)
             except Exception as ex:
+                kind = self._error_kind(ex)
                 # 回给客户端的只有错误类别：详细文本含临时 wav 绝对路径与本机
                 # 用户名（见 _error_kind），而 /transcribe 对局域网开放。
                 # 全文留在服务日志里，诊断信息不丢。
-                print(f"[asr] 单段转写失败（{self._error_kind(ex)}）："
-                      f"{type(ex).__name__}: {ex}", flush=True)
-                segs.append({"start_ms": video_start_ms + int(round(a / SR * 1000)),
-                             "end_ms": video_start_ms + int(round(b / SR * 1000)),
-                             "text": "", "error": self._error_kind(ex)})
-                continue
+                print(f"[asr] 单段转写失败（{kind}）：{type(ex).__name__}: {ex}", flush=True)
+                # 连接级失败 = 上游 audiocpp_server 很可能已经崩了（本后端的 VAD 走
+                # 一次性 CLI，所以 speech_spans 照常成功、只有这里的 POST 全线失败）。
+                # 旧实现只会把每一段都 append 成空段 ⇒ 头显看到**字幕静默全空**，而
+                # /health 的 asr_ready 依旧 True（评审 F12）。这里重拉一次并给这一段
+                # 一次机会；每次转写最多重拉一次，避免对着坏模型反复拉起进程。
+                if kind == "backend_unavailable" and not healed:
+                    healed = True
+                    if self._ensure_alive("单段连接失败后"):
+                        try:
+                            self._write_wav(wav, pcm[a:b])
+                            text = self._transcribe_span(wav, context, lang_key,
+                                                         echo_ref=extra_context,
+                                                         timeout=span_timeout)
+                            ex = None
+                        except Exception as ex2:
+                            ex = ex2
+                            kind = self._error_kind(ex2)
+                            print(f"[asr] 重拉上游后单段仍失败（{kind}）："
+                                  f"{type(ex2).__name__}: {ex2}", flush=True)
+                if ex is not None:
+                    segs.append({"start_ms": video_start_ms + int(round(a / SR * 1000)),
+                                 "end_ms": video_start_ms + int(round(b / SR * 1000)),
+                                 "text": "", "error": kind})
+                    failed_spans += 1
+                    continue
             finally:
                 try:
                     wav.unlink()
@@ -654,10 +703,18 @@ class AudioCppBackend:
             # 跨块长句在那条路径上照样两块都丢。
             segs = [x for x in segs
                     if keep_segment(x["start_ms"], x["end_ms"], keep_from_ms)]
-        return {"language": lang_key, "segments": segs,
-                "asr_ms": round((time.perf_counter() - t0) * 1000, 1),
-                "skipped": False, "backend": "audiocpp",
-                "context_chars": len(context)}
+        out = {"language": lang_key, "segments": segs,
+               "asr_ms": round((time.perf_counter() - t0) * 1000, 1),
+               "skipped": False, "backend": "audiocpp",
+               "context_chars": len(context)}
+        # 整块都废了就别装作"这块没有语音"（评审 F12）：只要**所有**尝试过的段都失败、
+        # 且一段文本都没拿到，就把错误类别如实带出去。否则调用方（与用户）看到的是
+        # 一次"正常但空"的结果——上游全崩与真静音完全不可区分。
+        if failed_spans and failed_spans >= len(segs) and not any(x.get("text") for x in segs):
+            out["error"] = "backend_unavailable"
+            out["skipped"] = True
+            print(f"[asr] 本块 {failed_spans} 段全部失败（上游不可用），已如实上报", flush=True)
+        return out
 
     @staticmethod
     def _merge_short_segments(segs: list, seg_cfg: dict) -> list:

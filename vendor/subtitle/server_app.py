@@ -420,6 +420,38 @@ def _vram_estimate() -> dict:
             "total_mb": total}
 
 
+# /health 的活体探测缓存（评审 F12）。/health 是 1s 轮询，而探测要发一次 HTTP；
+# 缓存 2 秒让并发轮询共用一次结果，也让"上游挂死"最多每 2 秒吃掉一个 1s 超时。
+_HEALTH_PROBE: dict = {"ts": 0.0, "ok": None}
+
+
+def _asr_ready(asr) -> bool:
+    """识别现在**真的**能用吗（评审 F12）。
+
+    旧判据 `backend_kind != "unavailable"` 查的是**类属性**：audiocpp_server.exe
+    崩溃/被杀之后它照样是 "audiocpp"，于是 /health 恒报 ready —— 头显以为一切正常、
+    继续推流，而每一段转写都在失败，用户看到的是"字幕静默全空"、宿主侧毫无异常。
+    现在对支持 probe() 的后端**真的探一次**（audiocpp 的 /health，1s 超时）。
+
+    语义边界：probe 反映的是**上游进程活着且就绪**（模型的 lazy_load 由上游自己管，
+    服务进程在就绪前也不会报 status=ok），所以这里就是头显该看到的"能不能推流"。
+    """
+    if asr is None or getattr(asr, "backend_kind", "unavailable") == "unavailable":
+        return False
+    probe = getattr(asr, "probe", None)
+    if not callable(probe):          # 没有活体探测的后端：退回"已构造即就绪"
+        return True
+    now = time.time()
+    if _HEALTH_PROBE["ok"] is not None and (now - _HEALTH_PROBE["ts"]) < 2.0:
+        return _HEALTH_PROBE["ok"]
+    try:
+        ok = bool(probe(1.0))
+    except Exception:
+        ok = False
+    _HEALTH_PROBE["ts"], _HEALTH_PROBE["ok"] = now, ok
+    return ok
+
+
 @app.get("/health")
 def health():
     asr = state["asr"]
@@ -442,8 +474,9 @@ def health():
         # 评测与排障靠它区分跑的是哪套切段——config 换档不换代码签名（R60 教训）。
         "segmentation": "hybrid" if _hybrid_mode() else "chunk",
         "asr_model": m,
-        # 识别是否真的可用（模型没下载时服务照常起，但这里为 False，头显端据此不误报就绪）
-        "asr_ready": getattr(asr, "backend_kind", "unavailable") != "unavailable",
+        # 识别是否真的可用（评审 F12）：不能只看 backend_kind —— 那是类属性，
+        # 上游崩了它照样是 "audiocpp"，于是这里恒 True、头显误以为就绪。
+        "asr_ready": _asr_ready(asr),
         "device": (CFG.get("asr", {}) or {}).get("device"),
         "vad": asr.vad is not None if asr else False,
         "aligner": asr.use_aligner if asr else False,

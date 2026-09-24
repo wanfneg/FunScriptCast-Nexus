@@ -632,6 +632,165 @@ def t_stream_asr_upstream_from_config():
         f"流式模型 id 与 audiocpp_backend 不同源：{sb2.ASR_MODEL}"
 
 
+# 12 ------------- F12：ASR 上游死后请求路径自愈 + /health 如实反映死活
+def t_asr_selfheal_and_health():
+    """上游 audiocpp_server 崩溃/被杀之后必须能自愈，且 /health 不能继续报 ready。
+
+    评审 F12 的三个点，全部用桩验证（不拉起真进程）：
+      ① transcribe 进循环前会确认上游活着，死了就重拉一次；
+      ② 连接级失败时重拉并给该段一次机会（重拉成功 → 这一句不该白丢）；
+      ③ 整块全失败时如实带 error，而不是装成"这块没有语音"；
+      ④ /health 的 asr_ready 查活体探测，不再只看类属性。
+    """
+    import urllib.error
+
+    import numpy as np
+    import audiocpp_backend
+    import server_app
+
+    class _Dead(Exception):
+        pass
+
+    def _backend(span_ok_first=False):
+        be = audiocpp_backend.AudioCppBackend({"model": "x", "backend": "cpu"})
+        calls = {"ensure": 0, "probe": 0, "span": 0}
+        be.speech_spans = lambda pcm, tmpdir=None: [(0.0, 1.0)]
+        be._write_wav = lambda wav, pcm: None
+        be._ensure_alive_calls = calls
+
+        def probe(timeout=2.0):
+            calls["probe"] += 1
+            return False          # 上游已死
+        be.probe = probe
+
+        def ensure_server():
+            calls["ensure"] += 1  # 重拉"成功"
+            return True
+        be.ensure_server = ensure_server
+
+        def span(*a, **kw):
+            calls["span"] += 1
+            if span_ok_first and calls["span"] == 1:
+                raise urllib.error.URLError("connection refused")
+            if span_ok_first:
+                return "复活的这一句"
+            raise urllib.error.URLError("connection refused")
+        be._transcribe_span = span
+        return be, calls
+
+    pcm = np.zeros(16000, dtype=np.float32)
+
+    # ④ /health 的判据
+    server_app._HEALTH_PROBE["ok"] = None
+    class _Alive:
+        backend_kind = "audiocpp"
+        def probe(self, timeout=2.0): return True
+    class _DeadBe:
+        backend_kind = "audiocpp"
+        def probe(self, timeout=2.0): return False
+    assert server_app._asr_ready(_Alive()) is True, "活着的上游应为 ready"
+    server_app._HEALTH_PROBE["ok"] = None          # 清缓存再测下一个
+    assert server_app._asr_ready(_DeadBe()) is False, "死了的上游不能报 ready（F12 的核心）"
+    server_app._HEALTH_PROBE["ok"] = None
+    assert server_app._asr_ready(server_app._AsrUnavailable()) is False, "未就绪兜底仍为 False"
+
+    # ② 连接级失败 → 重拉一次并重试该段，这一句不该丢
+    be, calls = _backend(span_ok_first=True)
+    out = be.transcribe(pcm, "ja", 0, 0, None, None, "")
+    assert calls["ensure"] >= 1, f"上游死了却没有重拉：{calls}"
+    assert calls["span"] == 2, f"重拉后没有重试该段：{calls}"
+    assert any(s.get("text") == "复活的这一句" for s in out["segments"]), \
+        f"自愈后这一句仍丢了：{out['segments']}"
+    assert "error" not in out, f"已自愈就不该报错：{out}"
+
+    # ③ 整块全失败 → 如实上报，不装成"没有语音"
+    be2, calls2 = _backend(span_ok_first=False)
+    out2 = be2.transcribe(pcm, "ja", 0, 0, None, None, "")
+    assert calls2["ensure"] >= 1, f"全失败时也没重拉：{calls2}"
+    assert out2.get("error") == "backend_unavailable", \
+        f"整块全失败必须如实报错（否则与真静音不可区分）：{out2}"
+    assert out2.get("skipped") is True
+
+
+# 13 ------------- F21/F22：熔断要能恢复；内容级失败不得计入熔断
+def t_circuit_breaker_recovers():
+    """评审 F21 + F22。
+
+    F22：云端 HTTP 200 但 content 为空（推理模型把 max_tokens 花在思考上、
+    finish_reason=length）是**内容级**不合格——后端活着，不能累加熔断。旧实现用普通
+    RuntimeError，一次 4 段调用（2 批）就能把 streak 推满。
+    F21：熔断只熔不恢复——唯一复位点在成功之后，而熔断批次到不了那里，于是三连失败
+    之后整场播放全部跳过 LLM 直到服务重启。修法是冷却期后放一批探测（半开）。
+
+    两条都用假后端跑真实调用路径。
+    """
+    import time as _time
+
+    from translate_engine import BackendDown, ContentBad, Translator
+
+    def _mk():
+        t = Translator({"backend": "openai", "batch_size": 2, "cache": False,
+                        "fallback": {"after_fail_batches": 2, "cooldown_sec": 5},
+                        "openai": {"base_url": "https://x/v1", "model": "m",
+                                   "api_key": "sk-test-not-real"}})
+        t.disabled = False
+        return t
+
+    # ---- F22：空译文属于"后端还活着"，不得累加熔断 ----
+    t = _mk()
+    def _empty(url, payload, headers=None, timeout=180):
+        return {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+    t._post = _empty
+    segs = [{"text": f"句子{i}"} for i in range(4)]
+    t.translate_segments(segs, "ja")          # 4 段 = 2 批，两批都拿空译文
+    assert t._fail_streak == 0, \
+        f"空译文被计入熔断了（一次调用就推满，后续整场跳过 LLM）：streak={t._fail_streak}"
+    assert "ContentBad" in t.stats["fail_kinds"], \
+        f"空译文没有被归到内容级失败：{t.stats['fail_kinds']}"
+    assert t.stats["skipped_batches"] == 0, "内容级失败不该触发熔断跳过"
+
+    # ---- F21：刚熔断 → 跳过；冷却期过后 → 放一批探测并复位 ----
+    t2 = _mk()
+    t2._fail_streak = 2                        # 达到 fallback_after
+    t2._last_fail_ts = _time.monotonic()       # 刚失败过
+    before = t2.stats["skipped_batches"]
+    try:
+        t2.translate_segments([{"text": "a"}, {"text": "b"}], "ja")
+    except BackendDown:
+        pass
+    assert t2.stats["skipped_batches"] > before, "熔断期内应当跳过批次"
+
+    t2._last_fail_ts = _time.monotonic() - 999   # 冷却期已过
+    def _good(url, payload, headers=None, timeout=180):
+        return {"choices": [{"message": {"content": '{"0":"译文"}'},
+                             "finish_reason": "stop"}]}
+    t2._post = _good
+    probes = t2.stats["half_open_probes"]
+    t2.translate_segments([{"text": "a"}], "ja")
+    assert t2.stats["half_open_probes"] > probes, \
+        "冷却期过后没有放行探测批（F21 未修：熔断永不恢复）"
+    assert t2._fail_streak == 0, f"半开探测成功后应复位熔断：{t2._fail_streak}"
+
+    # 冷却期内仍应跳过（不能每批都去撞死后端），且**不得刷新冷却时钟**——
+    # 否则持续推流时每批都刷新，冷永远走不完 = 还是"只熔不恢复"。
+    t3 = _mk()
+    t3._fail_streak = 2
+    t3._last_fail_ts = _time.monotonic() - 4.0     # 距冷却结束还有 1s
+    sk = t3.stats["skipped_batches"]
+    ts_before = t3._last_fail_ts
+    t3.translate_segments([{"text": "a"}, {"text": "b"}], "ja")
+    assert t3.stats["skipped_batches"] > sk, "冷却期内必须继续跳过"
+    assert t3._last_fail_ts == ts_before, \
+        "熔断跳过刷新了冷却时钟 ⇒ 持续推流时永远等不到半开探测（F21 没真修好）"
+    assert t3._fail_streak == 2, f"跳过不该累加失败计数：{t3._fail_streak}"
+    # 冷却真的走完 → 下一次必须放行探测
+    t3._last_fail_ts = _time.monotonic() - 5.1
+    t3._post = _good
+    pr = t3.stats["half_open_probes"]
+    t3.translate_segments([{"text": "a"}], "ja")
+    assert t3.stats["half_open_probes"] > pr, "冷却走完后仍不放行探测"
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -653,6 +812,8 @@ if __name__ == "__main__":
     check("混合切句 VAD 裁决切点（R63.1 BGM 场景）", t_hybrid_vad_cut)
     check("F01 字幕配置深合并（所有组，切模型不毁配置）", t_subtitle_config_deep_merge)
     check("F01 流式上游地址与 asr.audiocpp 同源", t_stream_asr_upstream_from_config)
+    check("F12 ASR 上游自愈 + /health 如实反映死活", t_asr_selfheal_and_health)
+    check("F21/F22 熔断半开恢复 + 空译文不计熔断", t_circuit_breaker_recovers)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
