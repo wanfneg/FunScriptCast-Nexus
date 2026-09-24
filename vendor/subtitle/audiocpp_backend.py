@@ -53,6 +53,12 @@ AUDIOCPP_LANG = {"ja": "Japanese", "en": "English"}
 # 流式模型的 id：头显的实时字幕按这个 id 请求，必须与 stream_bridge.ASR_MODEL 一致。
 STREAM_MODEL_ID = "qwen3-asr-stream"
 
+# audiocpp_server 的缺省端口。**只在这里定义一份**：stream_bridge 也从这里取。
+# 此前 stream_bridge 硬编码 :8081 而本模块缺省是 8083 —— 配置里 port 一旦缺失
+# （UI 切换识别模型时曾把 asr.audiocpp 整段替换掉，见 host_server.save_subtitle_config），
+# 离线路径去 8083、流式路径去 8081，流式字幕整条失效。
+DEFAULT_PORT = 8083
+
 
 def _run_dir() -> Path:
     """运行时临时目录 `<安装目录>\\run`（子进程配置、VAD 转储）。
@@ -84,7 +90,7 @@ class AudioCppBackend:
         self.dir = _d if _d.is_absolute() else (BASE_DIR / _d).resolve()
         self.backend = str(cfg.get("backend", "cpu"))          # cpu | cuda
         self.threads = int(cfg.get("threads", max(1, (os.cpu_count() or 4) - 1)))
-        self.port = int(cfg.get("port", 8083))
+        self.port = int(cfg.get("port", DEFAULT_PORT))
         self.host = str(cfg.get("host", "127.0.0.1"))
         # 模型路径：config 里按既有约定写相对路径（../../models/Qwen3-ASR-0.6B = 安装目录
         # 的 models\），但 audio.cpp 是拿**它自己那份配置文件的所在目录**去解析的 ——

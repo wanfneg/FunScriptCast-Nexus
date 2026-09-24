@@ -7,7 +7,11 @@
 
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
-  var S = { state: null, settings: {}, pollTimer: null, counts: {} };
+  var S = { state: null, settings: {}, pollTimer: null, counts: {},
+            /* 更新弹窗的三个状态位（F07）：dismissed=本次启动不再提示该版本；
+               readyFor=该版本已弹过"可安装"；progDismissed=用户把下载进度弹窗
+               收到后台（下载继续，弹窗不再每秒重弹） */
+            updDismissed: null, updReadyFor: null, updMode: null, updProgDismissed: false };
 
   function motionOff() { return document.documentElement.getAttribute("data-motion") === "off"; }
 
@@ -1071,6 +1075,10 @@
       if (S.updMode === "download") {
         var u = (S.lastState || {}).update || {};
         S.updDismissed = u.latest;   // 本次启动不再弹，设置页仍可手动下载
+      } else if (S.updMode === "progress") {
+        // F07：把进度弹窗收到后台——下载继续跑，但因为置了这个标记，轮询不会
+        // 每秒把它重新弹出来（否则"后台运行"等于没点）。
+        S.updProgDismissed = true;
       }
     });
     $("#setStartMin").addEventListener("change", function () {
@@ -1188,18 +1196,31 @@
     else if (u.state === "error") { box.textContent = "检查更新失败"; desc.textContent = u.error || "网络不可用"; act.hidden = true; }
     else if (u.state === "none") { box.textContent = "已是最新版本"; desc.textContent = "当前 v" + (u.current || st.version || "?"); act.hidden = true; }
     else { box.textContent = "尚未检查"; desc.textContent = "应用启动时会自动检查一次"; act.hidden = true; }
-    /* 弹窗全流程前台（R76）：下载中实时进度、不进后台，完成即转安装询问 */
+    /* 弹窗全流程前台（R76）：下载中实时进度、不进后台，完成即转安装询问。
+       F07 修复要点见下面各分支与 showUpdateModal 的按钮策略。 */
     if (u.state === "downloading") {
-      showUpdateModal("正在下载 v" + (u.latest || ""), "下载进度：" + (u.pct || 0) + "%", "progress", u.pct || 0);
-    } else if (u.state === "available" && u.has_update && S.updDismissed !== u.latest) {
-      showUpdateModal("发现新版本 v" + u.latest,
-        "当前 v" + (u.current || st.version || "?") + "，可下载更新安装包（约 " +
-        Math.max(1, Math.round((u.size || 0) / 1048576)) + " MB）。安装会关闭应用，完成后自动重启。",
-        "download");
-    } else if (u.state === "ready" && S.updReadyFor !== u.latest) {
-      S.updReadyFor = u.latest;
-      showUpdateModal("下载完成",
-        "v" + u.latest + " 已就绪。立即安装会关闭应用，安装完成后自动重新启动。", "install");
+      if (!S.updProgDismissed) {     // 用户点了"后台运行"就不再每秒重弹
+        showUpdateModal("正在下载 v" + (u.latest || ""), "下载进度：" + (u.pct || 0) + "%", "progress", u.pct || 0);
+      }
+    } else {
+      S.updProgDismissed = false;    // 离开下载态即复位，否则会吞掉后面的"安装询问"
+      if (u.state === "available" && u.has_update && S.updDismissed !== u.latest) {
+        showUpdateModal("发现新版本 v" + u.latest,
+          "当前 v" + (u.current || st.version || "?") + "，可下载更新安装包（约 " +
+          Math.max(1, Math.round((u.size || 0) / 1048576)) + " MB）。安装会关闭应用，完成后自动重启。",
+          "download");
+      } else if (u.state === "ready" && S.updReadyFor !== u.latest) {
+        S.updReadyFor = u.latest;
+        showUpdateModal("下载完成",
+          "v" + u.latest + " 已就绪。立即安装会关闭应用，安装完成后自动重新启动。", "install");
+      } else if (u.state === "error" && !$("#updModal").hidden) {
+        /* F07：下载/检查失败必须**收尾**已打开的弹窗。此前 error 分支只改设置页
+           文字，而进度弹窗把两个按钮都隐藏了 ⇒ 全屏遮罩（position:fixed inset:0）
+           把整个 UI 锁死，只能杀进程——而下载中断是常见路径（GitHub 直连常被重置）。
+           只改"当前已经打开"的弹窗：用户关掉之后不再重弹。 */
+        showUpdateModal("更新失败",
+          (u.error || "网络不可用") + "。可在设置页重试，或稍后再试。", "error");
+      }
     }
   }
   function showUpdateModal(title, text, mode, pct) {
@@ -1207,8 +1228,15 @@
     $("#updModalText").textContent = text;
     $("#updBar").hidden = mode !== "progress";
     if (mode === "progress") $("#updBarFill").style.width = (pct || 0) + "%";
-    $("#updModalGo").hidden = mode === "progress";    // 下载中无可点按钮：前台进度不被打断
-    $("#updModalLater").hidden = mode === "progress";
+    /* 按钮策略（F07）：**任何状态都必须留一条关闭路径**。
+       · progress：只留"后台运行"（下载继续跑，弹窗关掉；此前两个按钮都隐藏，
+         下载一旦卡住不报错也不完成，就是全屏死锁）；
+       · error：只留"关闭"；
+       · download/install：关闭 + 主操作。 */
+    $("#updModalGo").hidden = (mode !== "download" && mode !== "install");
+    $("#updModalLater").hidden = false;
+    $("#updModalLater").textContent = mode === "progress" ? "后台运行"
+                                   : (mode === "error" ? "关闭" : "稍后");
     $("#updModalGo").textContent = mode === "install" ? "立即安装" : "下载更新";
     $("#updModal").hidden = false;
     S.updMode = mode;

@@ -2392,8 +2392,13 @@ def subtitle_config() -> dict:
 def save_subtitle_config(patch: dict) -> dict:
     """写回 config.json（asr/vad/segment/translate 分组）。
 
-    · translate 组做**一层深合并**：否则前端只回传 openai.{base_url,model,api_key} 时，
-      会把同组的 api_key_env/temperature/max_tokens 一起覆盖掉。
+    · **所有组**都做一层深合并（F01）：前端经常只回传某个子段，例如切换识别模型时发
+      `{"asr":{"audiocpp":{"model": …}}}`。若按组整体替换，`asr.audiocpp` 会被换成
+      `{"model": …}` 一个键——port/threads/backend 等**全部被静默抹掉并持久化**，
+      而 stream_bridge 的上游地址依赖 port，结果"切一次模型 = 流式字幕整条失效 +
+      配置数据丢失"，界面上还恢复不了。
+    · translate 组此前就靠这层深合并保住 openai 段的 api_key_env/temperature 等键，
+      现在这条规则对 asr 等组一视同仁（判据只有一份）。
     · 打码过的 api_key（空串或含 *）不会写回，避免把掩码存进配置。
     """
     cfg_file = subtitle_cfg_path()
@@ -2402,14 +2407,13 @@ def save_subtitle_config(patch: dict) -> dict:
         with _SUBTITLE_FILE_LOCK:
             cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
             for group, values in patch.items():
-                if group == "translate" and isinstance(values, dict) and isinstance(cfg.get(group), dict):
+                if isinstance(values, dict) and isinstance(cfg.get(group), dict):
+                    # 一层深合并：子段两边都是 dict 就逐键合并，否则整键替换
                     for k, v in values.items():
                         if isinstance(v, dict) and isinstance(cfg[group].get(k), dict):
-                            cfg[group][k].update(v)          # 深一层：openai/local/ollama 段
+                            cfg[group][k].update(v)          # 深一层：audiocpp/openai/local/ollama 段
                         else:
                             cfg[group][k] = v
-                elif isinstance(values, dict) and isinstance(cfg.get(group), dict):
-                    cfg[group].update(values)
                 else:
                     cfg[group] = values
             tmp = cfg_file.with_suffix(".json.tmp")

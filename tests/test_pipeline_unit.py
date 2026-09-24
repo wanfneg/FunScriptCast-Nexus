@@ -551,6 +551,87 @@ def t_hybrid_vad_cut():
     assert len(span) == 83200, len(span)                 # 5.2s 格点
 
 
+# 11 ------------------- F01：字幕配置深合并 + 流式上游地址与配置同源
+def t_subtitle_config_deep_merge():
+    """保存字幕配置必须**所有组**都做一层深合并（评审 F01）。
+
+    复现的事故：UI 切换识别模型时发 `{"asr":{"audiocpp":{"model": …}}}`，而保存逻辑
+    只对 translate 组深合并、其余组 `cfg[group].update(values)` 整段替换 ⇒
+    `asr.audiocpp` 从 7 个键塌成 1 个（port/threads/backend 全丢）并持久化；
+    stream_bridge 的上游地址依赖 port，于是"切一次模型 = 流式字幕整条失效"。
+    """
+    import json as _json
+    import sys as _sys
+
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in _sys.path:
+        _sys.path.insert(0, str(root))
+    import host_server as H
+
+    cfg_file = H.subtitle_cfg_path()
+    seed = {
+        "asr": {"backend": "audiocpp", "audiocpp": {
+            "model": "../../models/OLD", "port": 8083, "host": "127.0.0.1",
+            "backend": "cuda", "threads": 12, "language": "Japanese", "pad_sec": 0.25}},
+        "translate": {"backend": "local", "openai": {
+            "base_url": "https://x/v1", "api_key_env": "OPENAI_API_KEY", "temperature": 0.2}},
+    }
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text(_json.dumps(seed, ensure_ascii=False), encoding="utf-8")
+
+    # UI 切换识别模型的真实载荷
+    r = H.save_subtitle_config({"asr": {"audiocpp": {"model": "NEW-MODEL"}}})
+    assert r.get("ok"), f"保存失败：{r}"
+    got = _json.loads(cfg_file.read_text(encoding="utf-8"))
+    ac = got["asr"]["audiocpp"]
+    assert ac["model"] == "NEW-MODEL", "新值没写进去"
+    for k, v in seed["asr"]["audiocpp"].items():
+        if k == "model":
+            continue
+        assert ac.get(k) == v, f"asr.audiocpp.{k} 被静默抹掉了（深合并没生效）：{ac}"
+    # translate 组本来就有的深合并不能被改坏
+    assert got["translate"]["openai"]["api_key_env"] == "OPENAI_API_KEY", \
+        "translate.openai 的同层键被覆盖了"
+    assert got["translate"]["openai"]["base_url"] == "https://x/v1", "base_url 不该被动"
+
+
+def t_stream_asr_upstream_from_config():
+    """stream_bridge 的上游地址必须取 asr.audiocpp 的 host/port，且缺省与
+    audiocpp_backend.DEFAULT_PORT 同源（评审 F01 后半）。
+
+    此前硬编码 `http://127.0.0.1:8081`，而 audiocpp 缺省 8083 ⇒ 配置里 port 缺失时
+    离线路径去 8083、流式路径去 8081，流式字幕整条失效。
+    """
+    import importlib
+    import json as _json
+
+    import audiocpp_backend
+    import user_paths
+
+    cfg_file = Path(user_paths.config_path(Path(__file__).resolve().parents[1]
+                                           / "vendor" / "subtitle"))
+
+    def _load(port=None, host=None):
+        body = {"asr": {"backend": "audiocpp", "audiocpp": {"model": "m"}}}
+        if port is not None:
+            body["asr"]["audiocpp"]["port"] = port
+        if host is not None:
+            body["asr"]["audiocpp"]["host"] = host
+        cfg_file.write_text(_json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        import stream_bridge
+        return importlib.reload(stream_bridge)
+
+    sb = _load(port=8099, host="127.0.0.2")
+    assert sb.ASR_BASE == "http://127.0.0.2:8099", f"没按配置取上游：{sb.ASR_BASE}"
+
+    # 配置里**没有** port 时，必须与 audiocpp_backend 的缺省一致（而不是老的 8081）
+    sb2 = _load()
+    assert sb2.ASR_BASE == f"http://127.0.0.1:{audiocpp_backend.DEFAULT_PORT}", \
+        f"缺省端口与 audiocpp_backend 不同源：{sb2.ASR_BASE}"
+    assert sb2.ASR_MODEL == audiocpp_backend.STREAM_MODEL_ID, \
+        f"流式模型 id 与 audiocpp_backend 不同源：{sb2.ASR_MODEL}"
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -570,6 +651,8 @@ if __name__ == "__main__":
     check("混合切句 段-组对齐器（R63）", t_hybrid_align)
     check("混合切句 切点续接（R63 回归锁）", t_hybrid_cutpoint_carry)
     check("混合切句 VAD 裁决切点（R63.1 BGM 场景）", t_hybrid_vad_cut)
+    check("F01 字幕配置深合并（所有组，切模型不毁配置）", t_subtitle_config_deep_merge)
+    check("F01 流式上游地址与 asr.audiocpp 同源", t_stream_asr_upstream_from_config)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

@@ -98,8 +98,31 @@ def _batch_size() -> int:
 
 app = FastAPI(title="VRFunScriptCast AI subtitle stream bridge")
 
-ASR_BASE = "http://127.0.0.1:8081"
-ASR_MODEL = "qwen3-asr-stream"
+# 上游 audiocpp 的地址与模型 id **必须与 asr.audiocpp 段同源**（F01 复审）：
+# 此前这里硬编码 `:8081`，而 audiocpp_backend 的 port 缺省是 8083 —— 配置里 port 一旦
+# 缺失（UI 切换识别模型时曾把 asr.audiocpp 整段替换掉，见 host_server.save_subtitle_config
+# 的深合并修复），离线路径去 8083、流式路径去 8081，**流式字幕整条失效**且界面无从察觉。
+# 缺省端口/模型 id 只在 audiocpp_backend 定义一份，这里只做"读配置 + 兜底"。
+try:
+    from audiocpp_backend import DEFAULT_PORT as _ASR_DEFAULT_PORT
+    from audiocpp_backend import STREAM_MODEL_ID as _ASR_STREAM_MODEL
+except Exception:            # 依赖缺失也不能把流式桥挡在启动之前
+    _ASR_DEFAULT_PORT, _ASR_STREAM_MODEL = 8083, "qwen3-asr-stream"
+
+
+def _asr_upstream_default() -> str:
+    """按 asr.audiocpp 的 host/port 组装上游 base（与离线路径同一份配置）。"""
+    ac = (CFG.get("asr") or {}).get("audiocpp") or {}
+    host = str(ac.get("host") or "127.0.0.1")
+    try:
+        port = int(ac.get("port", _ASR_DEFAULT_PORT))
+    except (TypeError, ValueError):
+        port = _ASR_DEFAULT_PORT
+    return f"http://{host}:{port}"
+
+
+ASR_BASE = _asr_upstream_default()
+ASR_MODEL = _ASR_STREAM_MODEL
 
 # 块边界碎片去重：重叠区被相邻块重复识别时，常切出上一块句子的**前缀碎片**
 # （实测："今日。"、"てるんだ。"）。与最近几条已出句比对，新句是其中某条的
