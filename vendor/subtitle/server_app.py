@@ -135,6 +135,47 @@ def _touch_request_clock() -> None:
     _LAST_REQ_MONO = time.monotonic()
     _LAST_REQ_WALL = time.time()
 
+
+# ---- 单客户端独占（评审 F11）-------------------------------------------------
+# 会话状态是**进程级单份**：`_HYBRID` 混合缓冲、`_LAST_CTX`、以及 stream_bridge 的
+# `_recent_ja` / `_last_ctx`，全都按"同一时刻只有一个客户端在推流"设计
+# （hybrid_segmenter 的注释也自认这是既有事实）。但 8756 绑 0.0.0.0，头显与手机都会
+# 直连：两设备并发推流时音频交错进同一个缓冲、上下文互相串台（热词与剧情承接用错对白），
+# 两边字幕全乱；默认无鉴权时第二台设备还能把任意文本注入下一句的 ASR 热词与云端提示词。
+# 这里把那个隐含假设**变成显式约束**：第一个开始推流的来源独占会话，别的来源在独占期内
+# 收到 503（带档位建议）。最后一个请求过去 _SESSION_TAKEOVER_SEC 秒后自动释放，避免
+# "客户端崩了/换设备之后永久占着"。要明知会串台也恢复多客户端：server.single_client=false。
+_SESSION = {"ip": "", "ts": 0.0}
+_SESSION_LOCK = threading.Lock()
+_SESSION_TAKEOVER_SEC = 30.0
+
+
+def _single_client_enabled() -> bool:
+    v = (CFG.get("server") or {}).get("single_client", True)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "0", "no", "off")
+    return bool(v)
+
+
+def _claim_session(request) -> "str | None":
+    """认领会话。返回 None = 可以服务；返回字符串 = 拒绝原因（回 503）。"""
+    if not _single_client_enabled():
+        return None
+    try:
+        ip = (request.client.host if request.client else "") or ""
+    except Exception:
+        ip = ""
+    now = time.monotonic()
+    with _SESSION_LOCK:
+        owner, ts = _SESSION["ip"], _SESSION["ts"]
+        if owner and owner != ip and (now - ts) < _SESSION_TAKEOVER_SEC:
+            left = _SESSION_TAKEOVER_SEC - (now - ts)
+            return (f"字幕会话正被另一台设备使用（{owner}）：同一时刻只支持一个客户端，"
+                    f"多设备并发会让字幕串台。若那台已停止，约 {left:.0f} 秒后可接管。")
+        _SESSION["ip"], _SESSION["ts"] = ip, now
+    return None
+
+
 _MT_WARM = 0.0                   # 翻译预热完成时刻（0=未完成）：llama 端口就绪
                                  # ≠ 翻译热了，首条真实请求还欠系统提示词 prefill
                                  # + 首包 CUDA 路径的账（R63.2，预热请求补上后置时间戳）
@@ -746,6 +787,12 @@ async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0
     with _INFLIGHT_LOCK:
         _INFLIGHT += 1
     try:
+        # 单客户端独占（评审 F11）：会话状态是进程级单份，多设备并发会互相串台
+        deny = _claim_session(request)
+        if deny:
+            return {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
+                    "skipped": True, "error": deny,
+                    "recommended_chunk_sec": _recommended_chunk_sec()}
         # 先看 Content-Length 再读体：超大请求直接拒收，不先把几百 MB 读进内存。
         # 没有 Content-Length（分块传输）时由 read_capped_body 兜底——它边读边累加，
         # 超限立刻中断，与 /transcribe/stream 共用同一实现（两个入口必须同一口径）。
@@ -879,6 +926,12 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
     with _INFLIGHT_LOCK:
         _INFLIGHT += 1
     try:
+        # 单客户端独占（评审 F11）：与 /transcribe 同一口径
+        deny = _claim_session(request)
+        if deny:
+            return JSONResponse({"error": deny,
+                                 "recommended_chunk_sec": _recommended_chunk_sec()},
+                                status_code=503)
         from stream_bridge import transcribe_stream as _impl   # 同目录，复用已验证实现
         return await _impl(request, lang, translate, video_start_ms)
     finally:

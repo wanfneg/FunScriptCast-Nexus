@@ -1172,6 +1172,57 @@ def t_inflight_and_idle_clock():
         "空闲判定又用回墙钟了（时钟回拨会永不回收、前跳会误杀在用服务）"
 
 
+# 19 ------------- F11：单客户端独占（会话状态是进程级单份）
+def t_single_client_session():
+    """评审 F11：`_HYBRID` / `_LAST_CTX` / stream_bridge 的 `_recent_ja`/`_last_ctx`
+    都是**进程级单份**，按"同时只有一个客户端推流"设计；而 8756 绑 0.0.0.0，头显与手机
+    都会直连 ⇒ 两设备并发时音频交错进同一缓冲、上下文串台（热词/剧情承接用错对白），
+    字幕两边全乱；默认无鉴权时第二台还能把任意文本注入下一句。
+
+    做法是把隐含假设变成显式约束：第一个来源独占会话，别的来源在独占期内被拒（503/error），
+    最后一个请求过去 30 秒后自动释放（避免客户端崩了以后永久占用）。
+    """
+    import time as _time
+
+    import server_app as sa
+
+    class _Cli:
+        def __init__(self, host):
+            self.host = host
+
+    class Req:
+        def __init__(self, ip):
+            self.client = _Cli(ip) if ip else None
+
+    saved = dict(sa._SESSION)
+    saved_on = sa._single_client_enabled
+    try:
+        sa._single_client_enabled = lambda: True
+        with sa._SESSION_LOCK:
+            sa._SESSION.update({"ip": "", "ts": 0.0})
+
+        # ① 第一个来源认领成功
+        assert sa._claim_session(Req("192.168.2.9")) is None, "第一个客户端应当能认领会话"
+        # ② 同一来源继续 → 仍然放行（不能自己把自己挡了）
+        assert sa._claim_session(Req("192.168.2.9")) is None, "同一来源不该被自己挡住"
+        # ③ 另一台设备 → 拒绝，且原因里要带上占用者与"多久以后能接管"
+        deny = sa._claim_session(Req("192.168.2.77"))
+        assert deny and "192.168.2.9" in deny, f"第二个来源必须被拒并说明占用者：{deny}"
+        # ④ 占用者静默超过接管期 → 允许新来源接管（自愈，避免永久占用）
+        with sa._SESSION_LOCK:
+            sa._SESSION["ts"] = _time.monotonic() - (sa._SESSION_TAKEOVER_SEC + 1)
+        assert sa._claim_session(Req("192.168.2.77")) is None, \
+            "占用者静默超过接管期后，新设备必须能接管（否则客户端崩了就永久锁死）"
+        # ⑤ 开关关掉时完全恢复旧行为
+        sa._single_client_enabled = lambda: False
+        assert sa._claim_session(Req("10.0.0.1")) is None
+        assert sa._claim_session(Req("10.0.0.2")) is None, "single_client=false 时不该拦任何来源"
+    finally:
+        sa._single_client_enabled = saved_on
+        with sa._SESSION_LOCK:
+            sa._SESSION.update(saved)
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -1200,6 +1251,7 @@ if __name__ == "__main__":
     check("F16 8756 跨站栅栏 + 过载快速失败（不涉及跨端契约部分）", t_lan_open_guards)
     check("F02 设置缓存 key/data 成对（杜绝错配命中）", t_settings_cache_pair)
     check("F10/F18 在飞计数口径 + 空闲判定用单调钟", t_inflight_and_idle_clock)
+    check("F11 单客户端独占（会话状态进程级单份）", t_single_client_session)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
