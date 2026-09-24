@@ -255,6 +255,46 @@ begin
   end;
 end;
 
+{ ── 附加任务的"取消勾选"必须真的生效（评审 F30）────────────────────────────
+  Inno 的 Tasks 门控语义是"**未勾选 = 跳过安装**"，从来不是"删除已装的"：
+    · [Registry] 的 autostart 值只有 uninsdeletevalue（只在卸载时删）；
+    · [Icons] 的桌面图标同理（未被 InstallDelete 覆盖）。
+  于是升级安装时（UsePreviousTasks 会沿用上次的勾选）用户这次**取消**勾选
+  「开机自动启动 / 桌面快捷方式」，上一版写下的 Run 值与桌面图标原样留着 ——
+  用户的选择被静默无视，只有卸载重装才清得掉。
+  这里在文件装完的收尾（ssPostInstall）按**本次向导的勾选状态**主动回删。
+  两个动作都是"存在才删"：全新安装且未勾选时本就是空操作。 }
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  RunKey: String;
+  DeskLink: String;
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+
+  if not WizardIsTaskSelected('autostart') then
+  begin
+    RunKey := 'Software\Microsoft\Windows\CurrentVersion\Run';
+    if RegValueExists(HKEY_CURRENT_USER, RunKey, '{#MyAppName}') then
+    begin
+      RegDeleteValue(HKEY_CURRENT_USER, RunKey, '{#MyAppName}');
+      Log('附加任务：未勾选开机自启 → 已回删自启注册值');
+    end;
+  end;
+
+  if not WizardIsTaskSelected('desktopicon') then
+  begin
+    DeskLink := ExpandConstant('{autodesktop}\{#MyAppName}.lnk');
+    if FileExists(DeskLink) then
+    begin
+      if DeleteFile(DeskLink) then
+        Log('附加任务：未勾选桌面快捷方式 → 已回删 ' + DeskLink)
+      else
+        Log('附加任务：桌面快捷方式删除失败（文件被占用？）：' + DeskLink);
+    end;
+  end;
+end;
+
 { 用户数据（data\、cache\、logs\、models\）卸载时有意保留：Inno 默认只删除它安装过的文件。
   ⚠ 这一行必须是 Pascal 注释（花括号），不能写 `;` —— [Code] 段之后 `;` 不再是注释，
   它会当成新例程的开头并报 "'BEGIN' expected"（已实测踩过）。 }
