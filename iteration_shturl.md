@@ -3577,3 +3577,16 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 **遗留/待验证**：① 公网 release 发布后，真机走一遍"删 gpu\ → 界面下载 1.9GB → 自动切 cuda"
 的完整下载链路（下载 worker 与 llama-runtime 共用，风险低但 R68 教训=必须实测）；
 ② R95 的 8791 卡死 bug 仍未修；③ 手机 UI"8756"错误文案 + DLNA IP 预填仍在待办。
+
+**R96 补记（发布后实测）**：
+- release v1.0.42 已上线（4 资产：Setup-1.0.42 / cuda zip / cpu zip / llama zip，旧资产字节级核对带齐）。
+- **重大坑：MSYS `tar -a -cf x.zip` 对 .zip 后缀静默产出裸 tar**（文件头就是 `gpu/`，非 PK 魔数），
+  且 `tar -tf` 用 libarchive 验证 tar 同样"成功"——双重假阳性，发布到公网 1.9GB 后才被
+  真实下载链路逮住（zipfile BadZipFile at 97%）。**打 zip 一律用 python zipfile**（本次
+  ZIP_DEFLATED compresslevel=1：2.0GB→1.05GB），验证必须用**消费端同款库**（zipfile）而非
+  生产工具（tar/7z）。size_gb 1.9→1.1，安装包与 release 资产全部 --clobber 替换。
+- **完整下载链路实测（D 盘真机，删 gpu\→界面下载 1.05GB→2.5 分钟→解压→自动切 cuda→
+  重启→真实音频识别+翻译正常，显存 7733MB）**：check_file 泛化、asr-runtime 钩子、
+  _restart_sub_if_running、断点续传全部实战通过。下载中宿主进程曾消失一次（疑手动关闭），
+  重启后测试继续，条目状态机无残留损伤。
+- 遗留不变：8791 卡死 bug、手机 UI 8756 文案、DLNA IP 预填。
