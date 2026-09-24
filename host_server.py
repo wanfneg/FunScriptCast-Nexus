@@ -1193,6 +1193,26 @@ def _configured_translate_backend() -> str:
 _HOST_CODE_SIG = _host_code_sig()
 
 
+# 对外文本里的本机绝对路径（评审 F19）：8791 绑 0.0.0.0，任何"回给头显"的字段都等于
+# 回给整个局域网。项目自己对**错误类别**早有脱敏标准（audiocpp_backend._error_kind 专门
+# 把绝对路径摘掉，本文件也写着"只回标识类字段、不含路径"），漏的是 error / asr 两个字段
+# 直接透传——实测 sub_error 里就出现过
+#   File "D:\FunScriptCast-Nexus\vendor\subtitle\run_server.py", line 22
+# 这种完整安装路径（R52 那次"启动字幕服务失败"就是这么漏出去的）。
+_ABS_PATH_RE = re.compile(
+    r"[A-Za-z]:\\[^\s'\"<>|]+"          # Windows 盘符路径
+    r"|\\\\[^\s'\"<>|]+"                # UNC
+    r"|/(?:home|Users|mnt|opt|srv|var)/[^\s'\"<>|]+"   # 常见 POSIX 用户路径
+)
+
+
+def scrub_paths(text) -> str:
+    """把对外文本里的本机绝对路径替换成 <路径>；非字符串原样返回。"""
+    if not isinstance(text, str) or not text:
+        return text
+    return _ABS_PATH_RE.sub("<路径>", text)
+
+
 def headset_status() -> dict:
     """头显轮询用：模型起来没有。
 
@@ -1219,9 +1239,10 @@ def headset_status() -> dict:
         # 模型没下载时服务虽在但识别不可用：不能给头显报 ready（否则它白推音频）
         "ready": status == "ready" and h.get("asr_ready") is not False,
         "status": status,
-        "error": st.get("error"),
-        "asr": h.get("asr_model"),
-        "translate": h.get("translate"),
+        # 脱敏（评审 F19）：error 是 sub_error 原文（异常全文/子进程输出，含绝对路径）
+        "error": scrub_paths(st.get("error")),
+        "asr": scrub_paths(h.get("asr_model")),
+        "translate": scrub_paths(h.get("translate")),
         "version": app_version()["name"],
         "dev_copy": app_version().get("dev_copy"),
         # ↓ 版本可追溯 + 档位联动（头显侧据此记录"哪个 APK 配哪个服务端版本"）

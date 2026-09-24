@@ -1223,6 +1223,44 @@ def t_single_client_session():
             sa._SESSION.update(saved)
 
 
+# 20 ------------- F19：对外接口不得泄漏本机绝对路径
+def t_lan_endpoints_scrub_paths():
+    """评审 F19：8756 `/health` 与 8791 `headset_status` 都对本机/局域网开放，
+    却把**本机绝对路径**与**异常全文**原样回出去（便携安装里含 Windows 用户名）。
+
+    这不是推测：R52 那次"启动字幕服务失败"的真实错误文本就是
+      File "D:\\FunScriptCast-Nexus\\vendor\\subtitle\\run_server.py", line 22
+    它经 headset_status 的 error 字段发给头显 = 发给整个局域网。
+    项目自己对错误类别早有脱敏标准（audiocpp_backend._error_kind），漏的是这两个字段。
+    """
+    import sys as _sys
+
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in _sys.path:
+        _sys.path.insert(0, str(root))
+    import host_server as H
+    import server_app as sa
+
+    # ① 模型标识：绝对路径只留最后两段（不含盘符与用户名）
+    abs_path = r"E:\Development\FunScriptCast-Nexus\models\Qwen3-ASR-0.6B"
+    assert sa._model_label(abs_path) == "models/Qwen3-ASR-0.6B", sa._model_label(abs_path)
+    assert "E:" not in sa._model_label(abs_path) and "Development" not in sa._model_label(abs_path)
+    assert sa._model_label("kotoba-tech/kotoba-whisper-v2.0-faster") == \
+        "kotoba-tech/kotoba-whisper-v2.0-faster", "HF 仓名不该被动"
+    assert sa._model_label("") == "" and sa._model_label(None) == ""
+
+    # ② 8791 的 error/asr/translate 必须脱敏（真实错误文本形态）
+    real_err = ('子进程退出（code 1）：  File "D:\\FunScriptCast-Nexus\\vendor\\subtitle'
+                '\\run_server.py", line 22, in <module>\n    import user_paths')
+    scrubbed = H.scrub_paths(real_err)
+    assert "D:\\FunScriptCast-Nexus" not in scrubbed, f"绝对路径没被抹掉：{scrubbed}"
+    assert "<路径>" in scrubbed, f"应当留下占位符：{scrubbed}"
+    assert "line 22" in scrubbed, "脱敏不能把可诊断信息一起删掉"
+    assert H.scrub_paths("/home/pi/models/x.bin").find("/home/pi") < 0
+    assert H.scrub_paths("普通文本 without paths") == "普通文本 without paths"
+    assert H.scrub_paths(None) is None and H.scrub_paths(123) == 123
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -1252,6 +1290,7 @@ if __name__ == "__main__":
     check("F02 设置缓存 key/data 成对（杜绝错配命中）", t_settings_cache_pair)
     check("F10/F18 在飞计数口径 + 空闲判定用单调钟", t_inflight_and_idle_clock)
     check("F11 单客户端独占（会话状态进程级单份）", t_single_client_session)
+    check("F19 局域网接口不泄漏本机绝对路径", t_lan_endpoints_scrub_paths)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

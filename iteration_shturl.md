@@ -2765,3 +2765,41 @@ finally 改为**先刷时钟再减计数**；两个入口统一。
 | F11 单客户端独占 | 通过 | AttributeError（`_SESSION` 在旧代码里不存在）——**如实记下**：新类无法给出行为级失败 |
 
 套件当前 **27 项全过**。
+
+---
+
+## R81 审查报告第五批修复：F29（构建链锁死）/ F19（局域网接口泄漏本机路径）
+
+### F29 [中] dist-app\vendor 缺失时 Move-Item 必终止，构建链被锁死 —— 属实，已修
+
+`build_exe.ps1` 的 llama 暂存回填在 `$out\vendor` 不存在时 `Move-Item` 必失败，而脚本
+`$ErrorActionPreference='Stop'` ⇒ 整个构建终止；上面的 data 回填只建了 `$out` 根目录、
+没建 `vendor`。触发路径正是脚本自己给的恢复指引："删掉 dist-app 重跑" —— 此后每次重跑
+都死在同一行，得手工建 `vendor` 才能解锁。（这段是我 R49 加 dist-app\data 摘出时一起写的，
+报告抓得对。）
+
+**实测复现与验证**（构建脚本没法单元测试，就复刻那段行为）：
+  修复前写法 → 抛 `未能找到路径中的某个部分。`（与报告描述一致）
+  修复后写法（先 `New-Item` 父目录）→ 成功
+改完顺手复核 .ps1 的 BOM（本轮编辑又吃掉了，已补回）与语法（0 错）。
+
+### F19 [低] /health 与 8791 泄漏本机绝对路径与异常全文 —— 属实，已修
+
+两处：
+1. 8756 `/health` 的 `asr_model` 回的是 audiocpp 后端**解析后的绝对路径**
+   （便携安装含 Windows 用户名），而该接口在 `_LAN_OPEN_PREFIXES` 里、局域网可读；
+2. 8791 `headset_status` 把 `error`（= `sub_error` 原文）与 `asr` 原样透传。
+
+**这不是推测**：R52 那次"启动字幕服务失败"的真实文本就是
+`File "D:\FunScriptCast-Nexus\vendor\subtitle\run_server.py", line 22` —— 正是经这个字段
+发给头显（= 发给整个局域网）的。项目自己对错误类别早有脱敏标准
+（`audiocpp_backend._error_kind` 专门摘掉绝对路径），漏的就是这两个字段。
+
+修法：①`server_app._model_label()`：绝对路径只留最后两段（`models/Qwen3-ASR-0.6B`），
+HF 仓名原样；界面本来就只显示 basename（`app.js:342` 用 `split(/[\\/]/).pop()`）⇒ 显示不受影响；
+②`host_server.scrub_paths()`：正则把盘符/UNC/常见 POSIX 用户路径换成 `<路径>`，
+`headset_status` 的 error/asr/translate 三个字段都过一遍（**保留可诊断信息**，只抹路径）。
+
+验证：新增 `t_lan_endpoints_scrub_paths`（用真实错误文本形态断言"路径没了、line 22 还在"）。
+牙齿证明是 AttributeError（新辅助函数在旧代码里不存在）——如实记下：这类"新增脱敏函数"
+没法对旧代码给出行为级失败。

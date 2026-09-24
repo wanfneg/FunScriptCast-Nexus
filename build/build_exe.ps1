@@ -99,6 +99,11 @@ if (Test-Path $distDataDir) {
 $llamaStash = Join-Path $root 'build\_dist-app-llama'
 $distLlamaDir = Join-Path $out 'vendor\llama'
 if ((Test-Path $llamaStash) -and -not (Test-Path $distLlamaDir)) {
+    # ⚠ Move-Item 的**目标父目录必须存在**，否则报"未能找到路径中的某个部分"并以
+    # $ErrorActionPreference='Stop' 终止整个构建（评审 F29）。触发路径正是本脚本自己
+    # 给的恢复指引："删掉 dist-app 后重跑"——删掉之后 $out\vendor 不存在，而上面 data
+    # 的回填只建了 $out 根目录 ⇒ 每次重跑都死在这一行，得手工建 vendor 才能解锁。
+    New-Item -ItemType Directory -Path (Split-Path $distLlamaDir -Parent) -Force | Out-Null
     Move-Item $llamaStash $distLlamaDir -Force
     Write-Host "  发现上次重编遗留的 llama 暂存，已先回填 dist-app\vendor\llama" -ForegroundColor Yellow
 }

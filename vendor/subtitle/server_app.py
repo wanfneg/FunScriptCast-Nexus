@@ -577,6 +577,31 @@ def _asr_ready(asr) -> bool:
     return ok
 
 
+def _model_label(m) -> str:
+    """把模型标识收敛成"不含本机路径"的形式（评审 F19）。
+
+    `/health` 属 `_LAN_OPEN_PREFIXES`（局域网可读），而 audiocpp 后端的 `.model` 是
+    **解析后的绝对路径**——便携安装里还带着 Windows 用户名（实测回出
+    `E:\\...\\models\\Qwen3-ASR-0.6B`）。项目自己对错误文本早有脱敏标准
+    （audiocpp_backend._error_kind 专门把绝对路径摘掉），漏的就是这个字段。
+
+    绝对路径 → 只留最后两段（`models/Qwen3-ASR-0.6B`），比纯 basename 有信息量、又不含
+    盘符与用户名；whisper 那种 HF 仓名（`kotoba-tech/kotoba-whisper-...`）原样返回。
+    """
+    s = str(m or "")
+    if not s:
+        return s
+    try:
+        p = Path(s)
+        if not p.is_absolute():
+            return s
+        parts = [x for x in p.parts
+                 if x not in (p.anchor, "\\", "/") and not x.endswith(":\\")]
+        return "/".join(parts[-2:]) if parts else p.name
+    except Exception:
+        return s
+
+
 @app.get("/health")
 def health():
     asr = state["asr"]
@@ -585,6 +610,8 @@ def health():
     m = getattr(asr, "model", None)
     if not isinstance(m, str) or not m:
         m = (CFG.get("asr", {}) or {}).get("model")
+    # 脱敏（评审 F19）：本接口对局域网开放，绝对路径含盘符与用户名
+    m = _model_label(m)
     return {
         "ok": asr is not None,
         "code_sig": CODE_SIG,
