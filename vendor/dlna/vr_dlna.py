@@ -496,16 +496,33 @@ class MediaLibrary:
             return None
         try:
             if len(self.roots) == 1:
-                # 兼容陈旧的多根风格 key（label/rel）：剥离 label 前缀
-                lbl = self.roots[0].label
-                if lbl and rel.casefold().startswith(lbl.casefold() + "/"):
-                    rel = rel[len(lbl) + 1:]
-                    if not rel:
-                        return None
-                matched_root = self.roots[0]
-                p = _norm(Path(matched_root.path) / rel)
-                if not self._inside_root(matched_root, p):
+                root = self.roots[0]
+                # ⚠ 必须先按"**不含 label**"解释（评审 F25）：path_to_key 单根返回的就是
+                # 纯相对路径（:483），而这里原来**无条件**剥离与 label 同名的前缀 ⇒ 往返
+                # 不一致。两种真实故障：
+                #   · 根 basename 与子目录同名（根 D:\VR\Videos 下还有 Videos\clip.mp4）：
+                #     key "Videos/clip.mp4" 被剥成 clip.mp4，解析到根下**另一个同名文件**
+                #     ——不是 404，是**播错内容**；
+                #   · 盘符根（label 兜底 "Videos"）：D:\Videos\movie.mp4 解析成 D:\movie.mp4
+                #     ⇒ 该子树点播/字幕/脚本索引全 404（浏览列表正常，所以很难查）。
+                p = _norm(Path(root.path) / rel)
+                # ⚠ 穿越检查必须在最前、且**不满足即拒**。本轮改这条时曾写成
+                # `if inside and p.exists(): return p` 然后落到最后 `return p` ——
+                # 那等于把 `../../evil.mp4` 放行了，被"穿越必须返回 None"的测试当场抓住。
+                if not self._inside_root(root, p):
                     return None
+                if p.exists():
+                    return p
+                # 只有上一种解释**找不到文件**时，才当作陈旧的多根风格 key（label/rel）剥离
+                # ——旧版本生成的 URL/缓存仍要能用（兼容性保留）。
+                lbl = root.label
+                if lbl and rel.casefold().startswith(lbl.casefold() + "/"):
+                    stripped = rel[len(lbl) + 1:]
+                    if stripped:
+                        p2 = _norm(Path(root.path) / stripped)
+                        if self._inside_root(root, p2) and p2.exists():
+                            return p2
+                return p                      # 都不存在：回不含 label 的那个（与 path_to_key 同口径）
             else:
                 label, _, rest = rel.partition("/")
                 matched_root = next((r for r in self.roots if r.label.casefold() == label.casefold()), None)
@@ -1327,11 +1344,25 @@ class DlnaHandler(BaseHTTPRequestHandler):
             self.end_headers()
             headers_sent = True
             if want_body and resp.status not in (204, 304):
+                # ⚠ .length 会被 read() 递减，**必须读之前抓**（评审 F26）
+                declared = resp.length
+                sent = 0
                 while True:
                     chunk = resp.read(65536)
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+                    sent += len(chunk)
+                # 上游"声明 Content-Length 却提前 EOF"（云盘源传输中断）：上面已把上游的
+                # Content-Length 原样转发出去，客户端（DeoVR 等）会按声明长度继续等剩余
+                # 字节 —— keep-alive 下就是**永久挂死**。必须关闭连接，让客户端立刻看到
+                # 截断而不是死等。本地文件路径早有同样处理（见 _serve_file 的"提前 EOF"
+                # 注释："发送字节少于 Content-Length，必须关闭连接让客户端感知截断"），
+                # 代理路径一直漏了这一条。
+                if declared is not None and sent < declared:
+                    log.warning("strm 代理短读：声明 %s 字节、实际转发 %d 字节 → "
+                                "关闭连接告知截断", declared, sent)
+                    self.close_connection = True
         except (BrokenPipeError, ConnectionResetError):
             pass
         except (OSError, http.client.HTTPException) as e:

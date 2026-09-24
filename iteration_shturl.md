@@ -2829,3 +2829,42 @@ ASR"，并断言不传时仍是空串（不能因为加参数把原路径弄坏�
 剩余 14 条：F03/F04/F05/F08/F09/F14/F17/F23/F24/F25/F26/F27/F28/F30。
 F14（流式不透传 lang）**故意留到下一轮**：要改上游 audio.cpp 的 multipart 字段名，
 我先确认它到底认哪个字段再动，不猜。
+
+---
+
+## R83 审查报告第七批修复：F25 / F26（DLNA 单根 key 与 .strm 代理）
+
+### F25 [中] 单根模式 key_to_path 无条件剥离同名前缀 —— 属实，已修
+
+`path_to_key` 单根返回**不含 label** 的纯相对路径（:483），而 `key_to_path` 却无条件剥离
+与 label 同名的前缀（:498-504）⇒ 往返不一致。两种真实故障都验证到了：
+
+  · **根 basename 与子目录同名**（根 `…\Videos` 下还有 `Videos\clip.mp4`）：key
+    `Videos/clip.mp4` 被剥成 `clip.mp4`，解析到根下**另一个同名文件**——不是 404，是
+    **播错内容**（牙齿证明里如实打出了这两个路径）；
+  · **盘符根**（label 兜底 "Videos"）：`D:\Videos\movie.mp4` → `D:\movie.mp4` ⇒ 该子树
+    点播/字幕/脚本索引全 404，而浏览列表正常（所以极难查）。
+
+修法：先按"不含 label"解释，**只有该路径不存在**时才回退到剥离（保住旧版本生成的
+URL/缓存的兼容性）；多根分支不动。
+
+⚠️ **本轮我自己引入了安全漏洞并被测试当场抓住**：第一版把穿越检查写成
+`if inside and p.exists(): return p` 然后落到最后 `return p` —— 等于把
+`../../evil.mp4` 放行了。测试里"穿越必须返回 None"那条立刻失败，已改为
+**不满足 `_inside_root` 先 return None**。这条教训值得记：**为了加分支而重排守卫时，
+"拒绝"必须是提前 return，不能变成条件的一部分**。
+
+### F26 [中] .strm 代理短读不关连接 —— 属实，已修
+
+上游声明 Content-Length 却被提前 EOF（云盘源传输中断）时，转发循环只 `break`，而响应头
+里已经原样转发了上游的 Content-Length ⇒ keep-alive 下客户端按声明长度继续等剩余字节，
+**永久挂死**。同文件对**本地文件**路径早有同样处理（"发送字节少于 Content-Length，必须
+关闭连接让客户端感知截断"），代理路径一直漏了。
+
+修法：转发前抓一份 `declared = resp.length`（⚠ `.length` 会被 `read()` 递减，必须读之前抓），
+转发后若 `sent < declared` 就 `close_connection = True` 并留日志。
+
+验证：`t_dlna_strm_proxy_truncation` —— 起一个"声明 1000 只发 100"的本地上游，用桩 handler
+调真实的 `_proxy_strm`（打桩 `_is_public_http_target` 绕过 SSRF 公网校验），断言
+`close_connection is True`。牙齿证明：旧代码 `AssertionError: 上游声明 1000 字节却只给了 100
+—— 必须关闭连接`。

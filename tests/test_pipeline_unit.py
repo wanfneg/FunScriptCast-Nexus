@@ -1315,6 +1315,146 @@ def t_hybrid_passes_asr_extra():
         sa.state["asr"] = orig_asr
 
 
+# 22 ------------- F25：DLNA 单根模式的 key 往返
+def t_dlna_single_root_key_roundtrip():
+    """评审 F25：单根模式下 `path_to_key` 返回**不含 label** 的纯相对路径，而
+    `key_to_path` 却**无条件**剥离与 label 同名的前缀 ⇒ 往返不一致，两种真实故障：
+
+      · 根 basename 与子目录同名 → 解析到根下**另一个同名文件**（不是 404，是**播错内容**）；
+      · 盘符根（label 兜底 "Videos"）→ `D:\\Videos\\movie.mp4` 解析成 `D:\\movie.mp4`，
+        该子树点播/字幕/脚本索引全 404（浏览列表正常，所以很难查）。
+
+    修法：先按"不含 label"解释，只有该路径**不存在**时才回退到剥离（保住旧 URL 兼容）。
+    """
+    import tempfile
+
+    dlna_dir = Path(__file__).resolve().parents[1] / "vendor" / "dlna"
+    if str(dlna_dir) not in sys.path:
+        sys.path.insert(0, str(dlna_dir))
+    import vr_dlna as dl
+
+    tmp = Path(tempfile.mkdtemp(prefix="nexus-dlna-"))
+
+    def _same(a, b):
+        return a is not None and os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+    # ---- 场景 A：根 basename 与子目录同名，两个文件都存在（旧代码会播错） ----
+    root_dir = tmp / "Videos"
+    (root_dir / "Videos").mkdir(parents=True)
+    inner = root_dir / "Videos" / "clip.mp4"      # 真正该播的那个
+    outer = root_dir / "clip.mp4"                 # 同名的另一个（旧代码会解析到这里）
+    inner.write_bytes(b"inner")
+    outer.write_bytes(b"outer")
+    lib = dl.MediaLibrary([dl.MediaRoot(path=str(root_dir), label="Videos")])
+
+    key = lib.path_to_key(inner)
+    assert key == "Videos/clip.mp4", f"path_to_key 单根应当返回纯相对路径：{key}"
+    got = lib.key_to_path(key)
+    assert _same(got, inner), f"往返解析错了：{got}（期望 {inner}）——旧代码会解析到 {outer}"
+    assert not _same(got, outer), "解析到了根下同名的另一个文件（播错内容）"
+
+    # ---- 场景 B：陈旧多根风格 key 仍要能用（兼容性不能被修坏） ----
+    legacy_target = root_dir / "only-here.mp4"
+    legacy_target.write_bytes(b"legacy")
+    got_b = lib.key_to_path("Videos/only-here.mp4")
+    assert _same(got_b, legacy_target), \
+        f"旧风格 key（label/rel，而 label 下没有该文件）应当回退剥离后解析：{got_b}"
+
+    # ---- 场景 C：盘符根 + label 兜底（真实目录名不是 label） ----
+    drive_like = tmp / "drive"
+    (drive_like / "Videos").mkdir(parents=True)
+    movie = drive_like / "Videos" / "movie.mp4"
+    movie.write_bytes(b"m")
+    lib2 = dl.MediaLibrary([dl.MediaRoot(path=str(drive_like), label="Videos")])
+    key2 = lib2.path_to_key(movie)
+    assert key2 == "Videos/movie.mp4", key2
+    got_c = lib2.key_to_path(key2)
+    assert _same(got_c, movie), f"盘符根场景 404（旧代码解析成 {drive_like / 'movie.mp4'}）：{got_c}"
+
+    # ---- 场景 D：两边都不存在 → 回不含 label 的那个（与 path_to_key 同口径，交给调用方 404） ----
+    got_d = lib.key_to_path("Videos/nope.mp4")
+    assert got_d is not None and _same(got_d, root_dir / "Videos" / "nope.mp4"), got_d
+
+    # ---- 场景 E：穿越防护不能被破坏 ----
+    assert lib.key_to_path("../../evil.mp4") is None, "路径穿越必须仍然被拒"
+    assert lib.key_to_path("Videos/../../evil.mp4") is None, "带子目录的穿越也必须被拒"
+
+
+# 23 ------------- F26：.strm 代理短读必须关闭连接
+def t_dlna_strm_proxy_truncation():
+    """评审 F26：.strm 代理把上游的 Content-Length **原样转发**出去，而上游提前 EOF 时
+    转发循环只是 `break` —— keep-alive 下客户端按声明长度继续等剩余字节，**永久挂死**
+    （DeoVR 等播放器点云盘源传输中断时就是这个表现）。
+
+    同文件对**本地文件**路径早有同样处理（"发送字节少于 Content-Length，必须关闭连接让
+    客户端感知截断"），代理路径一直漏了。
+    """
+    import http.server
+    import io
+    import tempfile
+    import threading
+
+    dlna_dir = Path(__file__).resolve().parents[1] / "vendor" / "dlna"
+    if str(dlna_dir) not in sys.path:
+        sys.path.insert(0, str(dlna_dir))
+    import vr_dlna as dl
+
+    class Up(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", "1000")   # 声明 1000
+            self.end_headers()
+            self.wfile.write(b"A" * 100)                 # 只发 100 就断
+            self.wfile.flush()
+            self.close_connection = True
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Up)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+
+    tmp = Path(tempfile.mkdtemp(prefix="nexus-strm-"))
+    strm = tmp / "m.strm"
+    strm.write_text(f"http://127.0.0.1:{port}/v.mp4\n", encoding="utf-8")
+
+    class Stub:
+        def __init__(self):
+            self.close_connection = False
+            self.out = io.BytesIO()
+            self.wfile = self.out
+            self.errored = None
+
+        def send_response(self, *a, **k):
+            pass
+
+        def send_header(self, *a, **k):
+            pass
+
+        def end_headers(self):
+            pass
+
+        def _send_error_text(self, code, msg, want_body=True):
+            self.errored = (code, msg)
+
+    orig_public = dl._is_public_http_target
+    dl._is_public_http_target = lambda h: True     # 测试目标是本机，绕过 SSRF 公网校验
+    try:
+        st = Stub()
+        dl.DlnaHandler._proxy_strm(st, strm, None, True)
+    finally:
+        dl._is_public_http_target = orig_public
+        srv.shutdown()
+
+    assert st.errored is None, f"不该报错：{st.errored}"
+    assert st.out.getvalue() == b"A" * 100, "转发的内容应当就是上游给的那 100 字节"
+    assert st.close_connection is True, (
+        "上游声明 1000 字节却只给了 100 —— 必须关闭连接；"
+        "否则 keep-alive 客户端会按声明长度死等（F26）")
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -1346,6 +1486,8 @@ if __name__ == "__main__":
     check("F11 单客户端独占（会话状态进程级单份）", t_single_client_session)
     check("F19 局域网接口不泄漏本机绝对路径", t_lan_endpoints_scrub_paths)
     check("F20 混合档位 ASR 热词真的传下去", t_hybrid_passes_asr_extra)
+    check("F25 DLNA 单根 key 往返（不误剥同名前缀）", t_dlna_single_root_key_roundtrip)
+    check("F26 .strm 代理短读关闭连接（不让客户端死等）", t_dlna_strm_proxy_truncation)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
