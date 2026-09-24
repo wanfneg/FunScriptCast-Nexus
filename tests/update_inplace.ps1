@@ -61,14 +61,23 @@ function Get-RunValue([string]$name) {
     return $prop.Value
 }
 function Read-Log([string]$p) {
-    if (Test-Path $p) { return (Get-Content $p -Raw -Encoding UTF8) }
+    # ⚠ 必须显式 [string]：`-match` 作用在数组上会返回"匹配到的元素数组"，
+    # 而 Assert-That([bool]) 收到 Object[] 就直接抛类型转换错（整轮测试中止，
+    # 报错行还指向断言那一行，看起来像断言写错了）。实测踩过一次。
+    if (Test-Path $p) { return [string](Get-Content $p -Raw -Encoding UTF8) }
     return ''
 }
 function Port-Busy([int]$port) {
     return [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
 }
 
-Write-Host "[1/6] 生成沙盒安装包（同 setup.iss 的段落，只换身份）…" -ForegroundColor Cyan
+Write-Host "[1/8] 生成沙盒安装包（同 setup.iss 的段落，只换身份）…" -ForegroundColor Cyan
+# 前置：清掉上一轮可能残留的沙盒安装器（连内层 setup.tmp 一起），否则它握着的日志
+# 文件会让本次 ① 直接 exit 1，看起来像"安装器坏了"，实则是测试自己没收干净。
+Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.ProcessName -like 'sandbox-setup*' } |
+    ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Milliseconds 500
 $issText = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'installer\setup.iss')
 function Get-Section([string]$text, [string]$name) {
     $m = [regex]::Match($text, "(?ms)^\[$name\][^\r\n]*\r?\n(.*?)(?=^\[|\Z)")
@@ -83,11 +92,30 @@ $files = Get-Section $issText 'Files'
 # tests\_sandbox-update\ 下，相对基准变了 ⇒ 换成绝对路径，否则报"源文件不存在"。
 $files = $files.Replace('..\dist-app', (Join-Path $repo 'dist-app'))
 $code = Get-Section $issText 'Code'
-# 去掉 InitializeSetup（它会弹版本确认框；静默跑时虽然会被 SUPPRESSMSGBOXES 自动确认，
-# 但这里测的是更新链路，不需要它）
-$i = $code.IndexOf('function InitializeSetup')
-if ($i -lt 0) { throw '未找到 InitializeSetup（setup.iss 结构变了）' }
-$codeNoInit = $code.Substring(0, $i)
+# 只砍掉 `InitializeSetup`，**保留 CurStepChanged（F30 回删）与 PrepareToInstall（安装前
+# 清残留进程）** —— ④ 步要验的正是后者。
+#   · 必须砍 InitializeSetup 的原因：它查的是**写死的真实 AppId** 卸载项，于是沙盒安装器
+#     会读到用户真实安装（D:\FunScriptCast-Nexus）并弹出"检测到同版本，要重新安装吗？"
+#     的 Yes/No 对话框；`/VERYSILENT /SUPPRESSMSGBOXES` **不会**自动回答 [Code] 的 MsgBox
+#     （实测：安装器就停在那儿，桌面上真弹了个框，只能手工杀掉）。
+#   · 砍法是"从 function InitializeSetup( 到它自己的 end; 行"，而不是像早先那样把后面
+#     所有函数一起砍掉（那样 ④ 步就测了个空气）。
+$codeUnderTest = [regex]::Replace(
+    $code, "(?ms)^function InitializeSetup\(.*?\r?\nend;\r?\n", "")
+if ($codeUnderTest -match 'function InitializeSetup') { throw '未能移除 InitializeSetup' }
+# ⚠ 匹配函数名就够了，别写 `procedure xxx` —— PrepareToInstall 是 **function**
+# （返回 String），写成 procedure 会假报"丢了"（已经这么骗过自己一次）。
+if ($codeUnderTest -notmatch 'PrepareToInstall') { throw 'PrepareToInstall 丢了（④ 步会假通过）' }
+if ($codeUnderTest -notmatch 'CurStepChanged') { throw 'CurStepChanged 丢了（F30 断言会假通过）' }
+
+# ── 另编一份"修复前"的安装器（取自上一个提交的 setup.iss：没有 PrepareToInstall）──
+# 为什么要两份：新版安装器**自己就会**把安装目录里的残留 python 清掉，于是"用新版
+# 复现 RM 命中"已经不可能了（那正是修复生效的证明）。② 步要复现的是**当年那个坑**，
+# 就得用当年的安装器 —— 同一份载荷、同一个身份，只差 PrepareToInstall 这一段。
+$issPrev = & git -C $repo show 'HEAD:installer/setup.iss' | Out-String
+$codePrev = [regex]::Replace(
+    (Get-Section $issPrev 'Code'), "(?ms)^function InitializeSetup\(.*?\r?\nend;\r?\n", "")
+if ($codePrev -match 'PrepareToInstall') { throw '上一版 setup.iss 里居然已有 PrepareToInstall（A/B 前提不成立）' }
 
 $sandboxIss = Join-Path $root 'sandbox.iss'
 $body = @"
@@ -115,16 +143,27 @@ $files
 $tasks
 $icons
 $registry
-$codeNoInit
+$codeUnderTest
 "@
 Set-Content -Path $sandboxIss -Value $body -Encoding UTF8
 & $iscc /Qp "/DMyAppVersion=1.0.39" $sandboxIss | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（exit=$LASTEXITCODE）" }
 $setup = Join-Path $outDir 'sandbox-setup.exe'
-Assert-That (Test-Path $setup) '沙盒安装包编译成功（真实载荷）'
+Assert-That (Test-Path $setup) '沙盒安装包编译成功（真实载荷，新版）'
+
+# 第二份：修复前（无 PrepareToInstall），只用于 ② 的复现
+$sandboxIssPrev = Join-Path $root 'sandbox-old.iss'
+# 必须分两行：PS 里把 .Replace() 链换行接在 `)` 之后会被当成新语句（ParserError 实测）
+$bodyPrev = $body.Replace('OutputBaseFilename=sandbox-setup', 'OutputBaseFilename=sandbox-setup-old')
+$bodyPrev = $bodyPrev.Replace($codeUnderTest, $codePrev)
+Set-Content -Path $sandboxIssPrev -Encoding UTF8 -Value $bodyPrev
+& $iscc /Qp "/DMyAppVersion=1.0.39" $sandboxIssPrev | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（旧版，exit=$LASTEXITCODE）" }
+$setupOld = Join-Path $outDir 'sandbox-setup-old.exe'
+Assert-That (Test-Path $setupOld) '沙盒安装包编译成功（同载荷的"修复前"版本，供 ② 复现）'
 
 try {
-    Write-Host "[2/6] ① 安装沙盒（模拟用户已装 1.0.39）…" -ForegroundColor Cyan
+    Write-Host "[2/8] ① 安装沙盒（模拟用户已装 1.0.39）…" -ForegroundColor Cyan
     $p = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
         '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
         '/TASKS=desktopicon', "/DIR=$appDir", "/LOG=$(Join-Path $logDir 'install1.log')")
@@ -132,7 +171,7 @@ try {
     Assert-That (Test-Path (Join-Path $appDir 'FunScriptCast-Nexus.exe')) '① 沙盒里已有应用 exe'
     Assert-That (Test-Path (Join-Path $appDir 'runtime\python.exe')) '① 沙盒里已有自带运行时'
 
-    Write-Host "[3/7] ② 【复现】安装目录里的 python 当安装器父进程（老交接进程拓扑）…" -ForegroundColor Cyan
+    Write-Host "[3/8] ② 【复现】安装目录里的 python 当安装器父进程（老交接进程拓扑）…" -ForegroundColor Cyan
     # 能稳定复现的是"RestartManager 发现安装目录里有我们的 python，并开始关它"这一步
     # （用户日志里的同一条）。最后是"卡 30 秒中止回滚"还是"25 秒后勉强装上"，取决于
     # RM 到底能不能关掉它 —— 用户那次关不掉（他的安装目录里同时还有字幕服务/audiocpp
@@ -156,7 +195,9 @@ try:                      # 端口只是"顺手占着"：绑不上也要继续�
     print("fake old waiter: holding 8756 and parenting the installer", flush=True)
 except Exception as e:
     print("fake old waiter: bind failed (%s), continuing anyway" % e, flush=True)
-rc = subprocess.run([r"$setup", "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+# 这里故意用**修复前**的安装器（无 PrepareToInstall），否则新版会先把本进程清掉，
+# 根本复现不出"RestartManager 关不掉它"这一幕。
+rc = subprocess.run([r"$setupOld", "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
                      r"/DIR=$appDir", r"/LOG=$innerLog"]).returncode
 print("inner installer rc=%d" % rc, flush=True)
 time.sleep(1)
@@ -165,7 +206,9 @@ time.sleep(1)
     $busyPy = Start-Process -FilePath (Join-Path $appDir 'runtime\python.exe') -PassThru `
         -ArgumentList $fakeWaiter -WindowStyle Hidden
     Start-Sleep -Seconds 2
-    Assert-That (-not $busyPy.HasExited) "② 假交接进程活着（安装目录里的 python，PID $($busyPy.Id)）"
+    # 注意：这里**不该**断言"假交接进程还活着" —— 修复后的安装器会在 PrepareToInstall
+    # 里把它清掉（这正是要验的行为），所以活不活着取决于跑的是哪一版安装器。这里只记录。
+    Write-Host "      （假交接进程 PID $($busyPy.Id) 两秒后是否还活着：$(-not $busyPy.HasExited)）"
     $busyPy.WaitForExit(240000) | Out-Null
     $stall = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
     $reproLog = Read-Log $innerLog
@@ -177,7 +220,7 @@ time.sleep(1)
     if ($busyPy -and -not $busyPy.HasExited) { Stop-Process -Id $busyPy.Id -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 1
 
-    Write-Host "[4/7] ③ 【修复】交接脚本必须先**等端口释放**（模拟还没死透的字幕服务）…" -ForegroundColor Cyan
+    Write-Host "[4/8] ③ 【修复】交接脚本必须先**等端口释放**（模拟还没死透的字幕服务）…" -ForegroundColor Cyan
     # 这一条才是修复的核心：用户那次 RM 关不掉的正是"还在退的服务"。新版交接脚本
     # 先等端口空出来，所以哪怕子进程还在死，也不会撞上 RestartManager。
     $holder = Join-Path $root 'fake_service.py'
@@ -245,17 +288,64 @@ print(host_server._build_update_waiter(
         "③ 本次安装**没有**出现 RestartManager 命中（$($newest.Name)）"
     Assert-That (-not ($newestText -match 'Rolling back changes')) "③ 本次安装没有回滚（$($newest.Name)）"
 
-    Write-Host "[5/7] ④ 清理：结束模拟进程…" -ForegroundColor Cyan
+    Write-Host "[5/8] ④ 【兜底】1.0.39→新版这一次跑的是**旧交接进程**：新安装器必须能自己清掉它…" -ForegroundColor Cyan
+    # 用户装的是 1.0.39，它的 update_install 还是老的 python 交接进程 —— 也就是说
+    # "1.0.39 → 新版"这次就地更新，跑安装器的仍是那个住在安装目录里的 python。
+    # 所以新安装器加了 PrepareToInstall：按"可执行文件路径在安装目录下"清掉残留进程。
+    # 这里复现同一拓扑（安装目录里的 python 当安装器的父进程），跑**新版**安装器：
+    # 期望"清理 → RestartManager 无事可做 → 安装成功"。
+    $innerLog2 = Join-Path $logDir 'rescue-inner.log'
+    $fakeOld2 = Join-Path $root 'fake_old_waiter2.py'
+    [IO.File]::WriteAllText($fakeOld2, @"
+import subprocess, time
+print("old-style waiter (1.0.39) parenting the NEW installer", flush=True)
+rc = subprocess.run([r"$setup", "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                     r"/DIR=$appDir", r"/LOG=$innerLog2"]).returncode
+print("inner installer rc=%d" % rc, flush=True)
+time.sleep(1)
+"@, (New-Object System.Text.UTF8Encoding($false)))
+    Get-Process -Name 'python' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -like "$appDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+    $rescuePy = Start-Process -FilePath (Join-Path $appDir 'runtime\python.exe') -PassThru `
+        -ArgumentList $fakeOld2 -WindowStyle Hidden
+    Start-Sleep -Seconds 2
+    # 这里只记录、**不**断言"还活着"：新版安装器会在 PrepareToInstall 里就把它清掉 ——
+    # 存活与否正是被测行为本身，拿它当断言会自相矛盾（② 步已经踩过一次）。
+    Write-Host "      （旧式交接进程 PID $($rescuePy.Id) 两秒后是否还活着：$(-not $rescuePy.HasExited)）"
+    # 安装器会把它杀掉 ⇒ 这里等安装器（子进程）自己跑完：轮询日志出现结论行为止
+    $deadline = (Get-Date).AddSeconds(240)
+    do {
+        Start-Sleep -Seconds 3
+        $t = Read-Log $innerLog2
+    } while ((Get-Date) -lt $deadline -and
+             -not ($t -match 'Rolling back changes|Installation process succeeded|Log closed'))
+    $t = Read-Log $innerLog2
+    if ($rescuePy -and -not $rescuePy.HasExited) { Stop-Process -Id $rescuePy.Id -Force -ErrorAction SilentlyContinue }
+    Write-Host "      （本次结局：$(if ($t -match 'Rolling back changes') { '回滚' } elseif ($t -match 'succeeded') { '装成功' } else { '未知' })）"
+    Assert-That (-not ($t -match 'RestartManager found an application')) `
+        '④ 新安装器的 PrepareToInstall 已把残留 python 清掉（RestartManager 无事可做）'
+    Assert-That ($t -match 'Installation process succeeded') '④ 安装成功（1.0.39 → 新版 这条路径也能就地更新）'
+    Assert-That (-not ($t -match 'Rolling back changes')) '④ 没有回滚'
+
+    Write-Host "[6/8] ⑤ 清理：结束模拟进程…" -ForegroundColor Cyan
     if ($holderPy -and -not $holderPy.HasExited) { Stop-Process -Id $holderPy.Id -Force -ErrorAction SilentlyContinue }
     Get-Process -Name 'python' -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -like "$appDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 1
 } finally {
-    Write-Host "[6/7] 回收沙盒（卸载 + 删注册项/快捷方式/目录）…" -ForegroundColor Cyan
+    Write-Host "[7/8] 回收沙盒（卸载 + 删注册项/快捷方式/目录）…" -ForegroundColor Cyan
     $unins = Join-Path $appDir 'unins001.exe'
     if (Test-Path $unins) {
         try { Start-Process -FilePath $unins -Wait -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') | Out-Null } catch { }
     }
+    # ⚠ 必须连**内层**安装器进程一起收：Inno 的 setup.exe 会把真正的安装器解到
+    # %TEMP%\is-XXXX.tmp\setup.tmp 再跑，只杀外层的 `sandbox-setup` 会留下
+    # `sandbox-setup.tmp` —— 它握着 install1.log，下一次跑 ① 时安装器写不了日志
+    # 直接 exit 1（实测踩过：连着一轮测试"莫名其妙"在①失败，根因就是这个残留）。
+    Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ProcessName -like 'sandbox-setup*' } |
+        ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 1
     if (Test-Path $uninsKey) { Remove-Item -Path $uninsKey -Recurse -Force -ErrorAction SilentlyContinue }
     if (Get-RunValue $sandboxName) { Remove-ItemProperty -Path $runKey -Name $sandboxName -ErrorAction SilentlyContinue }
     if (Test-Path $deskLink) { Remove-Item $deskLink -Force -ErrorAction SilentlyContinue }

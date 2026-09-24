@@ -3472,3 +3472,56 @@ Inno 用 RestartManager 判断"谁占着我要覆盖的文件"，而那个 pytho
 - `data\update\_waiter.py`（1KB，7:28）是**旧实现遗留的调试残片**：内容与老 `-c` 脚本逐字
   相同，但仓库历史里从没有任何提交写过它（`git log -S"_waiter.py"` 空），新实现也不再需要
   （现在写 `_apply_update.cmd`）。留着无害，想清可直接删。
+
+### 交付：v1.0.40 发行（2026-09-24）
+
+`build\build_installer.ps1` 一条命令跑完（版本自增 1.0.39→**1.0.40**／code 41，
+PyInstaller 6.22.2 + make_runtime + ISCC "Successful compile (83.515 sec)"），
+产物 `dist-installer\FunScriptCast-Nexus-Setup-1.0.40.exe`（134,631,973 字节，
+FileVersion=1.0.40）。提交 `8cc17b6` 推送后，release `v1.0.40` 建在主仓并标 Latest，
+三个资产与上一版一致（Setup 1.0.40 + `llama-runtime-windows.zip` 656,985,982 字节、
+与 v1.0.38/1.0.39 逐字节相同 + audiocpp 27,005,868 字节）。
+
+发布流程沿用 R93 的教训：**大资产走后台任务**（`gh release create --draft` 先传 Setup，
+再后台 `gh release upload` 传 626MB 的两个 zip），最后
+`gh release edit v1.0.40 --draft=false --tag v1.0.40 --latest`。
+用户装的是 1.0.39（桌面快捷方式已勾、未开自启），检查更新应能看到 1.0.40 并可就地安装。
+
+### 追加：1.0.41 —— 让"从 1.0.39 更新到新版"这一次也能就地成功
+
+1.0.40 修的是**新版**交接进程（搬出安装目录 + 等端口），但用户机器上跑的更新逻辑仍是
+1.0.39 的 —— "1.0.39 → 新版"这次就地更新，执行安装的还是那个住在安装目录里的 python，
+照样会被 RestartManager 卡住。所以 1.0.41 在**安装器**侧补了兜底：
+`PrepareToInstall`（安装步骤开始前）用系统 PowerShell 把"可执行文件路径在安装目录下"的
+进程清掉（`Get-CimInstance Win32_Process` + `StartsWith`，前缀带结尾反斜杠以免 `D:\App`
+误匹配 `D:\App2`；失败不拦安装，退回 RestartManager 处理）。
+
+沙盒测试因此升级成 **A/B 对照**（`tests\update_inplace.ps1`，24 项断言全过）：
+
+| 步骤 | 安装器 | 场景 | 结果 |
+|---|---|---|---|
+| ② | **修复前**（`git show HEAD:installer/setup.iss`，无 PrepareToInstall） | 安装目录里的 python 当安装器父进程 | 复现 `RestartManager found an application using one of our files: Python` |
+| ③ | 新版 | 新版交接脚本 + 假"字幕服务"占着 8756 | 等端口释放 47.4s → 一次装成 → **无 RM 命中、无回滚**、拉起应用 |
+| ④ | 新版 | 同样的"旧式交接进程"占着安装目录 | 安装器先把它清掉 → **无 RM 命中** → 安装成功、不回滚 |
+
+⚠ 关键前提：② 必须用**修复前**的安装器。用新版跑同一场景时，PrepareToInstall 会先清掉
+那个 python ⇒ 根本复现不出 RM 命中（第一次把 ② 改成新版后它就"失败"了，其实是修复生效）。
+所以测试里编译两份沙盒安装器：新版 + `git show HEAD:...` 的旧版（同载荷、同身份、只差那一段）。
+
+⚠ 这一轮在测试脚本上踩了三个坑，都记下来：
+1. **Inno 的 `[Code] MsgBox` 不会被 `/VERYSILENT /SUPPRESSMSGBOXES` 自动回答**（至少 6.7.3
+   如此）：沙盒安装器一旦带上 `InitializeSetup`（它查的是写死的**真实 AppId** 卸载项），
+   就会读到用户真实安装并弹"检测到同版本，要重新安装吗？"——**桌面上真卡了个框**，只能
+   手工杀掉。→ 沙盒 .iss 必须摘掉 `InitializeSetup`（保留 CurStepChanged / PrepareToInstall），
+   并用"只匹配函数名"的断言防止哪天又摘错（写成 `procedure PrepareToInstall` 会假报"丢了"，
+   它是 function）。
+2. **只杀外层安装器会留下内层 `setup.tmp`**：Inno 的 setup.exe 把真正的安装器解到
+   `%TEMP%\is-XXXX.tmp\setup.tmp` 再跑。上一轮只杀了 `sandbox-setup`，残留的
+   `sandbox-setup.tmp` 握着 `install1.log` ⇒ 下一次跑 ① 时安装器**写不了日志直接 exit 1**，
+   看起来像"安装器坏了"。现在收尾按 `-like 'sandbox-setup*'` 一起清。
+3. **`Read-Log` 必须显式 `[string]`**：`-match` 作用在数组上返回的是"匹配到的元素数组"，
+   而 `Assert-That([bool])` 收到 `Object[]` 会抛类型转换错并**中止整轮测试**，报错行还指向
+   断言那一行（看起来像断言写错了）。
+
+另：Pascal 注释里不能再出现带花括号的路径占位符 —— Pascal 注释不嵌套，里层的 `}` 会提前
+结束注释、把后面的中文当成代码，ISCC 报 "Syntax error"（两处都踩了才编过）。

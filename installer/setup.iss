@@ -308,6 +308,52 @@ begin
   end;
 end;
 
+{ ── 安装前清掉"仍跑在安装目录里"的本程序进程（1.0.41）────────────────────────
+  为什么需要：Inno 的 RestartManager 会在安装开始时尝试关掉"占着待覆盖文件"的应用；
+  关不掉就按 /SUPPRESSMSGBOXES 的默认值 Abort ⇒ 回滚（1.0.39 用户实测：
+  "正在关闭应用程序…"卡 30 秒 → "正在撤销修改…"，日志里
+  `RestartManager found an application using one of our files: Python`）。
+  1.0.40 已经把**新版**交接进程搬出安装目录，但"从 1.0.39 更新到新版"这一次跑的
+  仍是**旧交接进程**（它自己就是安装目录下 runtime\python.exe）——所以这一步放在
+  安装器这边兜底：按"可执行文件路径在安装目录下"精确清理，只动我们自己的进程
+  （别的目录里的 python 一个都不碰）。
+  Inno 自身没有"按路径枚举进程"的能力，借系统自带的 PowerShell 做（失败不拦安装：
+  照旧让 RestartManager 去处理，最坏就是回到改动前的行为）。
+  ⚠ 注释里**不能写**那种带花括号的路径占位符：Pascal 注释不嵌套，里层的右花括号
+  会提前结束注释，剩下的文字会被当成代码 ⇒ 编译报 "Syntax error"（已实测踩过）。 }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  PS: String;
+  Cmd: String;
+  AppPrefix: String;
+  RC: Integer;
+begin
+  Result := '';
+  NeedsRestart := False;
+  { 前缀必须带结尾反斜杠：否则安装目录 D:\App 会误匹配 D:\App2\... }
+  AppPrefix := ExpandConstant('{app}') + '\';
+  PS := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  if not FileExists(PS) then
+  begin
+    Log('安装前清理：找不到 PowerShell，跳过（交给 RestartManager）');
+    Exit;
+  end;
+  Cmd := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ' +
+         '"$p=' + '''' + AppPrefix + '''' + ';' +
+         'Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ' +
+         'Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($p, ''OrdinalIgnoreCase'') } | ' +
+         'ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; ' +
+         'Write-Output (''killed '' + $_.Name + '' '' + $_.ProcessId) } catch {} }"';
+  if Exec(PS, Cmd, '', SW_HIDE, ewWaitUntilTerminated, RC) then
+  begin
+    Log('安装前清理：结束安装目录内的残留进程（rc=' + IntToStr(RC) + '，前缀 ' + AppPrefix + '）');
+  end
+  else
+    Log('安装前清理：PowerShell 启动失败，跳过（交给 RestartManager）');
+  { 给句柄释放留一点时间（进程刚被终止，文件锁要几毫秒才真正消失） }
+  Sleep(600);
+end;
+
 { 用户数据（data\、cache\、logs\、models\）卸载时有意保留：Inno 默认只删除它安装过的文件。
   ⚠ 这一行必须是 Pascal 注释（花括号），不能写 `;` —— [Code] 段之后 `;` 不再是注释，
   它会当成新例程的开头并报 "'BEGIN' expected"（已实测踩过）。 }
