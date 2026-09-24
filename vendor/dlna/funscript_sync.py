@@ -254,11 +254,11 @@ class FunscriptSyncEngine:
         # 规范化结果同时写回 device_folder —— 带 '..' 的路径会让 scan_device 的
         # 前缀裁剪失配，设备相对路径整体多出一层目录，删除判定就会把设备上的文件
         # 全部当成"本地已删除"的多余文件。
-        dev_path = posixpath.normpath(self.device_folder.replace("\\", "/"))
-        dev_path = ("/" + dev_path.lstrip("/")).rstrip("/") or "/"  # 折叠 "//sdcard" 与尾部斜杠
-        unsafe = {"/", "/sdcard", "/storage/emulated/0", "/storage/emulated/legacy", "/mnt/sdcard"}
-        if dev_path.casefold() in {u.casefold() for u in unsafe}:
-            raise InvalidOperationException("设备目录过宽，禁止使用根目录/存储根目录进行同步，以免误删文件")
+        # 护栏判据只写一份（评审 F28）：清单漏项会让 `find … -empty -delete` 越界清目录。
+        import device_guard
+        dev_path, why = device_guard.normalize_and_check(self.device_folder)
+        if why:
+            raise InvalidOperationException(why)
         self.device_folder = dev_path
 
         self.adb.verify_device(self.serial)

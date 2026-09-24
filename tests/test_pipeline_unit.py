@@ -1455,6 +1455,54 @@ def t_dlna_strm_proxy_truncation():
         "否则 keep-alive 客户端会按声明长度死等（F26）")
 
 
+# 24 ------------- F28：设备目录护栏（delete_extra 的越界防线）
+def t_device_folder_guard():
+    """评审 F28：`delete_extra` 打开时同步收尾会跑
+        find <目标> -mindepth 1 -depth -type d -empty -delete
+    目标是 `/storage/emulated` 或 `/sdcard/Android` 时，这条命令会在**整个共享存储 /
+    应用私有树**里删空目录（相册、别的应用的数据目录都在射程内）。
+
+    原清单只有 5 项且只做精确比对，漏了 `/storage/emulated`、`/sdcard/Android`、
+    `/storage`、`/mnt`、`/system`、`/data`。修法：判据收成一份 `device_guard`，
+    两个 sync 模块共用，并把"祖先"与"子树"两种形态一起挡掉。
+    """
+    dlna_dir = Path(__file__).resolve().parents[1] / "vendor" / "dlna"
+    if str(dlna_dir) not in sys.path:
+        sys.path.insert(0, str(dlna_dir))
+    import device_guard as dg
+
+    # ① 原来就挡的（不能因为重写而漏掉）
+    for p in ("/", "/sdcard", "/storage/emulated/0", "/storage/emulated/legacy", "/mnt/sdcard"):
+        assert dg.normalize_and_check(p)[1], f"必须仍然拒绝 {p}"
+
+    # ② 报告点名的漏项
+    for p in ("/storage/emulated", "/sdcard/Android", "/sdcard/Android/data",
+              "/storage", "/mnt", "/system", "/data", "/vendor"):
+        assert dg.normalize_and_check(p)[1], f"漏项未被挡住：{p}"
+
+    # ③ 归一化绕过（'..'、'//'、尾部斜杠）仍然挡得住
+    for p in ("/sdcard/Funscript/..", "//sdcard", "/sdcard/", "/sdcard/Android/../Android"):
+        assert dg.normalize_and_check(p)[1], f"归一化后过宽的路径未被挡住：{p}"
+    assert dg.normalize("/sdcard/Funscript/..") == "/sdcard", dg.normalize("/sdcard/Funscript/..")
+
+    # ④ 正常目标必须放行（不能把功能一起挡了）
+    for p in ("/sdcard/Funscript", "/sdcard/Movies", "/sdcard/DCIM/Camera",
+              "/storage/emulated/0/Funscript", "/storage/emulated/0/Movies"):
+        dev, why = dg.normalize_and_check(p)
+        assert not why, f"正常目标被误挡：{p} → {why}"
+        assert dev == p, (dev, p)
+
+    # ⑤ 段数过少（挂在设备根下的单段目录）也拒——正常目标是两层
+    assert dg.normalize_and_check("/foo")[1], "设备根下的单段目录不该作为同步目标"
+
+    # ⑥ 接线检查：两个 sync 模块必须**真的用**这份判据。只测 device_guard 本身的话，
+    #    有人把弱清单抄回模块里照样全绿（本轮就出现过"牙齿证明不失败"的情况，所以补这条）。
+    for mod_name in ("funscript_sync", "video_sync"):
+        src = (dlna_dir / f"{mod_name}.py").read_text(encoding="utf-8")
+        assert "device_guard.normalize_and_check" in src, f"{mod_name} 没有走共享护栏"
+        assert "unsafe = {" not in src, f"{mod_name} 里又出现了内联的弱清单"
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -1488,6 +1536,7 @@ if __name__ == "__main__":
     check("F20 混合档位 ASR 热词真的传下去", t_hybrid_passes_asr_extra)
     check("F25 DLNA 单根 key 往返（不误剥同名前缀）", t_dlna_single_root_key_roundtrip)
     check("F26 .strm 代理短读关闭连接（不让客户端死等）", t_dlna_strm_proxy_truncation)
+    check("F28 设备目录护栏（delete_extra 越界防线）", t_device_folder_guard)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

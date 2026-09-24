@@ -2868,3 +2868,27 @@ URL/缓存的兼容性）；多根分支不动。
 调真实的 `_proxy_strm`（打桩 `_is_public_http_target` 绕过 SSRF 公网校验），断言
 `close_connection is True`。牙齿证明：旧代码 `AssertionError: 上游声明 1000 字节却只给了 100
 —— 必须关闭连接`。
+
+---
+
+## R84 审查报告第八批修复：F28（设备目录护栏越界清目录）
+
+### F28 [中] unsafe 清单漏项，`/storage/emulated` 配 delete_extra 可越界清目录 —— 属实，已修
+
+`delete_extra` 打开时同步收尾执行
+`find <目标> -mindepth 1 -depth -type d -empty -delete`。原护栏是**两个模块各写一份**
+5 项清单（`funscript_sync:259` / `video_sync:267`）且只做**精确**比对，漏了
+`/storage/emulated`、`/sdcard/Android`、`/storage`、`/mnt`、`/system`、`/data`
+——填成其中之一就会在**整个共享存储 / 应用私有树**里枚举并删空目录。
+
+修法：判据抽成一份新模块 `vendor/dlna/device_guard.py`（两个 sync 共用），规则四层：
+①精确命中清单；②是清单项的**祖先**（`/storage` 之于 `/storage/emulated`，删除范围一样大）；
+③落在"绝不作为目标"的子树（`/sdcard/Android`、`/system`、`/data`、`/vendor`）；
+④归一化后段数 < 2。正常目标（`/sdcard/Funscript`、`/storage/emulated/0/Movies`）全放行。
+`normalize_and_check()` **不抛异常**、只返回 `(归一化路径, 原因)`，避免把两个模块各自
+定义的 `InvalidOperationException` 耦合进共享模块。
+
+⚠️ 本条第一次写完时**牙齿证明不失败**：测试只驱动了新模块，把两个 sync 模块还原成弱清单
+照样全绿。补了一条**接线断言**（"两个 sync 必须出现 `device_guard.normalize_and_check`、
+且不得再出现内联的 `unsafe = {`"）之后，还原即失败。教训：**判据抽出去以后，还要守住
+"调用方真的在用它"**，否则测试覆盖的是新代码、防不住旧代码回潮。
