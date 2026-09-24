@@ -2520,3 +2520,94 @@ vram_estimate 实时（总 6.9GB：转录 1.3 + 翻译 4.7 + 运行时 0.9）；
 重做：交接进程改用**自带 runtime\python.exe + CREATE_NO_WINDOW**（无任何窗口），轮询**宿主 PID 彻底消失**（OpenProcess 探活，60s 上限）再装，安装器失败自动重试一次，全程写 data\update\install.log 可追溯。UI 侧按用户要求把下载从后台改为**前台进度弹窗**（.upd-bar 进度条，实时百分比，下载中无按钮不打断，完成即转"立即安装"询问）。
 
 ⚠️ 事故复盘（本轮最重的教训）：**测试脚本的多层转义（JSON→bash heredoc→python 字符串）把 \n 吃成真换行，生成了语法错误的等待脚本，秒死无日志**，浪费两轮排错——从生产文件用 ast.literal_eval 抽取真实字符串才是可靠验证方式；**我在用户机器上反复启动/退出实例做验证，与用户自己的操作互相干扰**，用户观感"反复捣乱"——涉及用户在用的环境，变更节奏必须先问或一次做完；测试性启动一律先确认有没有用户实例在跑。
+
+---
+
+## R77 代码审查报告（2026-09-24）第一批修复：P0 两条 + P1 四条
+
+依据 `docs/代码审查与模型评估报告-2026-09-24.md`（30 条发现）。该报告自述"未重新执行验证"，
+所以本轮**每条都先对着当前代码核实**再改，并且**每条都用测试复现报告描述的后果**，
+最后把源码临时还原成修复前、确认测试**必然失败**（证明测试有牙齿，而不是摆设）。
+
+### 核实结论（先说与报告不一致的地方）
+
+- 报告的行号与当前代码**精确对得上**（如 host_server.py:2404-2414、ui/app.js:909），可以用。
+- **钩子 `prepare-commit-msg` 把提交消息固定成项目名**（写着"用户明确要求，勿改动"）——
+  已遵守，详细理由一律写进本条记录，不再写提交消息文件。
+- 仓库根目录有个**误建的空文件 `-`**（163 字节英文文本，与项目无关，未跟踪）——未动。
+
+### F01 [高] UI 切换识别模型静默清空字幕配置 —— 属实，已修
+
+`save_subtitle_config` 只对 translate 组深合并，其余组 `cfg[group].update(values)` 整段替换。
+实测（新增回归测试）：发 `{"asr":{"audiocpp":{"model":"NEW"}}}` 后 `asr.audiocpp` 从 7 个键
+**塌成 `{'model': 'NEW-MODEL'}`**，port/threads/backend 全丢并持久化。
+配套第二坑：`stream_bridge.ASR_BASE` 硬编码 `:8081`，而 audiocpp 的 port 缺省是 8083 —— port
+一丢，离线去 8083、流式去 8081，**流式字幕整条失效**。
+
+修法：深合并推广到所有组（一层）；缺省端口/流式模型 id 只在 audiocpp_backend 定义一份
+（新增 `DEFAULT_PORT`），stream_bridge 从 `asr.audiocpp` 的 host/port 组装。
+新增两条测试；对修复前代码必然失败（报错逐字复现报告结论）。
+
+### F07 [高] 更新下载失败后进度弹窗永久卡死 —— 属实，已修
+
+`renderUpdate` 的 error 分支只改设置页文字、从不碰弹窗；而 `showUpdateModal("progress")`
+把两个按钮都隐藏 ⇒ 全屏遮罩（position:fixed inset:0）锁死整个 UI 到杀进程。下载中断是
+常见路径（GitHub 直连常被重置）。
+
+修法：①进度态给"后台运行"（关弹窗、下载继续），用 `S.updProgDismissed` 防轮询每秒重弹
+（离开下载态复位，否则会吞掉后面的"安装询问"）；②失败态收尾成"更新失败 + 关闭"并回显原因，
+用户关掉后不再重弹；③通用规则：任何打开中的弹窗至少留一个可见按钮。
+
+验证方式值得记下来：新增 `tests/ui_update_modal.js` —— **无头 Chrome + CDP，静态托管 ui/
+并在页面脚本运行前注入 fetch 桩**，把 `/api/state` 变成可控输入，从而走**真实的轮询与弹窗
+代码路径**，而且**不需要启动宿主**（符合 R76 的教训：别在用户在用环境里反复起实例）。
+修复后 11/11 通过；对修复前的 app.js 6 项失败，通用判据打出死锁现场
+（`downloading:` 后一个可点按钮都没有）。
+
+### F12 [中] ASR 子进程死后无任何请求路径自愈 —— 属实，已修
+
+`ensure_server()` 只在 lifespan 调一次；上游崩溃后 VAD（一次性 CLI）照常成功、只有逐段 POST
+全线失败 ⇒ 每段都 append 空段 ⇒ **字幕静默全空**，而 `/health` 的 `asr_ready` 查的是**类属性**
+`backend_kind`，恒为 True。
+
+修法：①新增 `_ensure_alive()`（probe → 失败则重拉一次），transcribe 进循环前先调一次；
+②单段遇连接级失败（复用 `_error_kind` 的 `backend_unavailable` 分类）时重拉并**给这一段
+一次机会**（每次转写最多重拉一次）；③整块全失败时如实带 `error=backend_unavailable`，
+不再与"真静音"不可区分；④`/health` 的 `asr_ready` 改走新增的 `_asr_ready()`：对支持
+`probe()` 的后端真的探一次（1s 超时 + 2 秒结果缓存，避免 1s 轮询把它变成压力）。
+
+牙齿证明（只还原 audiocpp_backend、保留 server_app 的修复）：断言自己失败并打出
+`{'ensure': 0, 'probe': 0, 'span': 1}` —— 零次重拉、一次就放弃，正是 F12 的缺陷。
+
+### F21/F22 [中] 熔断只熔不恢复 + 空译文被计入熔断 —— 属实，已修
+
+- **F22**：HTTP 200 但 content 为空（推理模型把 max_tokens 花在思考、finish_reason=length）
+  与"200 但不是 JSON"都是**内容级**问题，旧实现用普通 RuntimeError 抛出 ⇒ 计入熔断。
+  新增 `ContentBad`，并把失败分类改成 `alive = isinstance(e, (BatchPartial, ContentBad))`。
+- **F21**：熔断 gate 在**任何尝试之前**抛，唯一复位点在成功之后 ⇒ 三连失败后整场跳过 LLM
+  直到重启。新增**半开探测**：距上次失败超过 `fallback.cooldown_sec`（默认 60s）就放一批
+  过去试探；成功即复位。
+
+⚠️ 本轮**自己踩了两个坑，都被测试当场抓住**（值得记住）：
+1. 我在 gate 里写了 `time.monotonic()`，而 `translate_engine.py` **没有导入 time** ——
+   报 `NameError`，会让每次熔断跳批都炸。测试直接打出来了。
+2. 更隐蔽的语义错误：熔断"跳过"也走了失败分支 ⇒ 每批都刷新冷却时钟 ⇒ `since` 永远接近 0
+   ⇒ **半开探测永远轮不到 = 还是"只熔不恢复"**。修法是新增 `CircuitOpen(BackendDown)`：
+   跳过只计 `skipped_batches`，不累加 streak、不动冷却时钟、不算 fail_batches（它压根没发请求），
+   但仍继承 BackendDown 以便上层跳过逐句补救。测试里专门加了一条断言锁住"跳过不得刷新时钟"。
+
+### 4.5(b) [附带] `model_by_lang.en` 配置错 —— 属实，已修
+
+`vendor/subtitle/config.json:75` 指向 `../../models/Hy-MT2-7B/Hy-MT2-7B-Q4_K_M.gguf`（实测
+**不存在**），真身在 `models\Hy-MT2-7B-Q4_K_M.gguf`（根目录）。英语请求会被存在性校验拒绝
+而沿用 Sakura。已改。⚠️ 用户现网配置在 `<安装目录>\data\subtitle_config.json`，需要同样改一行
+（或由界面重选英语模型）。
+
+### 未做 / 留给后续轮次
+
+F02–F06、F08–F11、F13–F20、F23–F30（含 F06 下载完整性、F13 配置原子化、F15 断流 finally、
+F16 鉴权与过载防护）以及 §4.4 的模型接入（Parakeet/SenseVoice/Qwen3-ASR-1.7B）。
+按报告第五节的优先级继续。
+
+⚠️ 本轮只改了 `ui/app.js`，**用户已安装的 D 盘实例不会自动生效**：按 R75 的说法 ui\ 可热修
+三处（仓库/dist-app/D 盘）刷新即生效，无需重编 exe —— 需要时同步过去即可。
