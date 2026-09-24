@@ -1261,6 +1261,60 @@ def t_lan_endpoints_scrub_paths():
     assert H.scrub_paths(None) is None and H.scrub_paths(123) == 123
 
 
+# 21 ------------- F20：混合档位下 ASR 热词必须真的传下去
+def t_hybrid_passes_asr_extra():
+    """评审 F20：`_hybrid_transcribe` 的两处 `transcribe(..., "")` 把热词写死成空串，
+    而调用方算了 `asr_extra` 却没传进来 —— 发运默认档位就是 hybrid，模块头注释里
+    列为**核心设计**的"上一句原文进 ASR 热词"（跨块人名/专名承接）静默失效，
+    且只有 ASR 侧断（翻译侧的剧情承接仍生效，所以更难发现）。
+
+    这里用假 hybrid 缓冲 + 假 ASR 直接驱动，断言"喂进去的 asr_extra 原样到达 ASR"。
+    """
+    import numpy as np
+
+    import server_app as sa
+
+    captured = []
+    orig_get_buf = sa._get_hybrid_buffer
+    orig_asr = sa.state.get("asr")
+
+    class FakeBuf:
+        # reason="vad" 时上层会复用切句期算好的语音区（span 内相对毫秒），
+        # 给一段假数据就不会去现场 spawn VAD CLI（测试不该依赖外部进程）
+        last_cut_regions = [(0, 1000)]
+
+        def feed(self, pcm, lang, start_ms):
+            return (np.zeros(16000, dtype=np.float32), 1000, "vad")   # 立刻切出一句
+
+        def snapshot(self):
+            return (np.zeros(16000, dtype=np.float32), 0)
+
+    class FakeAsr:
+        def transcribe(self, pcm, lang, start_ms, keep, vad_cfg, seg_cfg, extra=""):
+            captured.append(extra)
+            return {"language": lang, "segments": [{"start_ms": start_ms,
+                                                    "end_ms": start_ms + 900,
+                                                    "text": "句"}],
+                    "asr_ms": 1.0, "skipped": False}
+
+    try:
+        sa._get_hybrid_buffer = lambda: FakeBuf()
+        sa.state["asr"] = FakeAsr()
+        pcm = np.zeros(16000, dtype=np.float32)
+
+        sa._hybrid_transcribe(pcm, "ja", 0, {}, False, "上一句原文")
+        assert captured == ["上一句原文"], \
+            f"asr_extra 没传到 ASR（混合档位热词失效）：{captured}"
+
+        # 默认参数时行为不变（不能因为加参数就把空串路径弄坏）
+        captured.clear()
+        sa._hybrid_transcribe(pcm, "ja", 0, {}, False)
+        assert captured == [""], captured
+    finally:
+        sa._get_hybrid_buffer = orig_get_buf
+        sa.state["asr"] = orig_asr
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -1291,6 +1345,7 @@ if __name__ == "__main__":
     check("F10/F18 在飞计数口径 + 空闲判定用单调钟", t_inflight_and_idle_clock)
     check("F11 单客户端独占（会话状态进程级单份）", t_single_client_session)
     check("F19 局域网接口不泄漏本机绝对路径", t_lan_endpoints_scrub_paths)
+    check("F20 混合档位 ASR 热词真的传下去", t_hybrid_passes_asr_extra)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

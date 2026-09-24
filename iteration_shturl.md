@@ -2803,3 +2803,29 @@ HF 仓名原样；界面本来就只显示 basename（`app.js:342` 用 `split(/[
 验证：新增 `t_lan_endpoints_scrub_paths`（用真实错误文本形态断言"路径没了、line 22 还在"）。
 牙齿证明是 AttributeError（新辅助函数在旧代码里不存在）——如实记下：这类"新增脱敏函数"
 没法对旧代码给出行为级失败。
+
+---
+
+## R82 审查报告第六批修复：F20（混合档位热词失效）
+
+### F20 [低] hybrid 默认档位下 ASR 热词上下文完全不生效 —— 属实，已修
+
+`_hybrid_transcribe` 的两处 `transcribe(..., "")` 把热词写死成空串，而调用方（
+`_transcribe_impl`）算了 `asr_extra = prev["src"][:60]` 却**没传进去**。发运默认档位
+就是 hybrid，于是模块头注释里列为**核心设计**的"上一句原文进 ASR 热词"（跨块人名/专名
+承接）静默失效——而且**只有 ASR 侧断**：翻译侧的剧情承接仍生效，所以更难被发现。
+
+修法：给 `_hybrid_transcribe` 加 `asr_extra` 形参并透传到两处 `transcribe(...)`；调用方
+把已算好的值传进去（partial 临时稿同一口径）。
+
+验证：`t_hybrid_passes_asr_extra` —— 假 hybrid 缓冲 + 假 ASR，断言"喂进去的热词原样到达
+ASR"，并断言不传时仍是空串（不能因为加参数把原路径弄坏）。
+牙齿证明：旧签名 `TypeError: takes from 4 to 5 positional arguments but 6 were given`
+—— 这本身就是"它根本没这个参数"的证据。
+
+### 本批之后的状态
+
+已修 15 条（F01/F02/F06/F07/F10/F11/F12/F13/F15/F18/F19/F20/F21/F22/F29）+ F16 部分（3/4 项），
+剩余 14 条：F03/F04/F05/F08/F09/F14/F17/F23/F24/F25/F26/F27/F28/F30。
+F14（流式不透传 lang）**故意留到下一轮**：要改上游 audio.cpp 的 multipart 字段名，
+我先确认它到底认哪个字段再动，不猜。

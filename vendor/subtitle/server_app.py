@@ -748,12 +748,17 @@ def _get_hybrid_buffer():
 
 
 def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
-                       want_partial: bool = False) -> dict:
+                       want_partial: bool = False, asr_extra: str = "") -> dict:
     """混合切句的整句转写。返回结构与 state["asr"].transcribe 同约定。
 
     注意 skipped 语义：还在积累/静音丢弃时 = True——既如实告诉调用方"本轮
     无出句"，也让 whisper 二次兜底别拿半截缓冲去空跑（R62 教训：兜底只认
     "主引擎整段零输出"，混合模式下主引擎已经在完整句上跑过了）。
+
+    `asr_extra`（评审 F20）：上一句原文截断后作 ASR 热词补充（跨块人名/专名承接）。
+    此前调用方算了 `asr_extra` 却**没传进来**、这里两处又写死空串 ⇒ 混合模式
+    （发运默认档位）下"上一句进 ASR 热词"这个模块头注释里列为核心设计的机制
+    **静默失效**（翻译侧的剧情承接还生效，只有 ASR 侧断了）。
     """
     global _HYBRID, _LAST_PARTIAL_TS
     from hybrid_segmenter import (HybridBuffer, SR as _SR,
@@ -772,7 +777,7 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
             if snap is not None:
                 spcm, sms = snap
                 res = state["asr"].transcribe(
-                    spcm, lang, sms, 0, None, seg_cfg, "")
+                    spcm, lang, sms, 0, None, seg_cfg, asr_extra)
                 psegs = res.get("segments") or []
                 if psegs:
                     _LAST_PARTIAL_TS = time.monotonic()
@@ -784,7 +789,7 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
                     return res
         return {"language": lang, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
                 "skipped": True, "backend": "hybrid"}
-    result = state["asr"].transcribe(span, lang, span_ms, 0, None, seg_cfg, "")
+    result = state["asr"].transcribe(span, lang, span_ms, 0, None, seg_cfg, asr_extra)
     # 对齐用语音区：VAD 裁决的切句直接复切句时的语音区（同一缓冲同一起点，
     # 免第二次 CLI）；RMS/硬切切的才现场跑。⚠ 组是 span 内相对毫秒，必须加
     # span_ms 换成视频绝对时间轴（R63 实测：漏加偏移 → 中位 −700ms）。
@@ -863,9 +868,11 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
 
     t0 = time.perf_counter()
     if _hybrid_mode():
+        # asr_extra 必须**传进去**（评审 F20）：此前算了不传，混合模式（发运默认档位）
+        # 下"上一句原文进 ASR 热词"这条核心设计静默失效，只有翻译侧的承接还生效。
         result = await run_in_threadpool(
             _hybrid_transcribe, pcm, lang, video_start_ms, CFG.get("segment", {}),
-            want_partial)
+            want_partial, asr_extra)
     else:
         result = await run_in_threadpool(
             state["asr"].transcribe, pcm, lang, video_start_ms, keep_from_ms,
