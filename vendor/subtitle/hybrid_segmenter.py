@@ -80,6 +80,10 @@ class HybridBuffer:
         self.vad_fn = vad_fn
         self.last_cut_regions = None   # 切句时的 VAD 语音区（相对 span 秒），供对齐复用
         self._lock = threading.Lock()
+        # 给 partial 用的无锁快照（评审 F17）：feed() 在锁内发布一份"当前缓冲"的拷贝，
+        # snapshot() 直接读它，不再抢锁 —— 否则 VAD（锁内跑的子进程）期间每次
+        # partial 都要跟着等一次 VAD。
+        self._pub = None               # (pcm 拷贝, 起点 ms)
         self.reset()
 
     def reset(self) -> None:
@@ -87,17 +91,24 @@ class HybridBuffer:
         self._start_ms = 0     # 缓冲第一个采样的绝对时间
         self._next_ms = 0      # 缓冲末端之后应续上的绝对时间
         self._lang = ""
+        self._pub = None
 
     def state(self) -> dict:
         return {"buffered_ms": int(len(self._pcm) / SR * 1000),
                 "start_ms": self._start_ms, "lang": self._lang}
 
     def snapshot(self, min_sec: float = 1.5):
-        """partial 用：当前缓冲的快照（拷贝 + 绝对起点）。不足 min_sec 回 None。"""
-        with self._lock:
-            if len(self._pcm) < int(min_sec * SR):
-                return None
-            return self._pcm.copy(), self._start_ms
+        """partial 用：当前缓冲的快照（拷贝 + 绝对起点）。不足 min_sec 回 None。
+
+        **无锁读**（评审 F17）：读的是 feed() 在锁内发布的 `_pub`，所以 VAD
+        子进程（在锁内跑）期间 partial 不再跟着干等。发布物是不可变引用，
+        缓冲每次都整体替换（concatenate/切片），不会被就地改写。
+        返回前再拷一份：调用方拿着它去跑 ASR，不该让它有机会动到发布物。
+        """
+        pub = self._pub
+        if pub is None or len(pub[0]) < int(min_sec * SR):
+            return None
+        return pub[0].copy(), pub[1]
 
     def feed(self, pcm: np.ndarray, lang: str, video_start_ms: int):
         """拼块 + 切句评估。见类注释。reason ∈ standard|hard|silent|""。
@@ -144,6 +155,9 @@ class HybridBuffer:
             if n > 0:
                 self._pcm = np.concatenate([self._pcm, pcm[len(pcm) - n:]])
                 self._next_ms += int(round(n / SR * 1000))
+            # 发布给 partial 的无锁快照（评审 F17）：拷贝在锁内做（几百 KB 的
+            # memcpy，微秒级），读侧就不必再抢这把会被 VAD 占住的锁。
+            self._pub = (self._pcm.copy(), self._start_ms)
 
             dur = len(self._pcm) / SR
             if dur < 0.5:
@@ -203,14 +217,35 @@ class HybridBuffer:
             if _rms(self._pcm[:cut_n]) < self.thr:
                 self._pcm = self._pcm[cut_n:]
                 self._start_ms += int(round(cut_n / SR * 1000))
+                self.last_cut_regions = None    # 没有切出 span，别把上一次的语音区留着
                 return None, 0, "silent"
             span, start_ms = self._pcm[:cut_n], self._start_ms
             self._pcm = self._pcm[cut_n:]
             self._start_ms += int(round(cut_n / SR * 1000))
             # _next_ms 续着时间轴末端（不清零）；残余缓冲从切点继续攒下一句
-            self.last_cut_regions = (list(vad_regions)
-                                     if (vad_regions and reason == "vad") else None)
+            #
+            # **复用 feed 期算好的语音区（评审 F17）**：本轮若跑过 VAD，它的
+            # regions 是相对缓冲起点的，而 span 就是缓冲的前缀 ⇒ 截到切点即
+            # 本段 span 的语音区。旧实现只在 reason=="vad" 时保留，hard 切一律
+            # 丢成 None，调用方（server_app）为对齐**再跑一次**同一个 VAD CLI
+            # （同一段音频、同一起点）——纯重复劳动。截断同时保证语义正确：
+            # 返回的区必须落在 span 内，否则对齐出来的组时间会越过 span 尾巴。
+            self.last_cut_regions = self._clip_regions(vad_regions, cut_n)
             return span, start_ms, reason
+
+    @staticmethod
+    def _clip_regions(regions, cut_n: int):
+        """把整缓冲的语音区（秒，相对缓冲起点）截到切点之前。
+
+        VAD 没跑过（None）→ None（调用方据此决定要不要自己跑一次）；
+        跑过但没语音（[]）→ []（"确实没语音"是可复用的事实，不该再跑一次）。
+        """
+        if regions is None:
+            return None
+        cut_sec = cut_n / SR
+        out = [(float(a), min(float(b), cut_sec)) for a, b in regions
+               if float(a) < cut_sec]
+        return [(a, b) for a, b in out if b > a]
 
 
 def align_segments_to_groups(segs: list, groups_ms: list,

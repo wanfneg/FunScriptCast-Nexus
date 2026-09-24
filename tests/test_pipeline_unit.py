@@ -586,6 +586,106 @@ def t_hybrid_vad_cut():
     assert len(span) == 83200, len(span)                 # 5.2s 格点
 
 
+# 17b ------------ F17：partial 不再被锁内的 VAD 卡住 + VAD 调用次数如实计量
+def t_hybrid_partial_snapshot_and_vad_calls():
+    """评审 F17。**先量了再改**，结论与报告有出入，如实记在这里。
+
+    量到的（本机 CPU、repo 自带 audiocpp_cli + silero，见 iteration_shturl.md R92）：
+    单次 VAD 调用 2s≈28ms / 3.5s≈32ms / 5s≈39ms / 7s≈48ms / 10s≈62ms，纯进程启动≈7ms。
+    报告里"超时下限 30s"是**上限不是成本**，据此估算会把这一条放大两个数量级。
+
+    ① partial 被卡住（真问题，已修）：VAD 在缓冲锁内跑，而 snapshot() 也要抢这把锁
+       ⇒ 每次 VAD 期间 partial 都得干等。现在 feed 在锁内发布快照、snapshot 无锁读。
+    ② "hard 切丢弃 feed 期 regions"（**报告这条不成立**）：hard 切是在 RMS 扫描循环里
+       定的（`if i > max_n`），而 VAD 代码块有 `if not cut_n` 前置条件 ⇒ hard 切那一次
+       feed **根本不会跑 VAD**，没有"刚算好的 regions"可丢。下面把这两点都钉成断言：
+       hard 切全程恰好 1 次 VAD（server_app 为对齐跑的那次，长度=span），
+       vad 切全程 0 次额外 VAD（feed 期 regions 已被复用）。
+       老实说：这一半是**特征锁**（新旧代码都通过），不是牙齿证明；有牙齿的只有 ①。
+    """
+    import threading
+    import time as _time
+
+    import numpy as np
+    import server_app
+    from hybrid_segmenter import HybridBuffer
+
+    SR = 16000
+    bgm = (np.sin(np.arange(SR * 4) / 5.0) * 0.05).astype(np.float32)   # RMS 0.035：过不了静音线
+
+    # ---- ① partial 的 snapshot 不再被锁内的 VAD 卡住 ----
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_vad(pcm):
+        entered.set()
+        release.wait(timeout=10)
+        return [(0.0, len(pcm) / SR)]
+
+    buf = HybridBuffer(vad_fn=lambda pcm: [(0.0, len(pcm) / SR)])
+    assert buf.feed(bgm[:32000], "ja", 0)[0] is None           # 先攒够 2s（partial 门槛 1.5s）
+    assert buf.snapshot() is not None, "攒够 1.5s 后 partial 快照不该是 None"
+    buf.vad_fn = slow_vad
+    # 只再喂 1s（缓冲到 3s，够不着 5.2s 硬切格点）⇒ 本轮必然走到"未切中 → 跑 VAD"这条路径
+    t = threading.Thread(target=lambda: buf.feed(bgm[:16000], "ja", 2000), daemon=True)
+    t.start()
+    assert entered.wait(timeout=5), "慢 VAD 没被调用（用例没跑到要测的路径）"
+    _t0 = _time.perf_counter()
+    snap = buf.snapshot()
+    dt = _time.perf_counter() - _t0
+    release.set()
+    t.join(timeout=5)
+    assert snap is not None, "锁内的 VAD 期间 snapshot 该能读到上一次 feed 发布的快照"
+    assert dt < 0.3, (
+        f"snapshot 被锁内的 VAD 挡住了（F17）：等了 {dt * 1000:.0f}ms —— "
+        "它读的应该是 feed 在锁内发布的快照，而不是去抢那把被 VAD 占住的锁")
+
+    # ---- ② VAD 调用次数：hard 切恰好 1 次；vad 切不重复 ----
+    class FakeAsr:
+        def transcribe(self, pcm, lang, start_ms, keep_from_ms, vad, seg_cfg, extra):
+            return {"segments": [{"start_ms": start_ms, "end_ms": start_ms + 1000,
+                                  "text": "あ"}],
+                    "asr_ms": 1.0, "backend": "stub"}
+
+    calls = []
+
+    def counting_vad(pcm):
+        calls.append(round(len(pcm) / SR, 2))
+        return [(0.0, len(pcm) / SR)]          # 语音到末端 → 没有停顿 → 只能硬切
+
+    old_asr = server_app.state.get("asr")
+    old_vad_fn = server_app._hybrid_vad_fn
+    old_buf = server_app._HYBRID
+    server_app.state["asr"] = FakeAsr()
+    server_app._HYBRID = None                  # 换一块新缓冲（单例）
+    try:
+        server_app._hybrid_vad_fn = counting_vad
+        server_app._hybrid_transcribe(bgm[:32000], "ja", 0, {}, False, "")
+        server_app._hybrid_transcribe(bgm[32000:], "ja", 2000, {}, False, "")
+        res = server_app._hybrid_transcribe(bgm, "ja", 4000, {}, False, "")
+        assert res["backend"].startswith("hybrid"), res.get("backend")
+        # hard 切：feed 期没跑 VAD（cut 在 RMS 扫描里定的），对齐那次是唯一一次
+        assert calls == [2.0, 4.0, 5.2], (
+            f"hard 切的 VAD 调用次数不对（期望：两次未切中的 feed + 对齐 span 一次）：{calls}")
+        assert server_app._HYBRID.last_cut_regions is None, \
+            "hard 切本来就没有 feed 期语音区（报告 F17 的③不成立），不该凭空冒出来"
+
+        # vad 切：feed 期算好的 regions 必须被复用 ⇒ 不再为对齐重跑一次
+        calls.clear()
+        server_app._HYBRID = None
+        server_app._hybrid_vad_fn = lambda pcm: (calls.append(round(len(pcm) / SR, 2)),
+                                                 [(0.0, 2.5)])[1]
+        server_app._hybrid_transcribe(bgm[:32000], "ja", 0, {}, False, "")
+        res2 = server_app._hybrid_transcribe(bgm[32000:56000], "ja", 2000, {}, False, "")
+        assert calls == [2.0, 3.5], (
+            f"vad 切之后又多跑了一次 VAD（同一段音频重复分析）：{calls}")
+        assert res2["segments"], res2
+    finally:
+        server_app.state["asr"] = old_asr
+        server_app._hybrid_vad_fn = old_vad_fn
+        server_app._HYBRID = old_buf
+
+
 # 11 ------------------- F01：字幕配置深合并 + 流式上游地址与配置同源
 def t_subtitle_config_deep_merge():
     """保存字幕配置必须**所有组**都做一层深合并（评审 F01）。
@@ -2240,6 +2340,7 @@ if __name__ == "__main__":
     check("混合切句 段-组对齐器（R63）", t_hybrid_align)
     check("混合切句 切点续接（R63 回归锁）", t_hybrid_cutpoint_carry)
     check("混合切句 VAD 裁决切点（R63.1 BGM 场景）", t_hybrid_vad_cut)
+    check("F17 partial 快照不被 VAD 卡住 + VAD 调用次数计量", t_hybrid_partial_snapshot_and_vad_calls)
     check("F01 字幕配置深合并（所有组，切模型不毁配置）", t_subtitle_config_deep_merge)
     check("F01 流式上游地址与 asr.audiocpp 同源", t_stream_asr_upstream_from_config)
     check("F12 ASR 上游自愈 + /health 如实反映死活", t_asr_selfheal_and_health)
