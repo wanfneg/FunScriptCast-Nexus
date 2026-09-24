@@ -328,8 +328,14 @@ def load_settings() -> dict:
         key = (st.st_mtime_ns, st.st_size)
     except OSError:
         key = None                 # 文件不存在：走默认值，不缓存
-    if key is not None and _SETTINGS_CACHE["key"] == key:
-        s = dict(_SETTINGS_CACHE["data"])
+    # 缓存命中判定与取值必须在**同一把锁**内完成，且 key/data 必须作为一**对**读取
+    # （评审 F02）：分两条语句在锁外读写时，两个线程交错会留下
+    # "key=新 stat + data=旧内容" 的错配缓存——此后每次轮询都命中它，UI 永远显示旧设置，
+    # 而下一次 save_settings 又以这个错配结果为整文件写盘基底，把并发保存的字段静默回滚。
+    with _SETTINGS_LOCK:
+        cache_key, cache_data = _SETTINGS_CACHE["key"], _SETTINGS_CACHE["data"]
+    if key is not None and cache_data is not None and cache_key == key:
+        s = dict(cache_data)
         s["dlna_roots"] = list(s.get("dlna_roots") or [])
         return s
     s = dict(DEFAULT_SETTINGS)
@@ -365,8 +371,11 @@ def load_settings() -> dict:
     if isinstance(s.get("dlna_roots"), list):
         s["dlna_roots"] = [norm_path(x) for x in s["dlna_roots"] if norm_path(x)]
     if key is not None:
-        _SETTINGS_CACHE["key"] = key
-        _SETTINGS_CACHE["data"] = dict(s)
+        # key 与 data 一起换（评审 F02）：见上面命中判定的注释。
+        # 若本线程比另一个保存者更晚写回，最坏只是缓存里放了一份**与文件不符的旧对**
+        # ——下次比对 stat 必然不命中，会重读文件自愈；绝不会出现"命中却拿到旧数据"。
+        with _SETTINGS_LOCK:
+            _SETTINGS_CACHE["key"], _SETTINGS_CACHE["data"] = key, dict(s)
     return s
 
 
@@ -489,6 +498,16 @@ def save_settings(patch: dict) -> dict:
             log.warning(msg)
             RT.add_log(msg, "err")
             return {"ok": False, "error": msg}
+        # **写透缓存**（评审 F02 的第二半）：缓存键是 (mtime_ns, size)，两次"大小相同"
+        # 的保存若落在同一 100ns 刻度上键就相同 ⇒ 随后的 load_settings 会命中旧内容。
+        # 保存方本来就知道新内容与新 stat，直接成对回填，这个窗口就关掉了。
+        try:
+            st = SETTINGS_FILE.stat()
+            with _SETTINGS_LOCK:
+                _SETTINGS_CACHE["key"], _SETTINGS_CACHE["data"] = (st.st_mtime_ns, st.st_size), dict(s)
+        except OSError:
+            with _SETTINGS_LOCK:      # stat 失败（极少见）：宁可让缓存失效，也不留错配
+                _SETTINGS_CACHE["key"], _SETTINGS_CACHE["data"] = None, None
         return s
 
 

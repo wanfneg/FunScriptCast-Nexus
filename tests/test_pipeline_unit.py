@@ -1015,6 +1015,82 @@ def t_lan_open_guards():
         sa._OVERLOAD["n"] = saved
 
 
+# 17 ------------- F02：设置缓存的 key/data 必须成对（不得错配命中）
+def t_settings_cache_pair():
+    """评审 F02：`_SETTINGS_CACHE` 的 key（文件 stat）与 data（内容）必须**成对**读写。
+
+    错配（key=新 stat、data=旧内容）一旦形成，此后每次轮询都**命中**它 ⇒ UI 永远显示旧
+    设置；而 save_settings 又以 load_settings() 的结果作整文件写盘基底 ⇒ 并发保存被静默回滚。
+    旧实现是锁外两条独立语句 + 锁外命中判定。
+
+    做法：把 switchinterval 调到极小放大线程切换，一边反复改文件、一边多线程读，并有一个
+    检查线程专门找"key 与文件当前 stat 相符、但 data 与文件内容不符"的状态。
+    修复后该状态**由构造保证不可能出现**，所以这条断言不会偶发失败。
+    """
+    import json as _json
+    import threading
+    import time as _time
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import host_server as H
+
+    f = H.SETTINGS_FILE
+    f.parent.mkdir(parents=True, exist_ok=True)
+    stop = threading.Event()
+    violations = []
+
+    def _write(v):
+        # 走**生产路径**（save_settings）：直接写文件不是生产行为，而且会让缓存键
+        # (mtime_ns, size) 因为"同长度 + 同刻度"碰撞，测出的是缓存键的固有粒度而非竞态。
+        H.save_settings({"dlna_port": v})
+
+    _write(1000)
+    H.load_settings()
+
+    def _checker():
+        while not stop.is_set():
+            with H._SETTINGS_LOCK:
+                k, d = H._SETTINGS_CACHE["key"], H._SETTINGS_CACHE["data"]
+            if k is None or d is None:
+                continue
+            try:
+                st = f.stat()
+                if k != (st.st_mtime_ns, st.st_size):
+                    continue                      # key 与文件不符 = 正常的过期缓存
+                real = _json.loads(f.read_text(encoding="utf-8")).get("dlna_port")
+            except OSError:
+                continue
+            if d.get("dlna_port") != real:
+                violations.append((k, d.get("dlna_port"), real))
+
+    def _reader():
+        while not stop.is_set():
+            H.load_settings()
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)          # 放大线程交错概率
+    threads = [threading.Thread(target=_checker, daemon=True)] + \
+              [threading.Thread(target=_reader, daemon=True) for _ in range(4)]
+    for t in threads:
+        t.start()
+    try:
+        for i in range(200):
+            _write(2000 + i)
+            H.load_settings()
+            _time.sleep(0.001)
+    finally:
+        stop.set()
+        for t in threads:
+            t.join(timeout=2)
+        sys.setswitchinterval(old_interval)
+
+    assert not violations, \
+        f"出现 key/data 错配缓存（命中却返回旧内容，UI 会永远显示旧设置）：{violations[:3]}"
+    # 收尾一致性：文件与读回值必须一致
+    _write(4242)
+    assert H.load_settings().get("dlna_port") == 4242, "文件变了以后必须能读到新值"
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -1041,6 +1117,7 @@ if __name__ == "__main__":
     check("F15 流式断流关掉上游连接（GeneratorExit 兜底）", t_stream_disconnect_closes_upstream)
     check("F13 坏配置自恢复 + 写入原子", t_config_corruption_recovery)
     check("F16 8756 跨站栅栏 + 过载快速失败（不涉及跨端契约部分）", t_lan_open_guards)
+    check("F02 设置缓存 key/data 成对（杜绝错配命中）", t_settings_cache_pair)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
