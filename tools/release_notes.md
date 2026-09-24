@@ -5,7 +5,7 @@
 ### 新增：识别 GPU 加速（CUDA 运行时，实测约 16 倍）
 
 - 「识别与翻译」卡的模型列表新增**「识别运行时 · GPU 加速」**：一键下载 audio.cpp CUDA 版
-  （约 1.9GB，断点续传），下载完成**自动切换为 GPU 识别**并重启字幕服务
+  （约 1.1GB，断点续传），下载完成**自动切换为 GPU 识别**并重启字幕服务
 - 同段 10 秒日语实测：CPU 8.0 秒 → **GPU 0.49 秒**（RTF 0.80 → 0.049，约 16 倍），字幕出字更快
 - 「识别引擎」下拉改为 **CPU / GPU** 二选一：GPU 项只在运行时下载后出现；随时切回 CPU，立即生效
 - 可靠性：GPU 运行时缺失（未下载/被删）时自动回退 CPU 识别，字幕链路不会瘫痪
@@ -16,7 +16,7 @@
 | 文件 | 说明 |
 |---|---|
 | `FunScriptCast-Nexus-Setup-1.0.42.exe` | 安装包（128MB，内置 CPU 识别运行时） |
-| `audiocpp-runtime-windows-cuda.zip` | 识别 GPU 运行时（1.9GB，界面内一键下载亦可） |
+| `audiocpp-runtime-windows-cuda.zip` | 识别 GPU 运行时（1.1GB，界面内一键下载亦可） |
 | `audiocpp-runtime-windows-cpu.zip` | 识别 CPU 运行时（已内置安装包，供手动修复） |
 | `llama-runtime-windows.zip` | 本地翻译运行时（界面一键下载） |
 

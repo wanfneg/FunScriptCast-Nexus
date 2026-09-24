@@ -1359,7 +1359,7 @@ MODELS_CATALOG = [
         "kind": "zip",
         "check_file": "gpu/audiocpp_server.exe",
         "dest_dir": APP_DIR / "vendor" / "audiocpp",
-        "size_gb": 1.9,
+        "size_gb": 1.1,
         "files": [
             {"rel": "audiocpp-runtime-windows-cuda.zip",
              "url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest/download/audiocpp-runtime-windows-cuda.zip"},

@@ -3538,3 +3538,42 @@ FileVersion=1.0.40）。提交 `8cc17b6` 推送后，release `v1.0.40` 建在主
 **撞出的真 bug（未修，待办）**：宿主 8791 LAN API 是单线程 serve_forever。手机 00:30:53 的 status 轮询把处理线程永久卡死（疑似 sub_start 持 RT.lock 做长拉起 + 轮询撞锁阻塞，无超时），此后所有手机请求 TCP 能连、永不被处理——表现恰是"PC 端没响应（Nexus 没开？）"，且日志里毫无痕迹（卡住的请求永远打不出完成日志）。当晚手机 00:30 的 start 请求其实全部 200 成功（地址修复有效），之后的失败全是卡死所致。重启宿主进程即恢复。**修法方向**：状态轮询不依赖 RT.lock / 子进程拉起不持锁 / handler 加超时。logs/host.log 00:30:45–53 是完整证据链。
 
 **遗留**：① 手机端"字幕服务地址"需填新静态 IP `http://192.168.2.2`（端口自动 8791）；② 手机 UI"默认端口 8756"提示文案错误（实际固定 8791），连同"自动预填 DLNA 发现 IP"下个手机包一起改；③ 8791 卡死 bug 修复 + 复现脚本。
+
+## R96（2026-09-25）：识别 GPU 加速产品化——CUDA 运行时下载条目 + CPU/GPU 后端切换
+
+**用户输入**：R95 切 GPU 后问".exe 安装包更新了吗"，听完方案说"做"。
+
+**方案**（GPU 运行时 2GB 级不能进 128MB 安装包，走 llama-runtime 同款"界面按需下载"路线）：
+1. **打包**：`dist-installer\audiocpp-runtime-windows-cuda.zip`（1952MB）= gpu\（E:\audiocpp-portable，
+   剔除 .bak-0712 旧文件）+ assets\ + LICENSE（取 D 盘 0.7.4 当前份，防版本错配）。
+2. **宿主（host_server.py）**：① catalog 新条目 `audiocpp-cuda`（role=asr-runtime，kind=zip，
+   dest=vendor\audiocpp，`check_file: gpu/audiocpp_server.exe`）；② `_model_installed` 与
+   `_model_dl_worker` 的 zip 校验泛化为 `e.get("check_file", "llama-server.exe")`；③ 下载完成钩子：
+   role=asr-runtime → `save_subtitle_config({"asr":{"audiocpp":{"backend":"cuda"}}})` +
+   `_restart_sub_if_running()`（新助手：在跑才重启，sub_stop→sleep→sub_start，失败只记日志）；
+   ④ `subtitle_config()` GET 回 `asr_gpu_runtime` 布尔，UI 据此决定 GPU 选项可见性。
+3. **UI**：index.html `#asrBackend` 引擎下拉（R65 起是锁死摆设）改为 CPU/GPU 二选一；
+   app.js 每次加载**重建选项**（下载完成刚装上运行时要能补出 GPU 项）、按
+   `asr.audiocpp.backend` 回显、保存写 `{asr:{audiocpp:{backend:…}}}`——**不是 asr.backend**
+   （引擎键，写错层=覆写引擎而 GPU 不生效）；download done 分支加 asr-runtime → 整表刷新
+   （dirty 护栏防覆盖用户输入）。
+4. **兜底（audiocpp_backend.py）**：`__init__` 里 backend!=cpu 但 gpu\audiocpp_server.exe 不存在
+   → 打印告警回退 cpu。否则 VAD CLI（也从 exe_dir 取）一起消失 → 块块 skipped、整条字幕瘫痪。
+5. **台账（THIRD-PARTY-NOTICES.md）**：补 NVIDIA CUDA 运行库一行——此前 cublas 等 DLL 混在
+   llama.cpp MIT 行下不准确；完整条款指向 NVIDIA EULA 官网。
+6. **版本/打包**：build_installer.ps1 一条龙 → Setup-1.0.42.exe（128.4MB）。
+
+**踩坑**：`git add -A` 把 2GB 暂存目录 build\_audiocpp-cuda-stage 提交了（gitignore 只有
+_audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --prune=now` 修复，
+.gitignore 补 `build/_audiocpp-cuda-stage/`。教训：**构建暂存区先写 gitignore 再动工**。
+
+**验证（D 盘实机，全部过）**：
+- 静默升级 1.0.41→1.0.42（Setup /VERYSILENT，文件/版本正确；**不会自动拉起应用，需手动启动**）
+- catalog：audiocpp-cuda 出现且 installed=true（check_file 判定 ✓），其余 7 条目无恙
+- 切 CPU→重启→日志 `（cpu, 23 线程）`；切 GPU→重启→日志 `（cuda, 23 线程）`+真实音频
+  「なんか恥ずかしいです。」→「总觉得好难为情。」+ 显存 7700/8188
+- 兜底：gpu\ 改名→配 cuda→日志 `回退 cpu` + `（cpu, 23 线程）`；恢复后正常
+
+**遗留/待验证**：① 公网 release 发布后，真机走一遍"删 gpu\ → 界面下载 1.9GB → 自动切 cuda"
+的完整下载链路（下载 worker 与 llama-runtime 共用，风险低但 R68 教训=必须实测）；
+② R95 的 8791 卡死 bug 仍未修；③ 手机 UI"8756"错误文案 + DLNA IP 预填仍在待办。
