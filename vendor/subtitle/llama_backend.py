@@ -83,6 +83,10 @@ class LlamaBackend:
         self._proc: subprocess.Popen | None = None
         self._job_handle = None      # Windows Job Object 句柄（父进程崩溃时带走子进程）
         self._prev_model = None      # (path, alias) 切换前的模型：新模型起不来时回滚用
+        # 模型代次（评审 F23）：每次**真的**换模型 +1。两个用途 ——
+        # ① 在飞请求被这次切换掐断时能认出"是我们自己干的"，不当成后端故障；
+        # ② 预热标记（/health 的 mt_warm）据此失效：新权重没有那次 prefill 的账。
+        self._model_epoch = 0
         # RLock 而不是 Lock：ensure_server（持锁）超时收尾会调 stop_server（也拿锁），
         # 非重入锁在这里必然自锁死——线程挂在锁上，字幕请求全部跟着挂死。
         self._lock = threading.RLock()
@@ -91,6 +95,12 @@ class LlamaBackend:
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    @property
+    def model_epoch(self) -> int:
+        """模型代次（F23）：`use_model` 每次真切换 +1，切换前读到几就是几。"""
+        with self._lock:
+            return self._model_epoch
 
     def use_model(self, model_path, alias: str | None = None) -> None:
         """按语言路由（R65.1）：目标模型与当前加载的不同 → 停掉常驻实例，
@@ -112,6 +122,7 @@ class LlamaBackend:
             self._prev_model = (self.model, self.alias)   # 回滚点：新模型起不来时用
             self.stop_server()          # 换模型必须重启 llama-server（权重随进程走）
             self.model = m
+            self._model_epoch += 1      # 在飞请求据此认出"被切换掐断"（F23）
             if alias:
                 self.alias = str(alias)
             print(f"[llama] 切换翻译模型 → {m.name}", flush=True)

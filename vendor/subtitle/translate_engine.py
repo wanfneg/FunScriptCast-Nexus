@@ -257,6 +257,21 @@ class Translator:
         # （本地小模型每句 2~13s，3s 的上屏节奏直接崩）。
         self.single_budget = max(1, int(self.cfg.get("single_rescue_max", 40)))
 
+        # 按语言路由本地模型的滞回状态（评审 F23）：切模型 = 重启 llama-server
+        # （实测就绪 6.3s，期间在飞请求被掐断）。`switch_after_blocks` 是"连续几块
+        # 都是新语言才真的切"，默认 2 —— 日英混杂内容不再每块来回重启。
+        self.lang_switch_after = max(1, int(
+            (self.cfg.get("local") or {}).get("switch_after_blocks", 2)))
+        self._lang_model_ref = None      # 当前生效的模型（配置里的原始引用）
+        self._lang_cand = ""             # 候选新模型引用
+        self._lang_cand_n = 0            # 候选连续出现几块
+        # 预热状态（评审 F23）：记录"当前这代模型已经真的服务过一次请求"。
+        # prefill + 首包 CUDA 路径的账由那一次付掉，所以"服务过一次"就是"热了"。
+        # 换模型（use_model）后代次失配 ⇒ /health 的 mt_warm 自动变 false，新模型
+        # 跑完第一句又自动变 true。旧实现只在启动预热时置位、再无复位点 ⇒ 恒 true。
+        self._warm_epoch: int | None = None
+        self._warm_ts = 0.0
+
         self._lock = threading.Lock()
         self.stats = {"batches": 0,
                       "fix_rounds": 0, "leak_rounds": 0, "degenerate_rounds": 0,
@@ -492,6 +507,11 @@ class Translator:
         llama-server —— 不依赖 Ollama、不需要模型库环境变量。
         采样参数与 Ollama 路径对齐（Sakura 官方 temp 0.1 / top_p 0.3；
         MT 模式必须收窄 max_tokens，提示词回显会拖成长循环）。
+
+        **切换竞态（评审 F23）**：按源语言路由会在本请求在飞期间重启 llama-server
+        （`use_model` → `stop_server`），连接必然被重置 ⇒ 旧实现把它当后端故障、
+        计入熔断。这里记下**请求前的模型代次**，被切换掐断就对着新模型重发一次；
+        只有"代次没变还失败"才是真的后端故障。重发上限一次（拒绝无限重试）。
         """
         c = self.cfg.get("local") or {}
         be = _local_backend(c)
@@ -503,13 +523,65 @@ class Translator:
                     "top_p": float(c.get("top_p", 0.3)),
                     "max_tokens": int(c.get("max_tokens", 2048))}
         url = str(c.get("base_url") or be.base_url).rstrip("/") + "/v1/chat/completions"
-        data = self._post(url, {
+        payload = {
             "model": c.get("alias", "sakura"),
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
             **opts,
-        }, timeout=self._backend_timeout("local", 60 if self.use_mt else 180))
+        }
+        epoch0 = be.model_epoch
+        try:
+            data = self._post(url, payload, timeout=self._backend_timeout(
+                "local", 60 if self.use_mt else 180))
+        except BackendDown:
+            if be.model_epoch == epoch0:
+                raise
+            # 是我们自己切的模型（use_model 停了进程）⇒ 这不是"后端挂了"：
+            # 拉起新权重再发一次。冷启动（实测 6.3s 量级）只付这一次，
+            # 且不把这次连接重置算进熔断（否则切换几次就把翻译整场熔断掉）。
+            print("[translate] 在飞请求被模型切换掐断，改用新模型重发一次", flush=True)
+            be.ensure_server()
+            data = self._post(url, payload, timeout=self._backend_timeout(
+                "local", 60 if self.use_mt else 180))
+        self._mark_local_warm(be)
         return (data["choices"][0]["message"]["content"] or "").strip()
+
+    # ------------------------------------------------------------ 预热状态
+    def _mark_local_warm(self, be) -> None:
+        """本地模型**成功服务过一次**即视为已热（评审 F23）：prefill + 首包 CUDA
+        路径的账由这一次付掉，此后首句翻译不再等它。按模型代次记账，换模型后
+        自动失配（旧实现只有一个"启动预热完成"的置位点，换过权重也照样报热）。"""
+        try:
+            ep = int(be.model_epoch)
+        except Exception:
+            return
+        if ep == self._warm_epoch:
+            return
+        with self._lock:
+            if ep != self._warm_epoch:
+                self._warm_epoch, self._warm_ts = ep, time.time()
+        print(f"[translate] 本地模型已热（模型代次 {ep}）：首句起不再付 prefill/首包",
+              flush=True)
+
+    def warm_info(self) -> dict:
+        """预热状态（`/health` 的 mt_warm / mt_warm_ts / mt_warm_epoch 唯一来源）。
+
+        非 local 后端（ollama/openai 是外部服务）恒为未预热——与旧行为一致。
+        `mt_warm=false` 的准确含义：**当前这代模型**还没成功服务过任何请求，
+        所以首句还会付 prefill 的账。拿不到代次（探测异常）时报 false，宁可
+        显示"没热"也不要骗用户说热了。
+        """
+        none = {"mt_warm": False, "mt_warm_ts": None, "mt_warm_epoch": None}
+        if self.disabled or self.backend != "local":
+            return dict(none)
+        ep = None
+        try:
+            ep = int(_local_backend(self.cfg.get("local") or {}).model_epoch)
+        except Exception:
+            return dict(none)
+        return {"mt_warm": self._warm_epoch == ep,
+                "mt_warm_ts": self._warm_ts or None,
+                "mt_warm_epoch": self._warm_epoch}
 
     # ------------------------------------------------------------ 解析
     @staticmethod
@@ -925,7 +997,8 @@ class Translator:
         return top / len(tr) > 0.6
 
     # ------------------------------------------------------------ 主入口
-    def translate_segments(self, segs: list, lang_key: str, context: str = "") -> None:
+    def translate_segments(self, segs: list, lang_key: str, context: str = "",
+                           route: bool = True) -> None:
         """就地写入 seg['translation']；**绝不抛异常**。
 
         翻译是加分项，ASR 文本才是核心产出。这里一旦往外抛，字幕服务的
@@ -933,10 +1006,14 @@ class Translator:
         实测 `@0s` 整块就这么没了（起因只是兜底模块少了一行 import）。
         所以翻译层必须自己兜住所有异常，最坏情况留空译文照常返回。
 
+
         context：上一块的原文/译文参考（可选）。只影响提示词。
+        route：是否按源语言路由本地模型（评审 F23）。诊断请求（/translate/selftest）
+        传 False —— 那是"验一下当前配置通不通"，不该顺手把用户正在看的英语内容
+        切回日语模型（切换 = 重启 + 6.3s 冷启动 + 掐掉在飞请求）。
         """
         try:
-            self._translate_inner(segs, lang_key, context)
+            self._translate_inner(segs, lang_key, context, route=route)
         except Exception as e:
             with self._lock:
                 self.stats["fatal_errors"] += 1
@@ -951,6 +1028,12 @@ class Translator:
         config → translate.local.model_by_lang: {"en": "<gguf 路径>"}。映射里没有
         的语言走默认 model（行为与从前完全一致）。切模型 = 重启 llama-server，
         由 LlamaBackend.use_model 内部幂等处理。
+
+        **滞回（评审 F23）**：切换要付一次冷启动（实测就绪 6.3s，期间在飞请求被掐），
+        而旧实现是**逐块**判语言 ⇒ 日英混杂的内容每块都在两个模型之间来回重启。
+        现在只有"连续 `local.switch_after_blocks`（默认 2）块都是新语言"才切，
+        单块的杂音（一句英文、PC 端点一次「测试」）不再引发重启。
+        首个块立即定位：纯英语视频的第一块就用对模型，不必先错一块。
         """
         if self.backend != "local":
             return
@@ -960,13 +1043,32 @@ class Translator:
         target = str(mapping.get(lang) or "") or str(local.get("model") or "")
         if not target:
             return
+        # 滞回计数（只对本地逐语言路由生效；同一模型引用是幂等空操作）。
+        # 比较的是**配置里的原始引用**：同一语言永远给同一个字符串，而"未配置映射
+        # 的语言"（如 ko）与默认语言（ja）都解析到同一条默认模型引用 ⇒ 天然算同一个
+        # 模型，不会因为语言码变了就白切一次（use_model 那边本来也会幂等跳过）。
+        if self._lang_model_ref is None:                # 首块：立即定位
+            self._lang_model_ref = target
+        elif target == self._lang_model_ref:            # 与当前模型一致：什么都不做
+            self._lang_cand, self._lang_cand_n = "", 0
+            return
+        else:
+            if self._lang_cand == target:
+                self._lang_cand_n += 1
+            else:
+                self._lang_cand, self._lang_cand_n = target, 1
+            if self._lang_cand_n < self.lang_switch_after:
+                return                                  # 滞回：先不切，等下一块确认
         try:
             _local_backend(local).use_model(target)
+            self._lang_model_ref = target
+            self._lang_cand, self._lang_cand_n = "", 0
         except Exception as e:
             print(f"[mt] 按语言切换模型失败（沿用当前模型）：{type(e).__name__}: {e}",
                   flush=True)
 
-    def _translate_inner(self, segs: list, lang_key: str, context: str = "") -> None:
+    def _translate_inner(self, segs: list, lang_key: str, context: str = "",
+                         route: bool = True) -> None:
         """就地写入 seg['translation']；失败时留空并记录 seg['error']。"""
         if self.disabled:
             # UI 的「关闭翻译」（backend = none）：用户显式选择，**不是失败**，
@@ -980,7 +1082,8 @@ class Translator:
         todo = [(i, s) for i, s in enumerate(segs) if (s.get("text") or "").strip()]
         # 按语言路由本地翻译模型（R65.1）：ja→默认(Sakura)，en→Hy-MT2（配置
         # model_by_lang 映射，未配置则全部走默认模型，行为与从前一致）
-        self._apply_local_lang_model(lang_key)
+        if route:
+            self._apply_local_lang_model(lang_key)
         for s in segs:
             if not (s.get("text") or "").strip():
                 s["translation"] = ""

@@ -951,6 +951,7 @@ def t_mt_path_breaker_and_timeout():
                 "message": {"content": "译文"}}
     class _BE:
         base_url = "http://127.0.0.1:59998"
+        model_epoch = 0            # F23 起 _chat_local 会读它判断"是不是被切换掐断"
         def ensure_server(self):
             pass
     old_be = te._local_backend
@@ -987,6 +988,154 @@ def t_mt_path_breaker_and_timeout():
         to2._post = _cap
         to2._chat_ollama("sys", "user")
         assert seen["timeout"] == 180, f"ollama 批量超时被误收窄：{seen['timeout']}"
+    finally:
+        te._local_backend = old_be
+
+
+# 13c ------------ F23：按语言切模型与在飞请求的竞态、滞回、预热标记失效
+def t_model_switch_race_hysteresis_warm():
+    """评审 F23。
+
+    按源语言路由（ja→Sakura / en→Hy-MT2）靠 `use_model` **重启 llama-server**
+    实现，而旧实现有三个洞：
+      (1) `_chat_local` 发请求时不持后端锁 ⇒ 切换掐断在飞请求 → 连接重置 →
+          被判成 BackendDown 并计入熔断（叠加 F21 的熔断，切几次就能让翻译整场停摆）；
+      (2) 逐块判语言 ⇒ 日英混杂内容每块来回重启（就绪实测 6.3s）；
+      (3) `_MT_WARM` 只置位不复位 ⇒ 换过权重后 /health 的 mt_warm 恒 true。
+    """
+    import time as _time
+
+    import translate_engine as te
+    from llama_backend import LlamaBackend
+    from translate_engine import BackendDown, Translator
+
+    # ---- (1) 代次：真切换才 +1（同模型 use_model 是幂等空操作）----
+    import tempfile as _tf
+    d = Path(_tf.mkdtemp(prefix="nexus-f23-"))
+    m1, m2 = d / "a.gguf", d / "b.gguf"
+    m1.write_bytes(b"x")
+    m2.write_bytes(b"x")
+    be = LlamaBackend({"model": str(m1), "port": 59997})
+    assert be.model_epoch == 0, be.model_epoch
+    be.use_model(str(m2))
+    assert be.model_epoch == 1, f"切换后代入应 +1：{be.model_epoch}"
+    be.use_model(str(m2))
+    assert be.model_epoch == 1, f"同模型不该算一次切换：{be.model_epoch}"
+    be.use_model(str(m1))
+    assert be.model_epoch == 2, be.model_epoch
+
+    # ---- (2) 在飞请求被切换掐断：重发一次，且不当作后端故障 ----
+    class _FakeBE:
+        base_url = "http://127.0.0.1:59997"
+        def __init__(self):
+            self.epoch = 0
+            self.ensure_calls = 0
+        @property
+        def model_epoch(self):
+            return self.epoch
+        def ensure_server(self):
+            self.ensure_calls += 1
+            return True
+
+    fake = _FakeBE()
+    old_be = te._local_backend
+    te._local_backend = lambda cfg: fake
+    try:
+        tm = Translator({"backend": "local", "mode": "mt", "mt_system": "s",
+                         "local": {"model": "dummy"}})
+        calls = {"n": 0}
+        def _post_switch(url, payload, headers=None, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                fake.epoch += 1          # 模拟"切了模型、进程被重启"
+                raise BackendDown("连接被重置（模型切换）")
+            return {"choices": [{"message": {"content": "译文"}}]}
+        tm._post = _post_switch
+        assert tm._chat_local("s", "u") == "译文", "被切换掐断后应改用新模型重发"
+        assert calls["n"] == 2, f"重发次数不对：{calls['n']}"
+
+        # 代次没变还失败 = 真故障：照旧抛出（不许无限重试掩盖后端挂掉）
+        calls["n"] = 0
+        def _post_dead(url, payload, headers=None, timeout=None):
+            calls["n"] += 1
+            raise BackendDown("后端真的不可达")
+        tm._post = _post_dead
+        try:
+            tm._chat_local("s", "u")
+            raise AssertionError("真后端故障必须照旧抛出，不能被重试吞掉")
+        except BackendDown:
+            pass
+        assert calls["n"] == 1, f"没换模型就不该重发：{calls['n']}"
+
+        # ---- (3) 滞回：单块杂音不切，连续两块才切 ----
+        fake2 = _FakeBE()
+        te._local_backend = lambda cfg: fake2
+        switched = []
+        _orig_use_model = _FakeBE.__dict__.get("use_model")
+        def _use_model(self, path, alias=None):
+            switched.append(str(path))
+            self.epoch += 1
+        _FakeBE.use_model = _use_model
+        th = Translator({"backend": "local", "mode": "mt", "mt_system": "s",
+                         "local": {"model": "ja.gguf",
+                                   "model_by_lang": {"en": "en.gguf"}}})
+        th._chat = lambda system, user: "译文"
+        for lang in ("ja", "en", "ja", "en", "en", "en", "ja"):
+            th.translate_segments([{"text": "句子"}], lang)
+        assert switched == ["ja.gguf", "en.gguf"], \
+            f"滞回没生效（逐块来回切 = 每块付一次 6.3s 冷启动）：{switched}"
+
+        # ---- (4) 诊断请求不得改路由（/translate/selftest 走的就是这条）----
+        import server_app
+        fake3 = _FakeBE()
+        switched.clear()
+        te._local_backend = lambda cfg: fake3
+        ts = Translator({"backend": "local", "mode": "mt", "mt_system": "s",
+                         "local": {"model": "ja.gguf",
+                                   "model_by_lang": {"en": "en.gguf"}}})
+        ts._post = lambda url, payload, headers=None, timeout=None: {
+            "choices": [{"message": {"content": "译文"}}]}
+        old_t = server_app.state.get("translator")
+        server_app.state["translator"] = ts
+        try:
+            out = server_app.translate_selftest("テスト")
+            assert out.get("pipeline"), f"自检管线没产出译文：{out}"
+            assert switched == [], \
+                f"PC 端点一次「测试」就把模型切了（英语会话被切回日语）：{switched}"
+
+            # ---- (5) 预热标记：跑过一次即 true，换模型后代次失配 → false，
+            #          新模型跑完第一句自动恢复 true（不能"只置位不复位"，
+            #          也不能永远 pessimistic —— 否则按它判断的用户会一直以为没热）----
+            assert server_app.health()["mt_warm"] is True, \
+                "本地模型已经服务过请求，mt_warm 该是 true"
+            fake3.epoch += 1                       # 模拟按语言换了模型
+            assert server_app.health()["mt_warm"] is False, \
+                "换过权重后 mt_warm 仍报 true（用户按这个字段判断翻译热没热会被骗）"
+            ts._chat_local("sys", "user")           # 新模型真的服务了一次
+            assert server_app.health()["mt_warm"] is True, \
+                "新模型跑起来后 mt_warm 该自动恢复 true（否则永远显示未预热）"
+
+            # ---- (6) 启动预热路径本身仍要把 mt_warm 点着（R63.2 契约）----
+            # 这一条是我把预热记账从 server_app 搬进 Translator 之后加的回归锁：
+            # 头显/界面按 mt_warm=true 判断"翻译热了"，启动预热没点着就等于白预热。
+            from types import SimpleNamespace
+            fake4 = _FakeBE()
+            fake4.model = SimpleNamespace(name="fake.gguf")
+            te._local_backend = lambda cfg: fake4
+            tw = Translator({"backend": "local", "mode": "mt", "mt_system": "s",
+                             "local": {"model": "ja.gguf"}})
+            tw._post = lambda url, payload, headers=None, timeout=None: {
+                "choices": [{"message": {"content": "译文"}}]}
+            server_app.state["translator"] = tw
+            server_app._warm_translator()
+            assert server_app.health()["mt_warm"] is True, \
+                "启动预热跑完了但 mt_warm 没点着（头显会以为翻译永远没热）"
+        finally:
+            server_app.state["translator"] = old_t
+            if _orig_use_model is not None:
+                _FakeBE.use_model = _orig_use_model
+            else:
+                del _FakeBE.use_model
     finally:
         te._local_backend = old_be
 
@@ -1924,6 +2073,7 @@ if __name__ == "__main__":
     check("F12 ASR 上游自愈 + /health 如实反映死活", t_asr_selfheal_and_health)
     check("F21/F22 熔断半开恢复 + 空译文不计熔断", t_circuit_breaker_recovers)
     check("F24 MT 逐句路径熔断门 + 后端超时按模式收窄", t_mt_path_breaker_and_timeout)
+    check("F23 切模型竞态/滞回/预热标记失效", t_model_switch_race_hysteresis_warm)
     check("F15 流式断流关掉上游连接（GeneratorExit 兜底）", t_stream_disconnect_closes_upstream)
     check("F13 坏配置自恢复 + 写入原子", t_config_corruption_recovery)
     check("F16 8756 跨站栅栏 + 过载快速失败（不涉及跨端契约部分）", t_lan_open_guards)

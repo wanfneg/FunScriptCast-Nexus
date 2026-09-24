@@ -176,9 +176,11 @@ def _claim_session(request) -> "str | None":
     return None
 
 
-_MT_WARM = 0.0                   # 翻译预热完成时刻（0=未完成）：llama 端口就绪
-                                 # ≠ 翻译热了，首条真实请求还欠系统提示词 prefill
-                                 # + 首包 CUDA 路径的账（R63.2，预热请求补上后置时间戳）
+# 翻译预热状态（R63.2 的 mt_warm / F23 的代次失效）现在由 Translator 自己持有：
+# `Translator.warm_info()` 是 /health 三个 mt_warm* 字段的唯一来源。放在那边是因为
+# **换模型**这件事只有翻译层知道（按源语言路由 → use_model 重启 llama-server），
+# 而"热没热"必须跟着模型走：新权重没有那次 prefill 的账。这里不再存一份副本
+# （两处状态 = 两处判据，正是评审反复点的问题）。
 _LAST_PARTIAL_TS = 0.0           # 上次 partial 临时稿的发出时刻（monotonic 秒）。
                                  # partial 每块都跑一遍 ASR 太费 GPU（连续说话时
                                  # 切句周期间能挤进 2~3 次），2s 节流后 partial
@@ -296,43 +298,40 @@ def _make_asr(cfg: dict):
         return _AsrUnavailable()
 
 
+def _warm_translator() -> None:
+    """翻译引擎预热（R54 + R63.2）：拉起本地 llama-server，再用**真实系统提示词**
+    喂一条极短请求，把 prefill 与首包 CUDA 路径的账在启动期付掉。
+
+    `mt_warm` 的记账不在这里（评审 F23）：那次成功请求经 `_chat_local` 时，
+    `Translator` 自己会把"当前模型代次已热"记下来，`/health` 从 `warm_info()`
+    读——这样**换模型**（按源语言路由）时标记会自动失效，不需要两个地方各记一份。
+    """
+    t = state["translator"]
+    try:
+        if t is None or t.disabled or t.backend != "local":
+            return
+        from translate_engine import _local_backend
+        be = _local_backend(t.cfg.get("local") or {})
+        be.ensure_server()
+        print(f"[server] 翻译引擎已预热：{be.base_url}（{be.model.name}）", flush=True)
+    except Exception as e:
+        print(f"[server] 翻译引擎预热失败（翻译请求时会重试并如实报错）："
+              f"{type(e).__name__}: {e}", flush=True)
+        return
+    try:
+        _t0 = time.perf_counter()
+        t._chat(t.mt_system, (t.mt_user_prefix or "") + "テスト")
+        _dt = time.perf_counter() - _t0
+        print(f"[server] 翻译预热完成（含提示词首包）：{_dt:.1f}s", flush=True)
+    except Exception as e:
+        print(f"[server] 翻译预热请求失败（不影响服务，首条翻译会照常重试）："
+              f"{type(e).__name__}: {e}", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     state["translator"] = Translator(CFG.get("translate", {}))
     print(f"[server] 翻译后端={state['translator'].backend}")
-    # 翻译引擎预热（R54，用户点名"启动时就启用翻译模型"）：识别模型加载完成后在
-    # 后台把本地 llama-server 拉起来（Sakura-7B 装显存实测 ~5s）。不预热时第一句
-    # 译文要等引擎冷启动，开头几秒只有识别没有字幕。只对 local 后端有意义
-    # （ollama/openai 是外部服务，无进程可拉起）；预热失败只留日志不拦住服务就绪
-    # ——真到翻译时 _chat_local 还会再 ensure_server 并如实报错。字幕服务退出时
-    # llama-server 被 Job Object 一并带走，不会变成无人回收的常驻显存。
-    def _warm_translator() -> None:
-        t = state["translator"]
-        try:
-            if t is None or t.disabled or t.backend != "local":
-                return
-            from translate_engine import _local_backend
-            be = _local_backend(t.cfg.get("local") or {})
-            be.ensure_server()
-            print(f"[server] 翻译引擎已预热：{be.base_url}（{be.model.name}）", flush=True)
-        except Exception as e:
-            print(f"[server] 翻译引擎预热失败（翻译请求时会重试并如实报错）："
-                  f"{type(e).__name__}: {e}", flush=True)
-            return
-        # 预热补全（R63.2，用户实测点名）：llama-server「就绪」只是端口通了——
-        # 首条真实翻译还要付系统提示词 prefill + 首包 CUDA 路径的账，全落在
-        # 第一句字幕上。这里用**真实系统提示词**喂一条极短请求，把 prefill 和
-        # 解码路径焐热；完成时间记进 /health 的 mt_warm。
-        try:
-            _t0 = time.perf_counter()
-            t._chat(t.mt_system, (t.mt_user_prefix or "") + "テスト")
-            _dt = time.perf_counter() - _t0
-            global _MT_WARM
-            _MT_WARM = time.time()
-            print(f"[server] 翻译预热完成（含提示词首包）：{_dt:.1f}s", flush=True)
-        except Exception as e:
-            print(f"[server] 翻译预热请求失败（不影响服务，首条翻译会照常重试）："
-                  f"{type(e).__name__}: {e}", flush=True)
 
     # R63.3 选项②：预热线程先起（与 whisper 加载并行，ready 时点不叠加）；
     # 本地翻译时**等预热（含提示词首包）完成再放行 /health**——ready 从
@@ -643,9 +642,13 @@ def health():
         "idle_sec": round(time.monotonic() - _LAST_REQ_MONO, 1),
         "idle_release_min": _idle_release_min(),
         # 翻译是否已用真实提示词预热（R63.2）：ready 只保证识别模型加载完，
-        # 这里的时间戳非 0 才说明首句翻译不会再付 prefill 的账
-        "mt_warm": _MT_WARM > 0,
-        "mt_warm_ts": _MT_WARM or None,
+        # 这里的时间戳非 0 才说明首句翻译不会再付 prefill 的账。
+        # **状态从 Translator 读**（评审 F23）：它是按模型代次记账的 —— 按源语言
+        # 路由换过权重后自动变 false（新权重没付过那次 prefill），新模型跑完第一句
+        # 又自动变 true。旧实现在这里存了一份"只置位不复位"的副本 ⇒ 换过模型照样
+        # 报热，用户按这个字段判断"翻译热了没"会被骗。
+        **(state["translator"].warm_info() if state["translator"] else
+           {"mt_warm": False, "mt_warm_ts": None, "mt_warm_epoch": None}),
         # 显存档位估算（R66）：UI 的「识别与翻译」卡据此显示占用与推荐组合
         "vram_estimate": _vram_estimate(),
     }
@@ -688,7 +691,10 @@ def translate_selftest(text: str = "こんにちは、いい天気ですね。")
     segs = [{"start_ms": 0, "end_ms": 2000, "text": text}]
     t0 = time.perf_counter()
     try:
-        t.translate_segments(segs, "ja")
+        # route=False（评审 F23）：这是**诊断**请求，不该按语言路由本地模型 ——
+        # 头显在看英语内容（Hy-MT2）时，用户在 PC 端点一下「测试」，旧实现会把
+        # 模型切回日语（stop_server + 6.3s 冷启动），而且掐掉在飞请求、累积假熔断。
+        t.translate_segments(segs, "ja", route=False)
     except Exception as e:
         out["pipeline_error"] = f"{type(e).__name__}: {e}"
     out["pipeline"] = segs[0].get("translation") or ""
