@@ -44,6 +44,7 @@ import hmac  # noqa: E402
 import json  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
+import urllib.parse  # noqa: E402  （跨站栅栏要解析 Origin）
 from contextlib import asynccontextmanager  # noqa: E402
 
 import numpy as np  # noqa: E402
@@ -81,9 +82,22 @@ for _sec in ("asr", "translate", "server", "vad", "segment"):
     if not isinstance(CFG.get(_sec), dict):
         CFG[_sec] = {}
 
-# /transcribe 请求体上限：裸 PCM 25s 块约 800KB；宿主误传/恶意传超大块时，
-# body + int16 视图 + float32 拷贝峰值内存约 3× 字节数，必须设上限挡住
-MAX_BODY_BYTES = 100 * 1024 * 1024
+# /transcribe 请求体上限：裸 PCM 25s 块约 800KB（云端档位的推荐块长）；宿主误传/恶意传
+# 超大块时，body + int16 视图 + float32 拷贝峰值内存约 3× 字节数，必须设上限挡住。
+# 100MB（旧值）是正常块的 50 倍余量、够同网设备一次打满内存（评审 F16）——收到 8MB，
+# 仍是 25s 块的 10 倍。可用 server.max_body_mb 覆盖。
+try:
+    MAX_BODY_BYTES = max(1, int((CFG["server"].get("max_body_mb") or 8))) * 1024 * 1024
+except Exception:
+    MAX_BODY_BYTES = 8 * 1024 * 1024
+
+# 并发上限（评审 F16）：/transcribe* 对局域网开放且没有限流，同网任意设备可以并发打满
+# GPU/内存并烧云端翻译额度。这里只做**快速失败**：超过上限立刻回 503 并附档位建议，
+# 而不是排队（排队会让每一块都等到超时，头显体验比直接失败更差）。
+try:
+    MAX_INFLIGHT = max(1, int((CFG["server"].get("max_inflight") or 4)))
+except Exception:
+    MAX_INFLIGHT = 4
 
 
 # 翻译后端的环境变量兜底：config 没写时才生效，避免「改了 config 却不生效」。
@@ -346,6 +360,60 @@ class _TokenGuard(BaseHTTPMiddleware):
 
 
 app.add_middleware(_TokenGuard)
+
+
+class _OriginGuard(BaseHTTPMiddleware):
+    """跨站栅栏（评审 F16）：浏览器发起的跨站 POST **一定**带 Origin 头，而头显
+    (OkHttp) / curl / 本机脚本都不带。8756 的 /transcribe 收裸 PCM，属**免预检的简单
+    请求**，所以用户浏览器里的任意网页都能用 no-cors 直接打过来（PNA 只救得了新 Chrome）
+    ——同网的恶意页面可以借它烧云端额度、占满 GPU。8790 早就有这道理（见
+    host_server 的 CSRF 栅栏），8756 一直漏配。
+
+    放行规则：**没有 Origin 就放行**（非浏览器客户端）；有 Origin 但主机是回环（任意端口，
+    含 PC 界面所在页面）也放行。其余一律 403。
+    """
+
+    async def dispatch(self, request, call_next):
+        origin = (request.headers.get("Origin") or "").strip()
+        if origin:
+            host = urllib.parse.urlparse(origin).hostname or ""
+            if host not in _LOOPBACK:
+                return JSONResponse({"error": "跨站请求被拒绝"}, status_code=403)
+        return await call_next(request)
+
+
+app.add_middleware(_OriginGuard)
+
+# 在飞请求计数（评审 F16：过载快速失败）。与空闲回收用的 _INFLIGHT 分开：
+# 那个统计的是"有请求在处理"，这个只管"是否超过并发上限"。
+_OVERLOAD = {"n": 0}
+_OVERLOAD_LOCK = threading.Lock()
+
+
+class _OverloadGuard(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if not request.url.path.startswith("/transcribe"):
+            return await call_next(request)
+        with _OVERLOAD_LOCK:
+            if _OVERLOAD["n"] >= MAX_INFLIGHT:
+                busy = _OVERLOAD["n"]
+            else:
+                _OVERLOAD["n"] += 1
+                busy = 0
+        if busy:
+            # 快速失败 + 告诉客户端该怎么降载（契约 B 的档位建议本来就随应答下发）
+            return JSONResponse(
+                {"error": f"字幕服务繁忙（{busy}/{MAX_INFLIGHT} 在飞），请降低推流频率",
+                 "recommended_chunk_sec": _recommended_chunk_sec()},
+                status_code=503)
+        try:
+            return await call_next(request)
+        finally:
+            with _OVERLOAD_LOCK:
+                _OVERLOAD["n"] = max(0, _OVERLOAD["n"] - 1)
+
+
+app.add_middleware(_OverloadGuard)
 
 
 def _recommended_chunk_sec() -> int:

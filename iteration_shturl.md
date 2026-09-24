@@ -2677,3 +2677,35 @@ refuse+backup 防护对齐。
 是**三端契约**（docs/cross-repo-consistency.md 列为契约但未实现），单方面改默认值会让
 头显连不上——需要先确定下发通道，不是能顺手改的。可先做的是 Origin 栅栏 + 并发上限 +
 收紧 100MB 体上限这三项与本机相关、不涉及跨端契约的部分。
+
+---
+
+## R79 审查报告第三批修复：F16 局域网面护栏（不涉及跨端契约的部分）
+
+### F16 [中] 8756 默认无鉴权、无过载防护、无 Origin 栅栏 —— 部分属实，已修其中三项
+
+报告属实部分：`/transcribe` 收裸 PCM 属**免预检的简单请求**，用户浏览器里的任意网页都能
+用 no-cors 直接打过来（PNA 只救得了新 Chrome）；8756 既没有 Origin 栅栏（8790 早就有，
+见 host_server 的 CSRF 栅栏）、也没有并发上限，体上限 100MB 还是正常块的 50 倍。
+
+本轮做掉三项**不涉及跨端契约**的：
+
+1. **`_OriginGuard`**：有 Origin 且主机不是回环 → 403。无 Origin（头显 OkHttp / curl /
+   本机脚本）与回环 origin（PC 界面所在页面）放行。
+2. **`_OverloadGuard`**：`/transcribe*` 超过 `server.max_inflight`（默认 4）立刻回 **503 +
+   档位建议**，而不是排队——排队会让每一块都等到超时，头显体验比直接失败更差。
+   `/health` 永不被限流（宿主靠它判断死活）；计数在 finally 归还。
+3. **体上限 100MB → 8MB**（`server.max_body_mb` 可覆盖）：25s 块约 800KB，8MB 仍是 10 倍余量。
+
+**没做**：默认随机 `auth_token`。那是**三端契约**（`docs/cross-repo-consistency.md` 列为契约
+但未实现）——单方面把默认值改成随机 token，头显立刻连不上；要先定下发通道（宿主 → UI /
+设备配对），属于需要拍板的设计，不是能顺手改的。
+
+⚠️ 本轮又踩了一次"新代码用到没导入的模块"：`_OriginGuard` 里写了 `urllib.parse.urlparse`，
+而 `server_app.py` 没有导入 `urllib.parse`（会在**第一个带 Origin 的请求**上 NameError）。
+已补，并在测试里用真 `import server_app` + 真调 `dispatch` 覆盖。
+
+验证：`test_pipeline_unit.py::t_lan_open_guards` —— 跨站 Origin 403 / 无 Origin 放行 /
+回环 origin 放行 / 满载 503 / `/health` 不被拦 / 计数归还 / 体上限量级。
+牙齿证明用**策略常量**那条断言（旧代码 `体上限仍然过大（104857600 字节）` 行为级失败）——
+新增的守卫类在旧代码里根本不存在，只能给出 AttributeError，这点如实记下。

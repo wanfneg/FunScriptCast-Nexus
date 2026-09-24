@@ -944,6 +944,77 @@ def t_config_corruption_recovery():
     assert not list(cfg.parent.glob("dst_probe.json.*.tmp")), "失败路径也必须清掉临时文件"
 
 
+# 16 ------------- F16：8756 的跨站栅栏与过载快速失败
+def t_lan_open_guards():
+    """评审 F16（只做不涉及跨端契约的部分：Origin 栅栏 / 并发上限 / 体上限）。
+
+    /transcribe 收裸 PCM，属**免预检的简单请求** ⇒ 用户浏览器里的任意网页都能用
+    no-cors 直接打过来；而 8756 原本既没有 Origin 栅栏、也没有并发上限，
+    100MB 的体上限还是正常块的 50 倍。三项一起意味着：同网任意设备可以并发打满
+    GPU/内存并烧云端翻译额度。
+
+    默认随机 token 那部分**没有做**：那是三端契约（docs/cross-repo-consistency.md
+    列为契约但未实现），单方面改默认值会让头显连不上——需要先定下发通道。
+    """
+    import asyncio
+
+    import server_app as sa
+
+    # ① 先验"策略常量"（不依赖新类，所以对修复前的代码也能给出**行为级**失败）：
+    #    25s 块约 800KB，上限应当是"够用但不夸张"的量级；100MB（旧值）是 50 倍余量。
+    assert sa.MAX_BODY_BYTES >= 2 * 1024 * 1024, "上限不能小于 2MB（要容得下 25s 块）"
+    assert sa.MAX_BODY_BYTES <= 16 * 1024 * 1024, \
+        f"体上限仍然过大（{sa.MAX_BODY_BYTES} 字节）：同网设备能一次打满内存"
+    assert sa.MAX_INFLIGHT >= 1, "并发上限必须存在且 ≥1"
+
+    class _U:
+        def __init__(self, path):
+            self.path = path
+
+    class _Cli:
+        host = "127.0.0.1"
+
+    class FakeReq:
+        def __init__(self, path, origin=None):
+            self.url = _U(path)
+            self.headers = {"Origin": origin} if origin else {}
+            self.client = _Cli()
+
+    async def _next(_req):
+        return "PASSED"
+
+    def _call(guard, req):
+        return asyncio.run(guard.dispatch(req, _next))
+
+    # BaseHTTPMiddleware 要求传 app；这两个守卫的 dispatch 不用 self.app，传 None 即可
+    og = sa._OriginGuard(None)
+    # ① 跨站 Origin 必须拒绝（恶意网页走这条路）
+    r = _call(og, FakeReq("/transcribe", origin="https://evil.example"))
+    assert getattr(r, "status_code", None) == 403, f"跨站请求没被拒绝：{r}"
+    # ② 非浏览器客户端（无 Origin）放行——头显 OkHttp / curl / 本机脚本
+    assert _call(og, FakeReq("/transcribe")) == "PASSED", "无 Origin 的客户端不该被拦"
+    # ③ 本机页面（PC 界面所在 origin）放行
+    assert _call(og, FakeReq("/transcribe", origin="http://127.0.0.1:8790")) == "PASSED", \
+        "本机 origin 不该被拦"
+    assert _call(og, FakeReq("/transcribe", origin="http://localhost:8756")) == "PASSED"
+
+    # ④ 过载快速失败：满了就 503（不排队——排队会让每块都等到超时）
+    ov = sa._OverloadGuard(None)
+    saved = sa._OVERLOAD["n"]
+    try:
+        sa._OVERLOAD["n"] = sa.MAX_INFLIGHT
+        r = _call(ov, FakeReq("/transcribe"))
+        assert getattr(r, "status_code", None) == 503, f"满载时应回 503，实际 {r}"
+        # /health 永远不能被限流挡住（宿主靠它判断服务死活）
+        assert _call(ov, FakeReq("/health")) == "PASSED", "/health 不该被过载守卫拦住"
+        sa._OVERLOAD["n"] = 0
+        assert _call(ov, FakeReq("/transcribe")) == "PASSED", "未满载时应当放行"
+        # 放行后计数必须回到 0（否则每来一块都会永久占用一个名额）
+        assert sa._OVERLOAD["n"] == 0, f"计数没归还：{sa._OVERLOAD['n']}"
+    finally:
+        sa._OVERLOAD["n"] = saved
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -969,6 +1040,7 @@ if __name__ == "__main__":
     check("F21/F22 熔断半开恢复 + 空译文不计熔断", t_circuit_breaker_recovers)
     check("F15 流式断流关掉上游连接（GeneratorExit 兜底）", t_stream_disconnect_closes_upstream)
     check("F13 坏配置自恢复 + 写入原子", t_config_corruption_recovery)
+    check("F16 8756 跨站栅栏 + 过载快速失败（不涉及跨端契约部分）", t_lan_open_guards)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
