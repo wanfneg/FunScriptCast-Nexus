@@ -3317,3 +3317,75 @@ R88 修的 F15（断流关连接）在同一轮里仍然通过，说明这次改
 
 老实标注：这一项里**只有第一条是牙齿证明**，后两条是防止未来回归成"重复跑 VAD"的
 特征锁 —— 特征锁也有价值（它们把 R63.1 的复用行为钉住了），但不能拿它们冒充"修复效果"。
+
+---
+
+## R93 打包装箱：v1.0.39 发布（用户点名"打包更新.exe然后推送github，我正好测试一下检查更新"）
+
+审查报告 30 条的修复（R77–R92，共 36 个提交）此前只在仓库里，用户装的还是旧代码。
+本轮把它们装进安装包并发到 GitHub，让"应用内检查更新"这条链能被实测。
+
+### 构建（`build\build_installer.ps1`，一条命令跑完全链）
+
+`build_exe.ps1`（PyInstaller 6.22.2 onefile + 组装 dist-app + 版本自增 1.0.38→**1.0.39**、
+code 39→40）→ API Key 哨兵全树扫描（通过）→ `make_runtime.ps1`（embeddable Python 运行时）
+→ ISCC 编译（**Successful compile (80.953 sec)**）。
+
+产物：`dist-installer\FunScriptCast-Nexus-Setup-1.0.39.exe`
+（134,625,942 字节 = 128.4 MiB；属性页 FileVersion/ProductVersion 均为 1.0.39）。
+构建前确认端口 8756/8790/8791/8082/8083/8899 **全空闲、无进程在跑**，所以脚本里的
+"停服务/杀进程"分支是空操作——没打扰任何正在用的实例。
+
+### 校验（发布前）
+
+1. **载荷含本轮修复**：`dist-app\vendor\subtitle\{hybrid_segmenter,translate_engine,stream_bridge}.py`
+   分别含 F17/F23/F14 的标记；`installer\setup.iss` 含 F30 的 `CurStepChanged`。
+2. **打包运行时冒烟**（R52 那条教训的正面验证）：`dist-app\runtime\python.exe` 是**封闭
+   `._pth`**（sys.path 只有 3 项、不含脚本目录）——正是 R49 "No module named 'user_paths'"
+   的现场。在这个解释器下跑
+   `run_server.py --help` → 正常打印用法（中途还顺带验证了数据迁移路径）；
+   `import server_app, stream_bridge, hybrid_segmenter, translate_engine, audiocpp_backend,
+   llama_backend, user_paths` → 全过，`cfg port=8756`。
+   （冒烟时把 `NEXUS_USER_DIR` 指到临时目录，不碰 dist-app 的真实 data。）
+3. **更新判据**：`_SETUP_RE` 对新资产名 `FunScriptCast-Nexus-Setup-1.0.39.exe` 抽出 `1.0.39`；
+   `1.0.39 > 1.0.38/1.0.20` 均为真。
+4. `dist-app` 状态完好：`data\`（2 个文件）与 `vendor\llama` 都被脚本摘出后回填，`models`
+   与 `.venv` junction 已重建。
+
+### 发布
+
+- 提交并推送：`9de0789`（version.json → 1.0.39）。
+- Release：`v1.0.39`（主仓 `wanfneg/FunScriptCast-Nexus`，标记 **Latest**，
+  published 2026-09-24T07:56:46Z），三个资产：
+
+| 资产 | 字节 | sha256 |
+|---|---|---|
+| `FunScriptCast-Nexus-Setup-1.0.39.exe` | 134,625,942 | `8fdf8196…dec6add` |
+| `llama-runtime-windows.zip` | 656,985,982 | `8bec19c1…5960592`（**与 v1.0.38 逐字节相同**） |
+| `audiocpp-runtime-windows-cpu.zip` | 27,005,868 | `ecb2041a…7eb71`（同上） |
+
+- 两个固定 URL 实测 200：`releases/latest/download/llama-runtime-windows.zip`
+  （content-length 656985982）、`.../FunScriptCast-Nexus-Setup-1.0.39.exe`（134625942）。
+  `releases/latest` 的 `tag_name=v1.0.39 / draft=false / prerelease=false`。
+
+### 三个坑（都当场踩到）
+
+1. **GitHub 直连已死，本地代理反而通**：`git -c http.proxy= push` 连续两次失败
+   （`schannel: server closed abruptly` / `Could not connect to github.com:443`），
+   而 `127.0.0.1:7897` 正在监听，用**仓库里原本就配着的** `http.proxy` 直推即成功
+   （`c034cea..9de0789`）。⚠️ 与之前几轮"代理没开、要显式绕开"的经验**相反**——
+   以后先看代理在不在监听，再决定绕不绕。
+2. **`gh release create` 会被工具超时打断，并留下一个 draft**：626MB 走代理约 0.5MB/s，
+   整套资产要二十多分钟，600s 的调用上限一到就被杀，结果是**release 建成了、资产只传了
+   1/3、且处于 Draft**（资产 URL 变成 `untagged-…`）。恢复办法：
+   `gh release upload <tag> <缺失文件>`（后台任务跑）→ `gh release edit <tag> --draft=false
+   --tag <tag> --latest`。**大资产一律用后台任务**，别放在前台等。
+3. **PowerShell 里 `--jq` 的引号**：`--jq '"tag=" + .tag_name'` 这种"双引号套双引号"会被
+   PS 拆成多个参数（`accepts 1 arg(s), received 3`）。用单引号包整条表达式、jq 内部不要
+   双引号（`.assets[].name` 这种最简单）。
+
+### 待用户实测
+
+装 1.0.39（或直接点应用内「检查更新」）应看到：发现 v1.0.39 → 下载 Setup（134MB）→
+静默升级并自动重启。**旧版本（≤1.0.38）才有更新可测**；若装的就是 1.0.39，会如实显示
+"已是最新"。
