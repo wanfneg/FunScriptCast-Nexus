@@ -3141,3 +3141,63 @@ URL/缓存的兼容性）；多根分支不动。
 ⚠️ 这次改动顺手**搬了状态**（预热记账：server_app 全局 → Translator），搬完立刻补了
 第 (6) 条"启动预热路径仍要把 mt_warm 点着"的回归锁 —— 搬迁类改动最大的风险是
 把别人依赖的信号弄丢，而 `mt_warm` 是头显/界面判断"翻译热了没"的公开字段。
+
+---
+
+## R90 审查报告第十四批修复：F30（安装器附加任务"取消"不生效）
+
+### F30 [中] 升级取消勾选自启/快捷方式不回删已装项 —— 属实，已修
+
+Inno 的 `Tasks` 门控语义是"**未勾选 = 跳过安装**"，从来不是"删除已装的"：
+`[Registry]` 的 autostart 值只带 `uninsdeletevalue`（只在**卸载**时删）、`[Icons]` 的
+桌面图标同理（不在 `[InstallDelete]` 覆盖范围）。而 `UsePreviousTasks` 默认沿用上次
+勾选 ⇒ 升级时用户主动**取消**勾选，上一版的 Run 值与桌面图标原样留着，选择被静默无视。
+
+### 修法
+
+`[Code]` 加 `CurStepChanged(CurStep)`：只在 `ssPostInstall`（文件装完的收尾）做事，
+按**本次向导的勾选状态**回删：
+
+```
+if not WizardIsTaskSelected('autostart')   → RegValueExists 才 RegDeleteValue(HKCU\...\Run, 'FunScriptCast-Nexus')
+if not WizardIsTaskSelected('desktopicon') → FileExists 才 DeleteFile({autodesktop}\FunScriptCast-Nexus.lnk)
+```
+
+两个动作都"存在才删"：全新安装且未勾选时是空操作。日志两行（`Log(...)`）落
+`%TEMP%\Setup Log*.txt`，方便日后核对到底删没删。
+
+**范围边界（有意不删）**：DLNA 侧还有一个**同族的另一个 Run 值**名 `抚物器`
+（`vendor/dlna/vr_dlna.py:160 set_autostart`，由界面上的"启动时自动开启 DLNA"控制）。
+那条是**应用内的用户设置**，不是安装器的附加任务 —— 安装器去删它等于替用户改设置，
+所以 F30 只动自己写的那一个值名。
+
+### 验证：`tests/installer_tasks.ps1`（真跑安装器，15 项断言）
+
+Inno 脚本不能"单元测试"，但可以**真跑**：脚本从 `installer\setup.iss` **抽原文的**
+`[Tasks]/[Icons]/[Registry]/[Code]` 四段（不复制一份，避免日后两边各说各话），配上
+**测试身份**（独立 AppId/AppName 全部换掉、独立安装目录、独立桌面链接名、独立卸载
+注册项），载荷换成 1KB 假 exe，然后：
+
+| 步骤 | 动作 | 断言 |
+|---|---|---|
+| ① | `/VERYSILENT /TASKS=autostart,desktopicon` | Run 值写入 ✓、桌面 .lnk 创建 ✓ |
+| ② | `/VERYSILENT /TASKS=`（全不勾，装第二次） | Run 值**被回删** ✓、.lnk **被回删** ✓ |
+| ③ | 再跑一次全不勾 | 幂等不报错 ✓（没有可删的东西也不能失败） |
+| 清理 | 跑卸载器 + 强制清 Run 值/.lnk/卸载注册项/临时目录 | 三项都不残留 ✓ |
+
+对着**旧 `setup.iss`**（`git stash push installer/setup.iss`）跑同一脚本：
+结构断言 4 条 FAIL + **行为断言 2 条 FAIL**（"② 取消勾选后 Run 值被回删"、
+"② 取消勾选后桌面快捷方式被回删"）—— 这就是 F30 的**行为级复现**：旧安装器真的把
+用户取消掉的勾选无视了。新代码 15 项全过。
+
+⚠️ 抽段时**故意剔掉 `InitializeSetup`**：它在静默安装时会弹版本确认 `MsgBox` 等人点
+（同版本走 `rc=0` 分支也要弹），留在里面会让 ② 步挂住。剔到最后只剩 `CurStepChanged`，
+正好是 F30 的全部逻辑。另外 `CurStepChanged` 缺失时脚本**只记 FAIL 不抛异常** ——
+否则对着旧代码跑会当场中断，把最有说服力的两条行为断言全掩盖掉（第一次就是这么写的，
+改了才拿到完整证据）。
+
+⚠️ 两个 PowerShell 坑（都当场踩到）：① `Set-StrictMode -Version Latest` 下
+`(Get-ItemProperty ...).$name` 在属性**不存在**时是**抛异常**而不是返回 `$null`，
+而"属性不存在"恰恰是本脚本要断言的成功状态 —— 改走 `PSObject.Properties[$name]`；
+② 清理逻辑必须放 `finally`，否则断言失败时测试痕迹（Run 值/桌面图标/临时安装）会
+留在用户机器上。
