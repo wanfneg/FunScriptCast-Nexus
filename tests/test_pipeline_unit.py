@@ -826,6 +826,171 @@ def t_circuit_breaker_recovers():
     assert t3.stats["half_open_probes"] > pr, "冷却走完后仍不放行探测"
 
 
+# 13b ------------ F24：MT 逐句路径的熔断门 + 后端请求超时按模式收窄
+def t_mt_path_breaker_and_timeout():
+    """评审 F24。
+
+    (1) MT 逐句路径此前**完全没有熔断**：`_fail_streak` / `skipped_batches` /
+        `half_open_probes` 在 MT 模式下恒不变化（批量模式的 work() 才查/记熔断），
+        而发运默认配置（mode=auto + mt_system 非空 + local 后端）走的就是 MT ⇒
+        F21 那套熔断/半开恢复在默认配置下形同不存在。后果：后端挂掉后每句都白等
+        一个完整 timeout（10 句/块 ÷ 4 并发），跨块无限重复，诊断页看不到痕迹。
+    (2) `_chat_local` / `_chat_ollama` 都不传 timeout ⇒ 落 `_post` 默认 180s，
+        MT 一句一请求时 10 句块最坏 ceil(10/4)×180 ≈ 9 分钟。
+    """
+    import time as _time
+
+    import translate_engine as te
+    from translate_engine import BackendDown, Translator
+
+    def _mk(extra=None):
+        cfg = {"backend": "local", "mode": "mt",
+               "mt_system": "测试系统提示词",
+               "fallback": {"after_fail_batches": 2, "cooldown_sec": 5},
+               "local": {"model": "dummy", "base_url": "http://127.0.0.1:59998"}}
+        if extra:
+            cfg["local"].update(extra)
+        return Translator(cfg)
+
+    # ---- (1a) 整块全失败 → 记"一块"（既不漏记，也不按句数爆记）----
+    t = _mk()
+    def _dead(system, user):
+        raise BackendDown("模拟后端不可达")
+    t._chat = _dead
+    segs = [{"text": f"句子{i}"} for i in range(3)]
+    t._translate_mt(list(enumerate(segs)), "ja")
+    assert t._fail_streak == 1, \
+        f"MT 整块失败没计入熔断（streak={t._fail_streak}）⇒ 熔断门形同不存在"
+    assert t.stats["fail_kinds"].get("BackendDown") == 1, \
+        f"MT 块级失败没按真实故障类型归类：{t.stats['fail_kinds']}"
+    assert all(s.get("error") == "translate_failed:mt_empty" for s in segs), segs
+
+    # 第二块失败 → 达到 after_fail_batches，degraded 必须亮（否则诊断页看不见）
+    t._translate_mt(list(enumerate([{"text": "句子4"}])), "ja")
+    assert t._fail_streak == 2 and t.stats["degraded"] is True, \
+        f"连续两块失败后没标记降级：streak={t._fail_streak} degraded={t.stats['degraded']}"
+
+    # ---- (1b) 有一句成功 → 复位（后端活着，不许把后面几十块全跳过）----
+    t2 = _mk()
+    t2._fail_streak = 5
+    t2.stats["degraded"] = True
+    t2._last_fail_ts = _time.monotonic() - 999      # 冷却已过，走探测
+    def _half(system, user):
+        if "坏" in user:
+            raise BackendDown("坏句")
+        return "译文"
+    t2._chat = _half
+    t2._translate_mt(list(enumerate([{"text": "好句"}, {"text": "坏句"}])), "ja")
+    assert t2._fail_streak == 0, \
+        f"块内有成功句却没复位熔断（内容级失败会拖垮后面所有块）：{t2._fail_streak}"
+    assert t2.stats["degraded"] is False, "复位时必须同时清 degraded"
+
+    # ---- (1b') 内容级失败不得推高熔断（F22 口径必须在 MT 路径同样成立）----
+    # 这一条是我第一版实现的照妖镜：v1 只看"块内有没有成功句"，于是"一整个块
+    # 都是空译文/漏译"（后端活着、内容不合格）会被算成一次后端级失败，连着几块
+    # 就把熔断推满 —— 正是 F22 明确禁止的行为。
+    t2b = _mk()
+    t2b._fail_streak = 1                # after_fail_batches=2：再加一块就熔断
+    t2b._last_fail_ts = _time.monotonic() - 999
+    t2b._chat = lambda system, user: ""      # 后端有响应，但译文为空（内容级）
+    t2b._translate_mt(list(enumerate([{"text": "空1"}, {"text": "空2"}])), "ja")
+    assert t2b._fail_streak == 0, \
+        f"整块空译文被当成后端级失败（F22 在 MT 路径失效，连着几块就熔断整场）：" \
+        f"streak={t2b._fail_streak}"
+    assert t2b.stats["degraded"] is False, "内容级失败不该标记降级"
+    assert t2b.stats["fail_kinds"].get("MTEmpty") == 1, t2b.stats["fail_kinds"]
+
+    from translate_engine import ContentBad
+    t2c = _mk()
+    def _mixed(system, user):
+        if "连接" in user:
+            raise BackendDown("模拟连不上")
+        raise ContentBad("模拟 HTTP 200 非 JSON")
+    t2c._chat = _mixed
+    t2c._translate_mt(list(enumerate([{"text": "连接坏了"}, {"text": "内容坏了"}])), "ja")
+    assert t2c._fail_streak == 1, \
+        f"含后端级故障的整块失败该记一块：streak={t2c._fail_streak}"
+    assert "BackendDown" in t2c.stats["fail_kinds"], \
+        f"fail_kinds 该以后端级故障类型归类：{t2c.stats['fail_kinds']}"
+
+    # ---- (1c) 熔断期内整块跳过：**一个请求都不发** ----
+    t3 = _mk()
+    t3._fail_streak = 2
+    t3._last_fail_ts = _time.monotonic() - 1.0     # 冷却期内（cooldown=5s）
+    calls = {"n": 0}
+    def _count(system, user):
+        calls["n"] += 1
+        return "译文"
+    t3._chat = _count
+    segs3 = [{"text": "a"}, {"text": "b"}]
+    sk = t3.stats["skipped_batches"]
+    ts0 = t3._last_fail_ts
+    t3._translate_mt(list(enumerate(segs3)), "ja")
+    assert calls["n"] == 0, f"熔断期内仍然发了 {calls['n']} 次请求（每句白等一个 timeout）"
+    assert t3.stats["skipped_batches"] == sk + 1, t3.stats["skipped_batches"]
+    assert t3._fail_streak == 2, f"跳过不该累加失败计数：{t3._fail_streak}"
+    assert t3._last_fail_ts == ts0, \
+        "跳过刷新了冷却时钟 ⇒ 持续推流时永远等不到半开探测（F21 白修）"
+    assert all(s["translation"] == "" and s.get("error") == "translate_failed:mt_empty"
+               for s in segs3), segs3
+
+    # ---- (1d) 冷却走完 → 放一块探测；成功则复位 ----
+    t3._last_fail_ts = _time.monotonic() - 99.0
+    pr = t3.stats["half_open_probes"]
+    t3._translate_mt(list(enumerate([{"text": "c"}])), "ja")
+    assert t3.stats["half_open_probes"] == pr + 1, "冷却走完后没放行探测块"
+    assert calls["n"] == 1, f"冷却走完后应恰好放行一块试探：{calls['n']}"
+    assert t3._fail_streak == 0, f"探测成功后应复位：{t3._fail_streak}"
+
+    # ---- (2) 请求超时：MT 收窄到 60s，批量维持 180s，0/负数=不设上限 ----
+    seen = {}
+    def _cap(url, payload, headers=None, timeout=180):
+        seen["timeout"] = timeout
+        seen["url"] = url
+        return {"choices": [{"message": {"content": "译文"}}],
+                "message": {"content": "译文"}}
+    class _BE:
+        base_url = "http://127.0.0.1:59998"
+        def ensure_server(self):
+            pass
+    old_be = te._local_backend
+    te._local_backend = lambda cfg: _BE()
+    try:
+        tm = _mk()
+        tm._post = _cap
+        tm._chat_local("sys", "user")
+        assert seen["timeout"] == 60, \
+            f"MT 单句请求没按模式收窄超时（旧值 180 ⇒ 10 句块最坏 9 分钟）：{seen['timeout']}"
+        tb = Translator({"backend": "local", "mode": "batch",
+                         "local": {"model": "dummy"}})
+        tb._post = _cap
+        tb._chat_local("sys", "user")
+        assert seen["timeout"] == 180, \
+            f"批量路径（一次请求翻 batch_size 句）超时被误收窄：{seen['timeout']}"
+        tz = _mk({"timeout_sec": 0})
+        tz._post = _cap
+        tz._chat_local("sys", "user")
+        assert seen["timeout"] is None, \
+            f"timeout_sec=0 应表示不设上限（用户要「指定什么就是什么」）：{seen['timeout']}"
+        tt = _mk({"timeout_sec": 33})
+        tt._post = _cap
+        tt._chat_local("sys", "user")
+        assert seen["timeout"] == 33, f"local.timeout_sec 没生效：{seen['timeout']}"
+
+        # ollama 同口径（不同 section / 不同 payload 形状）
+        to = Translator({"backend": "ollama", "mode": "mt", "mt_system": "s",
+                         "ollama": {"model": "m"}})
+        to._post = _cap
+        to._chat_ollama("sys", "user")
+        assert seen["timeout"] == 60, f"ollama MT 超时没收窄：{seen['timeout']}"
+        to2 = Translator({"backend": "ollama", "mode": "batch"})
+        to2._post = _cap
+        to2._chat_ollama("sys", "user")
+        assert seen["timeout"] == 180, f"ollama 批量超时被误收窄：{seen['timeout']}"
+    finally:
+        te._local_backend = old_be
+
+
 # 14 ------------- F15：流式断流必须关掉上游连接（GeneratorExit 兜底）
 def t_stream_disconnect_closes_upstream():
     """评审 F15：头显断开/取消时，生成器被 close()，抛进来的是 GeneratorExit
@@ -1758,6 +1923,7 @@ if __name__ == "__main__":
     check("F01 流式上游地址与 asr.audiocpp 同源", t_stream_asr_upstream_from_config)
     check("F12 ASR 上游自愈 + /health 如实反映死活", t_asr_selfheal_and_health)
     check("F21/F22 熔断半开恢复 + 空译文不计熔断", t_circuit_breaker_recovers)
+    check("F24 MT 逐句路径熔断门 + 后端超时按模式收窄", t_mt_path_breaker_and_timeout)
     check("F15 流式断流关掉上游连接（GeneratorExit 兜底）", t_stream_disconnect_closes_upstream)
     check("F13 坏配置自恢复 + 写入原子", t_config_corruption_recovery)
     check("F16 8756 跨站栅栏 + 过载快速失败（不涉及跨端契约部分）", t_lan_open_guards)

@@ -343,6 +343,25 @@ class Translator:
             return self._chat_local(system, user)
         return self._chat_ollama(system, user)
 
+    def _backend_timeout(self, section: str, default: int = 60) -> "int | None":
+        """本地/Ollama 的单次 HTTP 请求超时（秒；0 或负数 = 不设上限 ⇒ None）。
+
+        评审 F24：`_chat_local` / `_chat_ollama` 此前**都不传 timeout**，落 `_post` 的默认
+        180s。而 MT 逐句路径（发运默认：local + mt_system）是一句一个请求、thread_num 路
+        并发 —— 后端"接受连接但不响应"（模型加载中/进程挂起）时，10 句块最坏
+        ceil(10/4)×180 ≈ **9 分钟**，且跨块无限重复；本地 7B 实测单句 1.0~1.9s，
+        60s 已是 30 倍余量。云端那条早就按 `timeout_sec` 配（默认 60），这里与它同口径。
+        调用方传的 default **按模式分**：MT 逐句 60s，批量 180s（批量是一次请求翻
+        batch_size 句，慢机器上 CPU 推理可能真的要用到分钟级，不能跟着 MT 一起收窄）。
+        本函数**同样支持 0/负数 = 不设上限**（用户要"指定什么就是什么"时能关掉）。
+        """
+        c = self.cfg.get(section) or {}
+        try:
+            t = int(c.get("timeout_sec", default))
+        except (TypeError, ValueError):
+            t = default
+        return None if t <= 0 else t
+
     def _chat_ollama(self, system: str, user: str) -> str:
         c = self.cfg.get("ollama") or {}
         # MT 逐句模式用 Sakura 官方采样参数（temp 0.1/top_p 0.3）+ 短输出上限：
@@ -361,7 +380,7 @@ class Translator:
                          {"role": "user", "content": user}],
             "stream": False,
             "options": opts,
-        })
+        }, timeout=self._backend_timeout("ollama", 60 if self.use_mt else 180))
         return (data.get("message", {}).get("content", "") or "").strip()
 
     def _chat_openai(self, system: str, user: str) -> str:
@@ -489,7 +508,7 @@ class Translator:
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
             **opts,
-        })
+        }, timeout=self._backend_timeout("local", 60 if self.use_mt else 180))
         return (data["choices"][0]["message"]["content"] or "").strip()
 
     # ------------------------------------------------------------ 解析
@@ -760,24 +779,90 @@ class Translator:
         空译文行）。
 
         不接收跨块上下文：参考前缀方案实测会泄漏进上屏译文（见 _mt_once），
-        管道已拆——调用方传了 context 也只会被忽略。"""
+        管道已拆——调用方传了 context 也只会被忽略。
+
+        **熔断（评审 F24）**：本路径此前完全没有熔断门。批量模式的 work() 在发请求
+        前查 `_fail_streak`，而这里逐句发请求却从不查询、也从不累加 —— 于是发运默认
+        走的就是 MT（auto = mt_system 非空且后端非 openai），F21 那套熔断/半开恢复
+        在默认配置下形同不存在：后端挂掉之后每一句都要白等一个完整 timeout
+        （10 句/块 × 60s ÷ 4 并发 ⇒ 每块最坏 ~2.5 分钟纯等待），且跨块无限重复，
+        `skipped_batches` 永远是 0，诊断页看不到任何"后端已挂"的痕迹。
+        判据与批量模式**逐字相同**（streak ≥ after_fail_batches、冷却期内跳过、
+        冷却期外放**一块**探测、CircuitOpen 不计失败/不刷冷却时钟），只把计量单位
+        从"批"换成"块"：MT 是 1 句 1 批，按批计量会让 1 句失败就熔断整场。
+        """
         from concurrent.futures import ThreadPoolExecutor
+
+        # ① 熔断门：冷却期内整块跳过，一句请求都不发（这是 MT 路径唯一能省下
+        #    N×timeout 的地方）。
+        with self._lock:
+            streak = self._fail_streak
+        if streak >= self.fallback_after:
+            since = time.monotonic() - self._last_fail_ts
+            if since < self.fallback_cooldown_sec:
+                with self._lock:
+                    self.stats["skipped_batches"] += 1
+                    self.stats["segments"] += len(todo)
+                for _, s in todo:
+                    s.pop("error", None)
+                    s["translation"] = ""
+                    s["error"] = "translate_failed:mt_empty"
+                return
+            with self._lock:
+                self.stats["half_open_probes"] += 1
+            print(f"[translate] MT 熔断半开探测：距上次失败 {since:.0f}s，"
+                  f"放行本块试探（已跳过 {self.stats['skipped_batches']} 块）",
+                  flush=True)
 
         def work1(s):
             text = (s.get("text") or "").strip()
             try:
                 out = self._mt_once(text, lang_key)
+            except ContentBad as e:
+                # 后端**有响应**（HTTP 200 却不是 JSON）：内容级不合格。分类学与批量
+                # 路径一致（评审 F22）—— 块级记账时**不能**拿它推高熔断，否则一次
+                # 抖动就熔断整场。
+                print(f"[translate] MT 单句失败：{type(e).__name__}: {e}", flush=True)
+                return "", "content", type(e).__name__
             except Exception as e:
                 # 单句调用失败只报废这一句。此前异常会从 ex.map 一路炸穿
                 # _translate_mt，把同批其他句子**已经翻好的结果一起丢掉**
                 # （整批标 fatal），一次瞬时网络抖动 = 一整块字幕全没。
                 print(f"[translate] MT 单句失败：{type(e).__name__}: {e}", flush=True)
-                out = ""
-            return out
+                return "", "down", type(e).__name__
+            # 空译文/漏译/退化（_mt_once 自己判掉、不抛异常）同属内容级。
+            return (out, "ok", "") if out else ("", "empty", "MTEmpty")
 
         workers = max(1, min(self.thread_num, len(todo)))
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            results = list(ex.map(work1, [s for _, s in todo]))
+            raw = list(ex.map(work1, [s for _, s in todo]))
+        results = [r[0] for r in raw]
+        bad = [r for r in raw if r[1] != "ok"]
+        # ② 块级失败记账（F24）：必须在**免费兜底填补之前**取样 —— 兜底能把整块
+        #    填满译文，但它证明的是"免费后端活着"，不是"LLM 后端活着"；若按填补后
+        #    的结果记账，配了兜底时 streak 永远是 0，熔断门等于没装。
+        #    分类口径与批量模式逐字对齐：
+        #      · 有成功句 或 全是内容级失败 ⇒ 后端活着 ⇒ 复位（内容级瑕疵不该把后面
+        #        几十块全跳过，F22 的口径）；
+        #      · 全失败且至少一句是**后端级**故障（连不上/超时/HTTP 错）⇒ 记一块。
+        llm_ok = any(results)
+        down_any = any(k == "down" for _, k, _ in bad)
+        if raw:                       # 空块（无文本）不该动熔断状态
+            with self._lock:
+                if bad:
+                    self.stats["fail_batches"] += 1
+                    key = (next((n for _, k, n in bad if k == "down"), None)
+                           or bad[0][2] or "MTEmpty")
+                    self.stats["fail_kinds"][key] = (
+                        self.stats["fail_kinds"].get(key, 0) + 1)
+                if down_any and not llm_ok:
+                    self._fail_streak += 1
+                    self._last_fail_ts = time.monotonic()   # 半开冷却起点（F21）
+                    if self._fail_streak >= self.fallback_after:
+                        self.stats["degraded"] = True
+                else:
+                    self._fail_streak = 0
+                    self.stats["degraded"] = False
         # 失败句 → 免费后端兜底（与批量模式同一安全网；MT 模式此前漏接）。
         # 免费结果若仍夹假名则保持失败（宁缺不上日文，见 _display_zh 同策略）。
         failed_pos = [n for n, r in enumerate(results) if not r]
