@@ -270,20 +270,50 @@ def lan_ips() -> list[str]:
     return ips
 
 
-def _is_public_http_target(host: str) -> bool:
-    """SSRF 防护：.strm 代理目标必须是公网地址（拒绝私网/回环/链路本地/组播）。"""
+def _is_public_ip(ip_text: str) -> bool:
+    """该 IP 是否公网可路由（IPv4/IPv6 同一套判据）。"""
     try:
-        infos = socket.getaddrinfo(host, None, socket.AF_INET)
+        ip = ipaddress.ip_address(str(ip_text).split("%")[0])   # 去掉 IPv6 的 %scope
+    except ValueError:
+        return False
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified)
+
+
+def _peer_is_public(conn) -> bool:
+    """连接建立后核对**实际对端地址**（评审 F27）。
+
+    只信事前解析是不够的：`_is_public_http_target()` 与 `http.client` 会**各解析一次**
+    DNS，攻击者控制权威 DNS 时可以让第一次返回公网 IP、第二次返回 127.0.0.1/192.168.x
+    （DNS 重绑定 TOCTOU），借 PC 上的 DLNA 服务当跳板访问内网与回环（8790 宿主 API、
+    8756 字幕、8081/8082）。查**真实对端**才关得掉这个窗口，而且顺带覆盖了
+    "只校验 AF_INET、IPv6 ULA/回环不受检"那个洞。
+
+    仍按主机名建连（不改成直连 IP）：否则 HTTPS 的 SNI 与证书校验会失配。
+    """
+    try:
+        sock = getattr(conn, "sock", None)
+        if sock is None:
+            return False
+        peer = sock.getpeername()[0]
+    except Exception:
+        return False
+    return _is_public_ip(peer)
+
+
+def _is_public_http_target(host: str) -> bool:
+    """SSRF 防护：.strm 代理目标必须是公网地址（拒绝私网/回环/链路本地/组播）。
+
+    AF_UNSPEC（评审 F27）：原来只查 AF_INET，IPv6 的 ULA/回环完全不受检。
+    """
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC)
     except socket.gaierror:
         return False
     if not infos:
         return False
     for res in infos:
-        try:
-            ip = ipaddress.ip_address(res[4][0])
-        except ValueError:
-            return False
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+        if not _is_public_ip(res[4][0]):
             return False
     return True
 
@@ -1302,6 +1332,15 @@ class DlnaHandler(BaseHTTPRequestHandler):
             method = "GET" if want_body else "HEAD"
             conn.request(method, req_path, headers=headers)
             resp = conn.getresponse()
+            # 连接已建立：核对**真实对端**（评审 F27，DNS 重绑定 TOCTOU；见 _peer_is_public）
+            if not _peer_is_public(conn):
+                try:
+                    _peer = conn.sock.getpeername()[0] if conn.sock else "?"
+                except Exception:
+                    _peer = "?"
+                log.warning("strm 代理对端不是公网地址，拒绝转发：%s → %s", host, _peer)
+                self._send_error_text(403, "strm 目标解析到非公网地址（疑似 DNS 重绑定）")
+                return
             # HEAD 被上游拒绝时回退 GET（只消费头部），保证 DeoVR 探测可用
             if not want_body and resp.status in (405, 501):
                 resp.read()
@@ -1309,6 +1348,11 @@ class DlnaHandler(BaseHTTPRequestHandler):
                 conn = http.client.HTTPSConnection(host, u.port or 443, timeout=30) if u.scheme == "https" else http.client.HTTPConnection(host, u.port or 80, timeout=30)
                 conn.request("GET", req_path, headers=headers)
                 resp = conn.getresponse()
+                # 这条是回退时**新建的连接**，同样要核对真实对端（评审 F27）
+                if not _peer_is_public(conn):
+                    log.warning("strm 代理对端不是公网地址（回退 GET），拒绝转发：%s", host)
+                    self._send_error_text(403, "strm 目标解析到非公网地址（疑似 DNS 重绑定）")
+                    return
                 # 根因：旧实现把探测 GET 的结果全丢掉，恒回 200 + Content-Length: 0 +
                 # video/mp4 —— DeoVR 拿不到真实大小与可拖动性（Accept-Ranges），
                 # 非 mp4 的源还会被当成 mp4。这里把探测到的头透传（HEAD 只发头不发 body）。

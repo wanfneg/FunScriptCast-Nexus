@@ -1440,12 +1440,21 @@ def t_dlna_strm_proxy_truncation():
             self.errored = (code, msg)
 
     orig_public = dl._is_public_http_target
-    dl._is_public_http_target = lambda h: True     # 测试目标是本机，绕过 SSRF 公网校验
+    # F27 才有 _peer_is_public：老代码里没有这个函数，用 getattr 兼容，
+    # 否则这条测试会在旧代码上以 AttributeError 结束、掩盖它真正要证明的短读行为。
+    orig_peer = getattr(dl, "_peer_is_public", None)
+    # 测试目标是本机：既要绕过事前解析的 SSRF 校验，也要绕过**对端核对**（F27 新加）。
+    # 这两条在生产里对真实公网目标才会放行；这里测的是"短读是否关连接"这个独立行为。
+    dl._is_public_http_target = lambda h: True
+    if orig_peer is not None:
+        dl._peer_is_public = lambda conn: True
     try:
         st = Stub()
         dl.DlnaHandler._proxy_strm(st, strm, None, True)
     finally:
         dl._is_public_http_target = orig_public
+        if orig_peer is not None:
+            dl._peer_is_public = orig_peer
         srv.shutdown()
 
     assert st.errored is None, f"不该报错：{st.errored}"
@@ -1503,6 +1512,63 @@ def t_device_folder_guard():
         assert "unsafe = {" not in src, f"{mod_name} 里又出现了内联的弱清单"
 
 
+# 25 ------------- F27：.strm 代理的 SSRF 对端核对（DNS 重绑定）
+def t_dlna_strm_peer_check():
+    """评审 F27：`_is_public_http_target()` 与 `http.client` **各解析一次** DNS，
+    攻击者控制权威 DNS 时可让第一次返回公网 IP、第二次返回 127.0.0.1/192.168.x
+    （DNS 重绑定 TOCTOU），把 PC 上的 DLNA 服务当跳板访问内网与回环（8790 宿主 API、
+    8756 字幕、8081/8082）；而且原来只查 `AF_INET`，IPv6 的 ULA/回环完全不受检。
+
+    修法：①解析改 `AF_UNSPEC`（IPv6 一起查）；②连接建立后核对**真实对端地址**
+    （`conn.sock.getpeername()`）——查真实对端才关得掉 TOCTOU 窗口。
+    """
+    dlna_dir = Path(__file__).resolve().parents[1] / "vendor" / "dlna"
+    if str(dlna_dir) not in sys.path:
+        sys.path.insert(0, str(dlna_dir))
+    import vr_dlna as dl
+
+    # ① **先做策略断言**（不依赖新函数，所以对修复前的代码也能给出行为级失败）：
+    #    解析必须是 AF_UNSPEC（原来只查 AF_INET ⇒ IPv6 ULA/回环不受检），
+    #    且代理路径必须在建连后核对真实对端（主路径 + HEAD 回退路径，两处都要）。
+    import inspect
+    src_resolve = inspect.getsource(dl._is_public_http_target)
+    assert "AF_UNSPEC" in src_resolve, \
+        "解析仍是 AF_INET —— IPv6 的 ULA/回环不受检（F27 的另一半没修）"
+    src_mod = (dlna_dir / "vr_dlna.py").read_text(encoding="utf-8")
+    assert src_mod.count("_peer_is_public(conn)") >= 2, \
+        "主路径与 HEAD 回退路径都要核对真实对端（回退会新建一条连接）"
+
+    # ② IPv4/IPv6 的公网判定（IPv6 那条正是原来漏掉的）
+    assert dl._is_public_ip("8.8.8.8") is True
+    assert dl._is_public_ip("127.0.0.1") is False
+    assert dl._is_public_ip("192.168.2.9") is False
+    assert dl._is_public_ip("169.254.1.1") is False
+    assert dl._is_public_ip("::1") is False, "IPv6 回环必须被拒（原来完全不受检）"
+    assert dl._is_public_ip("fd00::1") is False, "IPv6 ULA 必须被拒"
+    assert dl._is_public_ip("fe80::1%eth0") is False, "带 scope 的 IPv6 链路本地必须被拒"
+    assert dl._is_public_ip("2001:4860:4860::8888") is True, "公网 IPv6 不该被误拒"
+    assert dl._is_public_ip("not-an-ip") is False
+
+    # ② 真实对端核对：假连接对象模拟"DNS 重绑定后连到了回环"
+    class _Sock:
+        def __init__(self, peer):
+            self._peer = peer
+
+        def getpeername(self):
+            return (self._peer, 12345)
+
+    class _Conn:
+        def __init__(self, peer=None):
+            self.sock = _Sock(peer) if peer else None
+
+    assert dl._peer_is_public(_Conn("93.184.216.34")) is True, "公网对端应放行"
+    assert dl._peer_is_public(_Conn("127.0.0.1")) is False, \
+        "连到回环必须拒绝——这正是 DNS 重绑定后的形态"
+    assert dl._peer_is_public(_Conn("192.168.2.1")) is False
+    assert dl._peer_is_public(_Conn("::1")) is False
+    assert dl._peer_is_public(_Conn(None)) is False, "拿不到对端时必须 fail-closed"
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -1537,6 +1603,7 @@ if __name__ == "__main__":
     check("F25 DLNA 单根 key 往返（不误剥同名前缀）", t_dlna_single_root_key_roundtrip)
     check("F26 .strm 代理短读关闭连接（不让客户端死等）", t_dlna_strm_proxy_truncation)
     check("F28 设备目录护栏（delete_extra 越界防线）", t_device_folder_guard)
+    check("F27 .strm 代理对端核对（DNS 重绑定/ IPv6）", t_dlna_strm_peer_check)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
