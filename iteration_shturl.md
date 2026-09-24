@@ -3201,3 +3201,58 @@ Inno 脚本不能"单元测试"，但可以**真跑**：脚本从 `installer\set
 而"属性不存在"恰恰是本脚本要断言的成功状态 —— 改走 `PSObject.Properties[$name]`；
 ② 清理逻辑必须放 `finally`，否则断言失败时测试痕迹（Run 值/桌面图标/临时安装）会
 留在用户机器上。
+
+---
+
+## R91 审查报告第十五批修复：F14（流式转写不透传源语言）
+
+### F14 [中] /transcribe/stream 收 lang 却不传给上游 —— 属实，已修
+
+`lang` 从 `/transcribe/stream?lang=en` 一路传到 `stream_bridge.transcribe_stream`，
+在 `_multipart(pcm, ASR_MODEL)` 这一行被丢掉：请求体只有 model/stream/file 三个字段。
+上游于是按自己的缺省语言（日语）解码 —— ja 恰好撞对、en 必错，而且**错得没有任何日志**
+（离线路径早就踩过同一个坑并修好，注释还写着"`/transcribe?lang=en` 在本路径下会被
+静默按日语解码"）。两条路径各修各的，正是"判据写两份"的典型后果。
+
+### 字段名从哪来（本轮把上次搁置的疑点解决了）
+
+上次不敢改是"不知道上游认哪个字段名"。这次不猜，直接读
+`vendor\audiocpp\cpu\audiocpp_server.exe`（R69 随包自带的 CPU 运行时）里**服务自报的
+路由说明**，把附近的字符串原样 dump 出来：
+
+```
+  POST /v1/audio/transcriptions/live?model=<id>
+       OpenAI-style streaming: speech stream_format=sse|audio, transcription stream=true
+       fields: file, model, text, language
+  POST /v1/audio/alignments
+       fields: file, model, language, prompt, stream
+  POST /v1/audio/transcriptions
+       ...
+```
+
+即：文件上传类路由的表单字段里**有 `language`**。取值不另立一套：直接
+`from audiocpp_backend import AUDIOCPP_LANG`（`{"ja": "Japanese", "en": "English"}`），
+与离线路径**同一张表的同一个值** —— 同一次会话里离线/流式两种模式必须按同一种语言
+解码，否则会出现"离线对、流式错"这种最难查的不一致。
+
+### 兜底（这条比修复本身更重要）
+
+上游的帮助文本里 `fields:` 行与路由行的对应关系是靠内存里字符串顺序推断的，而
+"取值到底收 `English` 还是 `en`"更没法在本机验证 —— 验证它要加载 Qwen3-ASR 模型，
+会动用户正在用的显存（R76 的教训：别在用户正在用的环境里反复起实例）。
+所以加了兜底：**上游若回 400/415/422，就去掉 language 字段重发一次**并留一行日志。
+理由是多带一个表单字段的收益是"英语源解码正确"，风险却是"整条流式字幕 4xx 全死"，
+量级完全不对等 —— 有语言更好，没有也不能更差。
+
+### 验证（2 条新检查，`tests/test_pipeline_unit.py`）
+
+| 断言 | 新代码 | 旧代码 |
+|---|---|---|
+| 真实 POST 出来的 multipart body 里含 `name="language"` + `English` | ✅ | ❌ 只有 model/stream/file |
+| `_lang_name` 与离线 `AUDIOCPP_LANG` 同源（含 `EN-US` 归一、`ko`→空串） | ✅ | ❌ `AttributeError`（浅失败，如实记录） |
+| 映射不到 ⇒ 不发该字段；model/stream/file 一个不少 | ✅ | — |
+| 上游 400 时去掉字段重发一次、不把头显打成错误 | ✅ 2 次请求，第 2 次无 language | ❌ 1 次请求（没有重试这回事） |
+
+牙齿证明：`AssertionError: 流式请求没带 language 字段（F14）…实际请求体：b'------vrfsc…
+name="model"…name="stream"…name="file"'` + `带 language 被 400 后应当去掉字段重发一次：1 次`。
+R88 修的 F15（断流关连接）在同一轮里仍然通过，说明这次改 `_open_upstream` 签名没碰坏收尾。
