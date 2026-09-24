@@ -3525,3 +3525,16 @@ FileVersion=1.0.40）。提交 `8cc17b6` 推送后，release `v1.0.40` 建在主
 
 另：Pascal 注释里不能再出现带花括号的路径占位符 —— Pascal 注释不嵌套，里层的 `}` 会提前
 结束注释、把后面的中文当成代码，ISCC 报 "Syntax error"（两处都踩了才编过）。
+
+## Round 72（2026-09-25 凌晨）：ASR 切 GPU（D 盘实机）+ 8791 卡死 bug 首次实录
+
+**用户输入**：手机端地址修复后（用户手动把 PC 改为静态 IP），要求"换成 GPU 跑"ASR。
+
+**做了什么**：
+1. GPU 构建来源：`E:\audiocpp-portable\gpu\`——实测 `audio.cpp 0.7.4、git 5ba81ac（09-13 构建）`，与 D 盘在用 CPU 构建**同一提交**（旁边 `.bak-0712` 才是 7 月老版本）。R70"cpu/gpu 版本可能不同步"的顾虑解除。整目录复制到 `D:\FunScriptCast-Nexus\vendor\audiocpp\gpu\`（2.2GB）。
+2. 配置：`data\subtitle_config.json` 的 `asr.audiocpp.backend` cpu→cuda（备份 `.bak-cpu-20260925`，回滚=改回 cpu）。代码机制本就支持：`audiocpp_backend.py` 的 exe_dir 按 backend 选 `cpu/` 或 `gpu/` 子目录、启动参数 `--backend cuda`；VAD 固定走 cpu（代码写死，合理）。
+3. 验证（真实音频，R68 教训）：CLI 同段 10s 日语音频，GPU 543ms / RTF 0.049，CPU（23 线程公平对比）8.0s / RTF 0.803 ⇒ **16 倍**。走服务全链路（POST /transcribe 裸 PCM，与手机同构）：识别「なんか恥ずかしいです。」→ Sakura 译「总觉得好难为情。」，热后 asr 602ms / mt 243ms。**显存 7674/8188 MiB**（Sakura-7B + ASR 同卡）——能装但只剩 ~500MB，已接近 09-16 双注册 7745 的红线，**勿再往 GPU 加常驻模型**。闲置 15min 自动释放（idle_release_min）。
+
+**撞出的真 bug（未修，待办）**：宿主 8791 LAN API 是单线程 serve_forever。手机 00:30:53 的 status 轮询把处理线程永久卡死（疑似 sub_start 持 RT.lock 做长拉起 + 轮询撞锁阻塞，无超时），此后所有手机请求 TCP 能连、永不被处理——表现恰是"PC 端没响应（Nexus 没开？）"，且日志里毫无痕迹（卡住的请求永远打不出完成日志）。当晚手机 00:30 的 start 请求其实全部 200 成功（地址修复有效），之后的失败全是卡死所致。重启宿主进程即恢复。**修法方向**：状态轮询不依赖 RT.lock / 子进程拉起不持锁 / handler 加超时。logs/host.log 00:30:45–53 是完整证据链。
+
+**遗留**：① 手机端"字幕服务地址"需填新静态 IP `http://192.168.2.2`（端口自动 8791）；② 手机 UI"默认端口 8756"提示文案错误（实际固定 8791），连同"自动预填 DLNA 发现 IP"下个手机包一起改；③ 8791 卡死 bug 修复 + 复现脚本。
