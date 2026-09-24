@@ -3389,3 +3389,86 @@ code 39→40）→ API Key 哨兵全树扫描（通过）→ `make_runtime.ps1`�
 装 1.0.39（或直接点应用内「检查更新」）应看到：发现 v1.0.39 → 下载 Setup（134MB）→
 静默升级并自动重启。**旧版本（≤1.0.38）才有更新可测**；若装的就是 1.0.39，会如实显示
 "已是最新"。
+
+**用户实测结果（随即反馈）**：应用内下载 → 「立即安装」→ **卡在"正在关闭应用程序…"，
+30 秒后转"正在撤销修改…"，升级失败**；改用浏览器下载同一个安装包、双击运行 → 正常升级。
+→ R94 查根因并修。
+
+---
+
+## R94 修复"应用内立即安装"失败：交接进程住在安装目录里，被安装器的重启管理器盯上
+
+### 证据链（先复现，再改）
+
+用户机器上那次失败的 Inno 日志（`%TEMP%\Setup Log 2026-09-24 #011.txt`）写得很清楚：
+
+```
+Setup command line: … /SILENT /SUPPRESSMSGBOXES /DIR=D:\FunScriptCast-Nexus
+RestartManager found an application using one of our files: Python
+Can use RestartManager to avoid reboot? Yes (0)
+Starting the installation process.
+Shutting down applications using our files.          ← 17:13:05
+Some applications could not be shut down.            ← 17:13:35（整整 30 秒后）
+Defaulting to Abort for suppressed message box (Abort/Retry/Ignore):
+  安装程序无法自动关闭所有应用程序。…
+User canceled the installation process.
+Rolling back changes.
+```
+
+而 `data\update\install.log` 只有两行（"等待宿主进程…退出"→"宿主已退出，开始静默安装"），
+说明**交接进程自己活着、宿主确实退了**，卡的是安装器那一步。
+
+根因：老实现的交接进程是 `<安装目录>\runtime\python.exe -c …`。
+Inno 用 RestartManager 判断"谁占着我要覆盖的文件"，而那个 python **自己就跑在安装目录里**
+（它锁着 `runtime\python.exe`，而这正是安装包要覆盖的文件之一）⇒ RM 把它当成占用者；
+它又是安装器的父进程，RM 关不掉 ⇒ 30 秒后按 `/SUPPRESSMSGBOXES` 的默认值 **Abort** ⇒ 回滚。
+"手动双击安装包却正常"也顺理成章：那时安装目录里没有任何属于我们的活进程。
+
+### 修法
+
+1. **换载体**：交接进程改用系统 `cmd.exe`（`C:\Windows\System32\cmd.exe`，不在安装目录里）
+   跑一份写在 `data\update\_apply_update.cmd` 的批处理。`data\` 是安装器**从不覆盖**的目录
+   （见 setup.iss 的 [Files]/[InstallDelete] 说明），所以脚本自己也不会成为"待覆盖文件"。
+2. **等待顺序**（新脚本）：① 等**映像名**消失（不是只等宿主 PID —— onefile 打包的 exe 有
+   引导父进程 + 应用子进程两个同名进程，父进程要等子进程退出并清理临时目录后才消失，
+   而它同样锁着 `<app>\*.exe`）；② 等端口释放（8756 字幕 / 8790 宿主 / 8791 头显面 /
+   audiocpp 8083 —— 子进程都住在安装目录里，端口空了才算真退干净）；③ 才静默安装；
+   ④ 不论成败都 `start "" 应用`（静默安装有 `skipifsilent`，不会自己拉起）。
+3. **顺手修 F30 的一个真 bug**：`DeleteFile` 删刚由安装器创建的 `.lnk` 会因 Shell/索引
+   **短暂占用**而失败，而且是**静默失败**（用户只会觉得"取消勾选没生效"）。
+   实测日志："附加任务：桌面快捷方式删除失败（文件被占用？）：…\FunScriptCast-Nexus.lnk"。
+   现在每 400ms 重试、最多 10 次，仍失败才写日志。
+
+### 验证（三层）
+
+1. **单测**（`tests/test_pipeline_unit.py` 新增 1 项，全套 43 项）钉住生成器的关键约定：
+   不得出现 `runtime\python.exe`、必须 CRLF（LF-only 的批处理在 `goto`/标签处**静默走错** ——
+   第一版就是 LF，跑起来什么都没干、日志一个字没写）、必须纯 ASCII、等待顺序
+   （映像名 → 端口 → 安装）、收尾 `start "" "%APPEXE%"`、路径里的 `%` 要转义成 `%%`。
+2. **沙盒复现 + 修复验证**（`tests/update_inplace.ps1`，用**独立 AppId/名称/目录/快捷方式名**
+   装一份真实载荷的沙盒，全程不碰用户的真实安装）：
+   | 步骤 | 结果 |
+   |---|---|
+   | ② 让安装目录里的 python 当安装器父进程（老拓扑） | **复现**：`RestartManager found an application using one of our files: Python` |
+   | ③ 假"字幕服务"占着 8756，交给新交接脚本 | 等到端口释放（46s）→ 装成功（exit=0）→ 无 RM 命中、无回滚、应用被拉起 |
+3. **静默升级不会误删用户勾选**（`tests/installer_tasks.ps1` 新增第 ⑤ 步）：`/VERYSILENT`
+   不带 `/TASKS` 时 Inno 会沿用上次勾选（卸载注册项里 `Inno Setup: Selected Tasks`），
+   所以 F30 的回删逻辑**不会**在应用内更新时删掉老用户已装的快捷方式/自启 —— 22 项全过。
+
+### 踩过的坑
+
+1. **`Start-Process -Wait` 会连子进程一起等**：测试里让收尾步去 `start "" x.cmd`，cmd 用
+   `cmd /K` 起批处理 ⇒ 子进程永不退出 ⇒ 测试挂了一小时（还在桌面上留了个控制台窗口）。
+   测试里改成写标记文件，生产那行用字符串断言锁住。
+2. **`python -c "…"` 经 `Start-Process -ArgumentList` 会被空格/引号拆坏**（第一次复现步骤
+   就因此静默退化成"正常安装"）。落成 .py 文件再跑。
+3. **`tasklist` 的"没找到"提示是本地化的**（中文系统打印"信息: 没有运行的任务…"），
+   所以判据用**映像名子串匹配**而不是找 "No tasks" 字样。
+4. RM 到底能不能关掉一个无窗口进程并不确定（沙盒里它 2 秒就关掉了父 python；用户那次
+   30 秒也没关掉）。所以别赌 RM 的脾气 —— 交接期**安装目录里不留任何属于我们的进程**。
+
+### 遗留观察
+
+- `data\update\_waiter.py`（1KB，7:28）是**旧实现遗留的调试残片**：内容与老 `-c` 脚本逐字
+  相同，但仓库历史里从没有任何提交写过它（`git log -S"_waiter.py"` 空），新实现也不再需要
+  （现在写 `_apply_update.cmd`）。留着无害，想清可直接删。

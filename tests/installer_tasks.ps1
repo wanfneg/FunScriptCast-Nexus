@@ -148,8 +148,47 @@ $codeUnderTest
         '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
         '/TASKS=', "/DIR=$appDir", "/LOG=$(Join-Path $tmp 'run3.log')")
     Assert-That ($p3.ExitCode -eq 0) "③ 重复取消勾选安装退出码 0（实际 $($p3.ExitCode)）"
+
+    # ── 6. ④ 再勾选装上（为下一步准备）──────────────────────────────────────
+    $p4 = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+        '/TASKS=autostart,desktopicon', "/DIR=$appDir", "/LOG=$(Join-Path $tmp 'run4.log')")
+    Assert-That ($p4.ExitCode -eq 0) "④ 重新勾选安装退出码 0（实际 $($p4.ExitCode)）"
+    Assert-That ([bool](Get-RunValue $testName)) '④ Run 值重新写入'
+    Assert-That (Test-Path $deskLink) '④ 桌面快捷方式重新创建'
+
+    # ── 7. ⑤ **应用内更新走的就是这一步**：静默安装且**不带 /TASKS** ──────────
+    # 这一条是 1.0.39 用户实测踩出来的：应用内「立即安装」是
+    # `setup.exe /SILENT /SUPPRESSMSGBOXES /DIR=<app>`，没有 /TASKS。
+    # 若 Inno 在静默模式下不沿用上次勾选（UsePreviousTasks 失效），那"未勾选"
+    # 就与"用户主动取消勾选"无法区分 —— F30 的回删逻辑会把老用户**已装的**
+    # 桌面快捷方式/自启项在每次静默升级时静默删掉。
+    # 判据：静默升级必须保留上次的选择（用户没做任何选择，就不该被改）。
+    $rvBefore = Get-RunValue $testName
+    $lnkBefore = Test-Path $deskLink
+    $p5 = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+        "/DIR=$appDir", "/LOG=$(Join-Path $tmp 'run5.log')")
+    Assert-That ($p5.ExitCode -eq 0) "⑤ 静默升级（无 /TASKS）退出码 0（实际 $($p5.ExitCode)）"
+    $rvAfter = Get-RunValue $testName
+    $lnkAfter = Test-Path $deskLink
+    Assert-That ($lnkBefore -and $lnkAfter) `
+        '⑤ 静默升级不得删掉用户已选的桌面快捷方式（应用内更新路径）'
+    Assert-That (($rvBefore -and $rvAfter) -or ((-not $rvBefore) -and (-not $rvAfter))) `
+        "⑤ 静默升级不得改动自启项（升级前 '$rvBefore' → 升级后 '$rvAfter'）"
+    # 记录 Inno 眼里"上次勾选"是什么，便于日后核对 UsePreviousTasks 的行为
+    $sel = (Get-ItemProperty -Path $uninsKey -ErrorAction SilentlyContinue).'Inno Setup: Selected Tasks'
+    Write-Host "  （Inno 记录的 Selected Tasks = '$sel'）"
 }
 finally {
+    # 失败时把 Inno 的 run*.log 拷出来留证（成功时不留垃圾）
+    if ($failed.Count -gt 0) {
+        $keep = Join-Path $repo 'tests\_f30_logs'
+        New-Item -ItemType Directory -Force -Path $keep | Out-Null
+        Get-ChildItem $tmp -Include 'run*.log', 'f30test.iss' -Recurse -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $keep -Force
+        Write-Host "  （失败：Inno 日志已留证到 $keep）"
+    }
     # ── 回收：卸载 + 删注册项 + 删临时目录（绝不把测试痕迹留给用户）──────────
     $unins = Join-Path $appDir 'unins001.exe'
     if (Test-Path $unins) {

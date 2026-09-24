@@ -2286,13 +2286,132 @@ def update_download() -> dict:
     return _update_status()
 
 
-def update_install() -> dict:
-    """就地静默升级（R76 重做交接进程）。
+def _update_wait_ports() -> list:
+    """就地更新前需要"等它们释放"的端口。
 
-    旧实现 cmd+ping 有两个实锤问题：DETACHED_PROCESS 下 ping 会自己弹一个
-    可见命令行窗口；固定等 3 秒赌宿主退出速度，赌输就是"安装器撞上还在跑的
-    宿主"静默放弃。现在改用自带运行时起一个**无窗口**等待进程：轮询宿主端口
-    真正释放后再装，装完全程写 data/update/install.log 可追溯。
+    为什么是端口而不是进程名：安装器（Inno）用 RestartManager 判断"谁占着我要覆盖
+    的文件"，而**任何**跑在安装目录里的进程都会被它揪出来（1.0.39 实测：交接进程
+    自己就是 `<app>\\runtime\\python.exe`，于是 RestartManager 报
+    `found an application using one of our files: Python` → 关不掉 → 30 秒后
+    "无法自动关闭所有应用程序" → 中止并回滚）。所以交接期必须保证安装目录里没有
+    活着的进程；这些进程各自握着下面这些端口，端口空了就说明它们真的退干净了。
+    """
+    ports = [SUBTITLE_PORT, UI_API_PORT, LAN_API_PORT]
+    try:
+        ports.append(_audiocpp_port())
+    except Exception:
+        ports.append(8083)
+    out = []
+    for p in ports:
+        try:
+            p = int(p)
+        except Exception:
+            continue
+        if p > 0 and p not in out:
+            out.append(p)
+    return out
+
+
+def _build_update_waiter(appdir: Path, setup: Path, app_exe: Path,
+                         logfile: Path, host_pid: int) -> str:
+    """就地更新的"交接进程"命令（返回要写入 .cmd 的文本）。
+
+    ⚠️ 必须用 **cmd.exe**（系统盘里的 C:\\Windows\\System32\\cmd.exe）而不是
+    `<app>\\runtime\\python.exe`：交接进程要在宿主退出后、安装器运行期间一直活着，
+    而它一旦跑在安装目录里，Inno 的 RestartManager 就会把它算成"占着待覆盖文件的
+    应用"，然后**关不掉它**（它正是安装器的父进程）→ 静默安装 30 秒后放弃并回滚。
+    1.0.39 的用户实测就是这个：卡在"正在关闭应用程序…"→"正在撤销修改…"，
+    而手动双击同一个安装包却正常（那时没有"安装目录里的 python"）。
+
+    .cmd 放在 `data\\` 下（Inno 的 [Files]/[InstallDelete] 从不碰 data\\，见
+    setup.iss 的说明），所以它自己不会成为"待覆盖文件"。整份脚本**只用 ASCII**：
+    中文日志由调用方先写进日志文件（UTF-8），批处理只追加 ASCII 状态行，
+    免得踩批处理的代码页坑。
+
+    ⚠️ 行尾必须是 **CRLF**：cmd.exe 解析 LF-only 的批处理会在 `goto`/标签处
+    静默走错（1.0.40 实测：LF 版本跑起来什么都没干，日志一个字都没写）。
+    """
+    ports = " ".join(str(p) for p in _update_wait_ports())
+    esc = lambda s: str(s).replace("%", "%%")     # 批处理里 % 要写成 %%
+    text = f"""@echo off
+setlocal EnableExtensions
+set "HOSTPID={host_pid}"
+set "EXENAME={esc(app_exe.name)}"
+set "SETUP={esc(setup)}"
+set "APPDIR={esc(appdir)}"
+set "APPEXE={esc(app_exe)}"
+set "LOG={esc(logfile)}"
+set "PORTS={ports}"
+
+rem ---- 1) wait until no process of our own image is left (up to ~120s) ----
+rem Wait by IMAGE NAME, not just the host PID: a onefile-packaged exe runs as TWO
+rem same-named processes (bootstrap parent + app child). The parent disappears only
+rem after the child exits and it cleans the temp dir, and it also locks <app>\*.exe.
+rem Waiting on the PID alone would install inside that window -> RestartManager.
+set /a _n=0
+:wait_host
+tasklist /FI "IMAGENAME eq %EXENAME%" /NH 2>nul | findstr /I /C:"%EXENAME%" >nul
+if errorlevel 1 goto host_gone
+set /a _n+=1
+if %_n% GEQ 120 goto host_timeout
+ping -n 2 127.0.0.1 >nul
+goto wait_host
+:host_timeout
+>>"%LOG%" echo [waiter] TIMEOUT: %EXENAME% (host pid %HOSTPID%) still running, abort
+exit /b 2
+:host_gone
+>>"%LOG%" echo [waiter] host exited (no %EXENAME% process left)
+
+rem ---- 2) wait until child processes release our ports (up to ~120s) ----
+rem (the subtitle / audiocpp services also live inside the install dir; if any of
+rem  them is still alive the installer's RestartManager will stall and abort)
+set /a _n=0
+:wait_ports
+set "_busy="
+for %%P in (%PORTS%) do (
+  netstat -ano | findstr /R /C:":%%P " >nul && set "_busy=1"
+)
+if not defined _busy goto ports_free
+set /a _n+=1
+if %_n% GEQ 120 goto ports_timeout
+ping -n 2 127.0.0.1 >nul
+goto wait_ports
+:ports_timeout
+>>"%LOG%" echo [waiter] WARN: some ports still busy (%PORTS%), trying anyway
+goto do_install
+:ports_free
+>>"%LOG%" echo [waiter] ports released (%PORTS%)
+
+rem ---- 3) silent install (retry once) ----
+:do_install
+"%SETUP%" /SILENT /SUPPRESSMSGBOXES /NORESTART /DIR="%APPDIR%"
+set "_rc=%ERRORLEVEL%"
+>>"%LOG%" echo [waiter] installer attempt 1 exit=%_rc%
+if "%_rc%"=="0" goto restart_app
+ping -n 6 127.0.0.1 >nul
+"%SETUP%" /SILENT /SUPPRESSMSGBOXES /NORESTART /DIR="%APPDIR%"
+set "_rc=%ERRORLEVEL%"
+>>"%LOG%" echo [waiter] installer attempt 2 exit=%_rc%
+
+rem ---- 4) relaunch the app either way (on failure at least the old build works) ----
+:restart_app
+start "" "%APPEXE%"
+>>"%LOG%" echo [waiter] app relaunched
+exit /b 0
+"""
+    return text.replace("\n", "\r\n")
+
+
+def update_install() -> dict:
+    """就地静默升级（R76 重做交接进程；1.0.40 修"交接进程住在安装目录"）。
+
+    旧实现用自带运行时 `<app>\\runtime\\python.exe` 起等待进程，有两个实锤问题：
+      · 安装器撞上还在跑的宿主（固定等 3 秒赌退出速度）→ 静默放弃；
+      · 更致命的是 1.0.39 用户实测：交接进程自己在安装目录里 ⇒ Inno 的
+        RestartManager 把它当成"占着待覆盖文件的应用"，关不掉 → 静默安装中止回滚
+        （界面表现："正在关闭应用程序…"卡 30 秒 → "正在撤销修改…"）。
+    现在交接进程是系统自带的 `cmd.exe` + 一份写在 `data\\update\\` 里的 .cmd：
+    安装目录里不再有任何属于我们的活进程，且会**先等端口释放**再装。
     """
     with _UPDATE_LOCK:
         st = dict(_UPDATE)
@@ -2301,46 +2420,41 @@ def update_install() -> dict:
     if not getattr(sys, "frozen", False):
         return {"ok": False, "error": "开发副本不支持就地安装，请直接运行 dist-installer 里的安装包"}
     app_exe = Path(sys.executable)
-    py = APP_DIR / "runtime" / "python.exe"
     if not app_exe.is_file():
         return {"ok": False, "error": "找不到应用可执行文件"}
-    if not py.is_file():
-        return {"ok": False, "error": "找不到自带运行时 runtime\\python.exe"}
-    # setup.iss 的自启项是 skipifsilent，静默装完不会拉起应用——等待进程补上。
-    code = (
-        "import ctypes, socket, subprocess, sys, time\n"
-        "setup, appdir, app, logfile, port, pid = sys.argv[1:7]\n"
-        "log = open(logfile, 'w', encoding='utf-8')\n"
-        "def say(m):\n"
-        "    log.write(m + chr(10)); log.flush()\n"
-        "def pid_alive(p):\n"
-        "    h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(p))\n"
-        "    if h:\n"
-        "        ctypes.windll.kernel32.CloseHandle(h); return True\n"
-        "    return False\n"
-        "say('等待宿主进程（PID %s）完全退出…' % pid)\n"
-        "deadline = time.time() + 60\n"
-        "while time.time() < deadline and pid_alive(pid):\n"
-        "    time.sleep(0.4)\n"
-        "if pid_alive(pid):\n"
-        "    say('超时：宿主进程仍在运行，放弃安装'); sys.exit(2)\n"
-        "say('宿主已退出，开始静默安装')\n"
-        "rc = 5\n"
-        "for attempt in (1, 2):\n"
-        "    rc = subprocess.run([setup, '/SILENT', '/SUPPRESSMSGBOXES', '/DIR=' + appdir]).returncode\n"
-        "    say('第 %d 次安装器退出码 %d' % (attempt, rc))\n"
-        "    if rc == 0:\n"
-        "        break\n"
-        "    time.sleep(5)\n"
-        "subprocess.Popen([app], cwd=appdir)\n"
-        "say('应用已重新启动')\n"
-    )
+    setup = Path(st["file"])
+    if not setup.is_file():
+        return {"ok": False, "error": f"安装包不在磁盘上：{setup}"}
+    updir = DATA_DIR / "update"
+    try:
+        updir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return {"ok": False, "error": f"无法创建 {updir}：{e}"}
+    log_path = updir / "install.log"
+    cmd_path = updir / "_apply_update.cmd"
+    try:
+        # 中文头由应用写（UTF-8）；批处理只追加 ASCII，避免代码页问题
+        log_path.write_text(
+            "开始就地更新（应用内「立即安装」）\n"
+            f"  安装包：{setup}\n  安装目录：{APP_DIR}\n  宿主 PID：{os.getpid()}\n"
+            "  说明：本进程是系统 cmd.exe，不在安装目录里 —— 这一点很关键：\n"
+            "  若交接进程跑在 <安装目录>\\runtime\\python.exe，安装器的 RestartManager\n"
+            "  会把它当成“占着待覆盖文件的应用”并因关不掉而中止安装（1.0.39 的 bug）。\n",
+            encoding="utf-8")
+        cmd_path.write_text(
+            _build_update_waiter(APP_DIR, setup, app_exe, log_path, os.getpid()),
+            encoding="ascii", errors="replace")
+    except Exception as e:
+        return {"ok": False, "error": f"无法写出交接脚本：{type(e).__name__}: {e}"}
     no_window = 0x08000000                  # CREATE_NO_WINDOW：绝不闪命令行窗口
-    subprocess.Popen(
-        [str(py), "-c", code, str(st["file"]), str(APP_DIR), str(app_exe),
-         str(DATA_DIR / "update" / "install.log"), str(UI_API_PORT), str(os.getpid())],
-        creationflags=no_window, cwd=str(APP_DIR))
-    RT.add_log("更新安装器已接管，应用即将退出…", "warn")
+    try:
+        subprocess.Popen(["cmd.exe", "/c", str(cmd_path)],
+                         creationflags=no_window, cwd=str(APP_DIR),
+                         stdin=subprocess.DEVNULL, close_fds=True)
+    except Exception as e:
+        return {"ok": False, "error": f"无法启动交接进程：{type(e).__name__}: {e}"}
+    RT.add_log("更新安装器已接管（cmd.exe 交接进程，等待进程与端口释放），应用即将退出…",
+               "warn")
     request_quit()
     return {"ok": True}
 

@@ -2332,6 +2332,49 @@ def t_watch_subtitle_ownership():
         (H.RT.sub_proc, H.RT.sub_gen, H.RT.sub_error) = saved
 
 
+# 18 ------------- 就地更新的交接脚本（1.0.39 用户实测：应用内安装卡住回滚）
+def t_update_waiter_script():
+    """用户实测 1.0.39：应用内「立即安装」卡在"正在关闭应用程序…"→"正在撤销修改…"，
+    手动双击同一个安装包却正常。Inno 日志给出根因：
+
+        RestartManager found an application using one of our files: Python
+        Shutting down applications using our files.
+        Some applications could not be shut down.      ← 30 秒后
+        User canceled the installation process. Rolling back changes.
+
+    那个 "Python" 就是老实现的交接进程 —— 它自己跑在 `<app>\\runtime\\python.exe`，
+    于是被 RestartManager 当成"占着待覆盖文件的应用"，而它又是安装器的父进程，
+    关不掉 ⇒ 静默安装中止回滚（沙盒复现见 tests\\update_inplace.ps1）。
+
+    修法不是换参数而是**换载体**：交接进程改用系统 `cmd.exe` 跑一份写在
+    `data\\update\\` 的 .cmd（data\\ 不在安装器覆盖范围内），并先等映像名消失、
+    再等端口释放，最后才装。这里把生成器的关键约定钉死。
+    """
+    import host_server as hs
+
+    appdir = Path(r"E:\fake app\install")
+    exe = appdir / "FunScriptCast-Nexus.exe"
+    txt = hs._build_update_waiter(appdir, Path(r"E:\fake app\setup.exe"), exe,
+                                  appdir / "data" / "update" / "install.log", 4321)
+    assert "runtime\\python.exe" not in txt, "交接脚本又用回安装目录里的 python 了（老 bug）"
+    assert txt.isascii(), "生成的批处理不是纯 ASCII（写盘时按 ascii 编码会变问号）"
+    assert txt.count("\r\n") == txt.count("\n"), "批处理行尾必须是 CRLF（LF-only 会静默走错）"
+    assert 'set "EXENAME=FunScriptCast-Nexus.exe"' in txt, "要按映像名等宿主退出"
+    assert "IMAGENAME eq %EXENAME%" in txt, "等待宿主必须按映像名（onefile 有两个同名进程）"
+    assert "netstat -ano" in txt and 'set "PORTS=' in txt, "必须先等端口释放再安装"
+    assert txt.index("IMAGENAME") < txt.index("netstat -ano"), "顺序：先等进程、再等端口"
+    assert txt.index("netstat -ano") < txt.index("/SILENT"), "顺序：等干净了才装"
+    assert 'start "" "%APPEXE%"' in txt, "装完要把应用拉起来（静默安装不会自动拉起）"
+    assert "SUPPRESSMSGBOXES" in txt and "/NORESTART" in txt, "静默与不重启参数不能丢"
+    ports = hs._update_wait_ports()
+    assert hs.UI_API_PORT in ports and hs.SUBTITLE_PORT in ports and hs.LAN_API_PORT in ports, ports
+    # 含 % 的路径要转义成 %%（否则批处理会当变量展开）
+    txt2 = hs._build_update_waiter(Path(r"E:\pct%20dir"), Path(r"E:\pct%20dir\s.exe"),
+                                   Path(r"E:\pct%20dir\a.exe"),
+                                   Path(r"E:\pct%20dir\l.log"), 1)
+    assert 'set "SETUP=E:\\pct%%20dir\\s.exe"' in txt2, txt2.splitlines()[4]
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -2375,6 +2418,7 @@ if __name__ == "__main__":
     check("F04 ASR 模型路径三级兜底（配置>环境变量>安装目录）", t_asr_model_path_fallbacks)
     check("F05 reap 等字幕服务启动落定（不杀刚认领的 ASR）", t_reap_waits_for_sub_start)
     check("F03 看门狗启动窗口核对归属（主动停止≠启动失败）", t_watch_subtitle_ownership)
+    check("就地更新交接脚本（cmd.exe 而非安装目录里的 python + CRLF + 端口等待）", t_update_waiter_script)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

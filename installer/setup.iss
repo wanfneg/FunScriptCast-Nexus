@@ -268,6 +268,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   RunKey: String;
   DeskLink: String;
+  i: Integer;
 begin
   if CurStep <> ssPostInstall then
     Exit;
@@ -285,12 +286,24 @@ begin
   if not WizardIsTaskSelected('desktopicon') then
   begin
     DeskLink := ExpandConstant('{autodesktop}\{#MyAppName}.lnk');
-    if FileExists(DeskLink) then
+    { ⚠ 删除必须重试：刚由安装器创建的 .lnk 会被 Shell / 搜索索引**短暂占用**，
+      DeleteFile 第一次往往直接返回 False —— 而且是**静默失败**，用户只会看到
+      "取消勾选也没删掉"（正是 F30 要治的病）。实测证据（run2.log，② 步）：
+        "附加任务：桌面快捷方式删除失败（文件被占用？）：…\FunScriptCast-Nexus.lnk"
+      每 400ms 重试一次、最多 10 次（约 4 秒）；仍失败就把原因写进安装日志。 }
+    for i := 1 to 10 do
     begin
+      if not FileExists(DeskLink) then
+        Break;
       if DeleteFile(DeskLink) then
-        Log('附加任务：未勾选桌面快捷方式 → 已回删 ' + DeskLink)
+      begin
+        Log('附加任务：未勾选桌面快捷方式 → 已回删 ' + DeskLink);
+        Break;
+      end;
+      if i = 10 then
+        Log('附加任务：桌面快捷方式删除失败（文件被占用？）：' + DeskLink)
       else
-        Log('附加任务：桌面快捷方式删除失败（文件被占用？）：' + DeskLink);
+        Sleep(400);
     end;
   end;
 end;
