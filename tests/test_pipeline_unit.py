@@ -200,6 +200,12 @@ def t_model_downloader():
     src.write_bytes(payload)
 
     class H(http.server.BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            # F06 的"复核已存在文件"要靠 HEAD 拿远端长度
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(src.read_bytes())))
+            self.end_headers()
+
         def do_GET(self):
             data = src.read_bytes()
             rng = None if self.path.endswith("full") else self.headers.get("Range")
@@ -214,6 +220,12 @@ def t_model_downloader():
                 self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            if self.path.endswith("truncated"):
+                # 声明全长却只发一半就断（模拟连接中断/代理截断）
+                self.wfile.write(body[:len(body) // 2])
+                self.wfile.flush()
+                self.close_connection = True
+                return
             self.wfile.write(body)
 
         def log_message(self, *a):
@@ -244,6 +256,29 @@ def t_model_downloader():
     hs._download_to_file("http://127.0.0.1:%d/full.bin" % port, dest)
     assert dest.read_bytes() == payload, "服务器回 200 时必须推倒重下而不是追加"
     assert not list(dest.parent.glob("*.part"))
+
+    # ---- F06：半截包不得扶正为正式文件 ----
+    dest.unlink()
+    part.unlink(missing_ok=True)
+    raised = None
+    try:
+        hs._download_to_file("http://127.0.0.1:%d/f.bin?truncated" % port, dest)
+    except Exception as e:
+        raised = e
+    assert raised is not None, "声明全长却提前断流时必须报错，不能当成下载完成"
+    if dest.exists():
+        raise AssertionError(
+            f"半截包被扶正成了正式文件（{dest.stat().st_size}/{len(payload)} 字节）"
+            "——再叠上\"已存在就跳过\"就是永久损坏的模型还显示已安装（F06）")
+    assert part.exists() and part.stat().st_size < len(payload), \
+        "半截内容应当留在 .part 里等续传"
+
+    # ---- F06：已存在但大小不符的文件必须被识别出来（而不是 size>0 就跳过）----
+    dest.write_bytes(payload[:500])          # 冒充"半截的已完成文件"
+    assert hs._remote_size("http://127.0.0.1:%d/f.bin" % port) == len(payload), \
+        "HEAD 应当能取到远端长度（复核大小的前提）"
+    assert dest.stat().st_size != hs._remote_size("http://127.0.0.1:%d/f.bin" % port), \
+        "本地半截文件与远端长度必然不等——这正是旧实现漏掉的判据"
     srv.shutdown()
 
 
@@ -791,6 +826,124 @@ def t_circuit_breaker_recovers():
     assert t3.stats["half_open_probes"] > pr, "冷却走完后仍不放行探测"
 
 
+# 14 ------------- F15：流式断流必须关掉上游连接（GeneratorExit 兜底）
+def t_stream_disconnect_closes_upstream():
+    """评审 F15：头显断开/取消时，生成器被 close()，抛进来的是 GeneratorExit
+    （py3.8+ 属 BaseException）——`except Exception` 捕不到，而旧实现又没有 finally
+    ⇒ 上游连接不关、阻塞在 resp.read1 的线程池线程要等到 600s socket 超时才回来；
+    反复断流会堆积死解码、拖慢新字幕，甚至耗尽 anyio 线程池（默认 40）。
+
+    做法：假 HTTPConnection + 假请求体，驱动真实的 transcribe_stream 生成器，
+    让它停在**第一个 yield**（此时正常路径的 conn.close() 还没执行），再 aclose()
+    模拟断流，断言连接被关掉。
+    """
+    import asyncio
+    import http.client as _http_client
+
+    import stream_bridge as sb
+
+    opened = {"closed": False}
+
+    class FakeConn:
+        def __init__(self, *a, **kw):
+            self.closed = False
+
+        def request(self, *a, **kw):
+            pass
+
+        def getresponse(self):
+            class R:
+                status = 200
+                _sent = False
+
+                def read1(self, n):
+                    if self._sent:
+                        return b""
+                    self._sent = True
+                    return b"data: [DONE]\n\n"      # 让生成器走到第一个 yield
+                read = read1
+            return R()
+
+        def close(self):
+            self.closed = True
+            opened["closed"] = True
+
+    orig_conn_cls = _http_client.HTTPConnection
+    orig_body = sb.read_capped_body
+
+    async def _fake_body(request):
+        return b"\x00\x01" * 4000                   # 过 3200 字节门槛
+
+    class FakeReq:
+        pass
+
+    async def _run():
+        resp = await sb.transcribe_stream(FakeReq(), lang="ja", translate=False,
+                                         video_start_ms=0)
+        agen = resp.body_iterator
+        first = await agen.__anext__()              # 跑到第一个 yield 并挂起
+        await agen.aclose()                         # 模拟头显断开
+        return first
+
+    try:
+        sb.http.client.HTTPConnection = FakeConn
+        sb.read_capped_body = _fake_body
+        first = asyncio.run(_run())
+    finally:
+        sb.http.client.HTTPConnection = orig_conn_cls
+        sb.read_capped_body = orig_body
+
+    assert "DONE" in first, f"首个产出应当是收尾事件，实际：{first[:80]}"
+    assert opened["closed"] is True, (
+        "生成器被关闭时没有关掉上游连接（F15）：GeneratorExit/CancelledError 都是 "
+        "BaseException，`except Exception` 捕不到，必须靠 finally 收尾")
+
+
+# 15 ------------- F13：坏配置必须能自恢复；写入必须原子
+def t_config_corruption_recovery():
+    """评审 F13。
+
+    ① 坏 subtitle_config.json 以前会让 `server_app` / `stream_bridge` 的**模块级**
+       `CFG = load_config(...)` 抛异常 ⇒ 服务 import 阶段即崩，宿主只看到 `code 1`，
+       界面上没有任何修复入口。现在必须：隔离坏文件 + 从历史位置/出厂模板重建 + 不抛。
+    ② 写入必须原子（唯一临时名 + os.replace）：原来是固定 `.migrating` 名 + copy2 直写
+       现役文件，两进程并发首启会互相交错写同一个临时文件。
+    """
+    import json as _json
+
+    import user_paths as up
+
+    cfg = up.config_path(SUB)
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("{ 这显然不是 JSON", encoding="utf-8")
+
+    got = up.load_config(SUB)              # ① 绝不能抛
+    assert isinstance(got, dict), f"坏配置必须退化成 dict，实际 {type(got)}"
+    bad = list(cfg.parent.glob("subtitle_config.json.bad-*"))
+    assert bad, "坏配置必须被改名隔离（保留证据），而不是原地反复读崩"
+    # 重建出来的必须是合法 JSON（重建源是历史位置/出厂模板）
+    _json.loads(cfg.read_text(encoding="utf-8"))
+
+    # ② 原子复制：内容一致、不留临时文件
+    src = cfg.parent / "src_probe.json"
+    src.write_text('{"a": 1}', encoding="utf-8")
+    dst = cfg.parent / "dst_probe.json"
+    dst.unlink(missing_ok=True)
+    up._atomic_copy(src, dst)
+    assert dst.read_text(encoding="utf-8") == '{"a": 1}', "原子复制的内容不对"
+    leftovers = list(cfg.parent.glob("dst_probe.json.*.tmp"))
+    assert not leftovers, f"原子复制留下了临时文件：{leftovers}"
+
+    # ③ 源不存在时必须抛（而不是悄悄写出个空文件）
+    raised = False
+    try:
+        up._atomic_copy(cfg.parent / "nope.json", dst)
+    except Exception:
+        raised = True
+    assert raised, "源不存在时应当抛异常"
+    assert not list(cfg.parent.glob("dst_probe.json.*.tmp")), "失败路径也必须清掉临时文件"
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -814,6 +967,8 @@ if __name__ == "__main__":
     check("F01 流式上游地址与 asr.audiocpp 同源", t_stream_asr_upstream_from_config)
     check("F12 ASR 上游自愈 + /health 如实反映死活", t_asr_selfheal_and_health)
     check("F21/F22 熔断半开恢复 + 空译文不计熔断", t_circuit_breaker_recovers)
+    check("F15 流式断流关掉上游连接（GeneratorExit 兜底）", t_stream_disconnect_closes_upstream)
+    check("F13 坏配置自恢复 + 写入原子", t_config_corruption_recovery)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)

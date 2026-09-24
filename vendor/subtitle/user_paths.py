@@ -54,6 +54,7 @@ import json
 import os
 import shutil
 import threading
+import time
 from pathlib import Path
 
 CFG_NAME = "subtitle_config.json"
@@ -218,8 +219,10 @@ def _migrate_once(name: str, base_dir: Path) -> bool:
     """把该数据从最近的历史位置迁到 `data\\`（目标已存在则跳过）。
 
     失败只记不抛——启动不能因为迁移挂掉（回退读历史位置，功能不受影响）。
-    写临时文件再 os.replace：两个进程同时迁（宿主与服务可能并发首启）时，
-    最坏是各写一份同样内容，不会留下半截文件。
+    **写临时文件再 os.replace**（评审 F13）：两个进程同时迁（宿主与服务可能并发首启）时，
+    最坏是各写一份同样内容，不会留下半截文件。临时名带 pid/随机后缀：此前是固定的
+    `.migrating`，两进程会互相交错写**同一个**临时文件，先完成者的 replace 可能把
+    对方写坏的半截内容扶正。
     """
     src, dst = _legacy_source(name, base_dir), user_dir() / name
     key = str(dst).lower()
@@ -231,15 +234,30 @@ def _migrate_once(name: str, base_dir: Path) -> bool:
         if dst.exists() or src is None:
             return dst.exists()
         _ensure_dir()
-        tmp = dst.with_suffix(dst.suffix + ".migrating")
-        shutil.copy2(src, tmp)
-        os.replace(tmp, dst)
+        _atomic_copy(src, dst)
         print(f"[paths] 已迁移用户数据：{src} → {dst}", flush=True)
         return True
     except Exception as e:
         print(f"[paths] 迁移 {name} 失败（忽略，回退读历史位置）：{type(e).__name__}: {e}",
               flush=True)
         return False
+
+
+def _atomic_copy(src: Path, dst: Path) -> None:
+    """原子复制：写唯一临时名 → os.replace。
+
+    唯一后缀（pid + 纳秒）解决"固定 .migrating 互相交错"（评审 F13）；失败时清掉自己的
+    临时文件，绝不在目标位置留下半截内容。
+    """
+    tmp = dst.with_name(f"{dst.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)      # replace 成功后它已不存在
+        except OSError:
+            pass
 
 
 # ---- 一次性补救扫描（布局 v3 = 用户数据落在安装目录 data\ 的那一版）-------------------
@@ -293,7 +311,11 @@ def _recover_layout(base_dir: Path) -> None:
                 for src in _legacy_sources(CFG_NAME, base_dir):
                     if _openai_key(src)[0]:
                         _backup(dst)
-                        shutil.copy2(src, dst)
+                        # **原子写**（评审 F13）：此处原来是 shutil.copy2 直写现役配置，
+                        # 与 _migrate_once 的 tmp+os.replace 不一致——中途失败就留下半截
+                        # JSON，而坏 subtitle_config.json 会让 server_app 在 import 阶段
+                        # 就崩（模块级 CFG = load_config(...)），界面还没有修复入口。
+                        _atomic_copy(src, dst)
                         print(f"[paths] 补救：配置的 api_key 为空而 {src.parent} 里有值 "
                               f"→ 采纳它（原文件已备份 {dst.name}.bak-layout-v3）", flush=True)
                         break
@@ -338,11 +360,46 @@ def ensure_user_data(base_dir: Path) -> dict:
 
 
 def load_config(base_dir: Path) -> dict:
-    """读配置（`data\\` 优先，缺失时迁/读历史位置）。解析失败抛异常，由调用方决定怎么办。
+    """读配置（`data\\` 优先，缺失时迁/读历史位置）。
 
-    **顺带把该迁的都迁一遍**：把迁移收进这一个入口，任何读配置的路径都拿到
-    完整状态，不会出现"迁移只做了一半"的静默半迁移。
+    **坏配置自恢复**（评审 F13）：解析失败时把坏文件改名隔离、再从历史位置/出厂模板
+    重建，实在没有就返回 `{}`（各消费方都有代码内默认值）。此前是直接把异常抛给调用方，
+    而 `server_app` / `stream_bridge` 都是**模块级** `CFG = load_config(...)` ⇒ 一个坏
+    subtitle_config.json 让服务 import 阶段就崩，宿主只看到 `code 1`，界面上没有任何
+    修复入口（对照 integrated_settings 早有 refuse+backup 防护）。
+
+    顺带把该迁的都迁一遍：把迁移收进这一个入口，任何读配置的路径都拿到完整状态，
+    不会出现"迁移只做了一半"的静默半迁移。
     """
     base = Path(base_dir)
     ensure_user_data(base)
-    return json.loads(config_path(base).read_text(encoding="utf-8"))
+    p = config_path(base)
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        bad = _quarantine(p, e)
+        # 隔离后按"首次迁移"的逻辑重建：历史位置里那份通常还是好的（出厂模板也有）。
+        _migrated.discard(str(p).lower())
+        _layout_checked.discard(str(base).lower())
+        ensure_user_data(base)
+        try:
+            cfg = json.loads(config_path(base).read_text(encoding="utf-8"))
+            print(f"[paths] 已从历史位置/出厂模板重建配置（坏的留作 {bad.name}）", flush=True)
+            return cfg
+        except Exception:
+            print("[paths] 配置重建失败，本次按代码内默认值运行（各消费方都有默认值）",
+                  flush=True)
+            return {}
+
+
+def _quarantine(p: Path, err: Exception) -> Path:
+    """把解析失败的配置文件改名隔离（保留证据、不阻断启动）。返回隔离后的路径。"""
+    bad = p.with_name(f"{p.name}.bad-{time.strftime('%Y%m%d-%H%M%S')}")
+    try:
+        os.replace(p, bad)
+        print(f"[paths] ⚠️ 配置文件解析失败（{type(err).__name__}: {err}）→ 已隔离为 "
+              f"{bad.name}，将从历史位置/出厂模板重建", flush=True)
+    except OSError as e:
+        print(f"[paths] ⚠️ 配置文件解析失败且隔离失败（{e}）：{type(err).__name__}: {err}",
+              flush=True)
+    return bad

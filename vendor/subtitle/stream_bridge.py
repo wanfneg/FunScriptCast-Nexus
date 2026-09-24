@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import asyncio
 import json
 import re
 import sys
@@ -136,6 +137,11 @@ _last_ctx = {"lang": "", "src": "", "zh": ""}
 # 标签提前补偿：块内比例摊时假设语音铺满整块，实测相对人工字幕整体偏早
 # （全片评测中位 −2.7s），统一后移让"出现时刻"更贴近说话时刻。
 _LABEL_OFFSET_MS = 2500
+
+# 流式上游两次读到数据之间的静默上限（评审 F15）。一块 3s 音频正常 1s 内流完；
+# 超过这个时长说明上游卡住/死了，早点了结对大家都好。首次模型懒加载发生在**请求之前**
+# 的连接建立阶段，不受本值影响（见读取循环处的注释）。
+_STREAM_IDLE_SEC = 120.0
 
 
 def _display_zh(seg: dict) -> str:
@@ -384,8 +390,17 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
                 return
             buf = b""
             while True:
-                chunk = await run_in_threadpool(
-                    lambda: resp.read1(4096) if hasattr(resp, "read1") else resp.read(4096))
+                # 帧间空闲上限（评审 F15）：原来只有 socket 的 600s 硬超时——一块 3s 音频
+                # 正常 1s 内就流完，600s 等于把"上游卡住"的代价放大 600 倍。
+                # 这里只限制**两次读到数据之间的静默**，不动 socket 超时：首次请求要等上游
+                # 懒加载模型，收紧 socket 超时会把那条正常路径一起误杀。
+                try:
+                    chunk = await asyncio.wait_for(run_in_threadpool(
+                        lambda: resp.read1(4096) if hasattr(resp, "read1") else resp.read(4096)),
+                        timeout=_STREAM_IDLE_SEC)
+                except asyncio.TimeoutError:
+                    # finally 会关连接 → 那个还阻塞在 recv 上的线程随即返回，不会永久占位
+                    raise RuntimeError(f"上游 {_STREAM_IDLE_SEC}s 无数据（流式识别卡住）")
                 if not chunk:
                     break
                 buf += chunk
@@ -455,6 +470,20 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
             except Exception:
                 pass
             yield "data: " + json.dumps({"type": "error", "error": str(exc)}, ensure_ascii=False) + "\n\n"
+        finally:
+            # **断流兜底**（评审 F15）：头显断开 / 客户端取消时，生成器被 close()，抛进来的
+            # GeneratorExit 与 CancelledError 都是 BaseException，上面的 `except Exception`
+            # **捕不到**，而此前又没有 finally —— 于是上游连接不关、`resp.read1` 占住的
+            # 线程池线程要一直阻塞到上游解完整块或 600s socket 超时；反复断流会堆积死解码、
+            # 拖慢新字幕，甚至耗尽 anyio 线程池（默认 40），而 _INFLIGHT>0 还会抑制空闲回收。
+            # 关连接同时也是**解锁手段**：阻塞在 recv 上的读线程会因 socket 关闭而立刻返回。
+            # ⚠ 只做清理，**绝不能在 finally 里 yield**（GeneratorExit 期间 yield 会抛
+            # RuntimeError: generator ignored GeneratorExit），尾部那两条 yield 留在正常/异常路径。
+            try:
+                if conn is not None:
+                    conn.close()      # 幂等：正常/异常路径已关过也没关系
+            except Exception:
+                pass
         _log_done()
         yield "data: [DONE]\n\n"
 

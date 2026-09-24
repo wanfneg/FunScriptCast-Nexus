@@ -2611,3 +2611,69 @@ F16 鉴权与过载防护）以及 §4.4 的模型接入（Parakeet/SenseVoice/Q
 
 ⚠️ 本轮只改了 `ui/app.js`，**用户已安装的 D 盘实例不会自动生效**：按 R75 的说法 ui\ 可热修
 三处（仓库/dist-app/D 盘）刷新即生效，无需重编 exe —— 需要时同步过去即可。
+
+---
+
+## R78 审查报告第二批修复：F06 下载完整性 / F15 断流兜底 / F13 配置原子化
+
+继续按 `docs/代码审查与模型评估报告-2026-09-24.md` 第五节优先级推进。同样每条先核对
+当前代码、写复现测试、改完把源码还原确认测试**行为级**失败。
+
+### F06 [中] 下载链路无完整性校验 —— 属实，已修
+
+三处都核实了：
+1. `_download_once` 末尾只有 `if done == 0: raise`，**`done < total` 的半截包照样
+   `os.replace` 扶正**（而 1398 行对"续传已完整"的判据写得很清楚，末尾这处漏了）；
+2. `_model_dl_worker` 里"已存在就跳过"只看 `size > 0` ⇒ 截断的 model.safetensors
+   永远显示「已安装」、永远不重下；
+3. zip 形态解压后只查 `llama-server.exe` 在不在。
+
+修法：①末尾补 `if total and done < total: raise`（半截只留 `.part`，下次换通道还能续传）；
+②新增 `_remote_size()`（HEAD 取 Content-Length，通道顺序与下载一致），已存在文件大小
+不符就删掉重下，并 `RT.add_log` 告警；拿不到远端长度（分块/不支持 HEAD）仍按旧行为放行
+——**不因为无法判断就删用户下好的文件**。
+未做：MODELS_CATALOG 加 digest（需要各远端文件的真实哈希，本轮拿不到；上面两条已覆盖
+"断流即永久损坏"这个实际故障形态）。
+
+牙齿证明：桩服务器"声明全长却只发一半" → 新代码 `raise` 且 `dest` 不存在；
+旧代码报 `AssertionError: 声明全长却提前断流时必须报错，不能当成下载完成`。
+
+### F15 [中] 流式断流不关上游连接 —— 属实，已修
+
+`gen()` 只有正常路径 `conn.close()` 和 `except Exception`，而 `GeneratorExit` /
+`CancelledError` 在 py3.8+ 都是 **BaseException**，捕不到；也**没有 finally**。
+头显断开后阻塞在 `resp.read1` 的线程池线程要等到 600s socket 超时才回来。
+
+修法：①加 `finally: conn.close()`——这同时是**解锁手段**（socket 关闭会让阻塞中的读线程
+立刻返回）；⚠ 注释里写明**绝不能在 finally 里 yield**（GeneratorExit 期间 yield 会抛
+`generator ignored GeneratorExit`），尾部 yield 留在正常/异常路径；
+②新增帧间空闲上限 `_STREAM_IDLE_SEC = 120s`（`asyncio.wait_for` 包住每次 `read1`），
+**不动 socket 的 600s 超时**——首次请求要等上游懒加载模型，收紧 socket 超时会把那条
+正常路径一起误杀。这块是与报告建议的差异，故记在此。
+
+牙齿证明：假 HTTPConnection + 假请求体，用真实的 `transcribe_stream` 生成器停在第一个
+yield（此时正常路径还没关连接）再 `aclose()` 模拟断流 —— 旧代码
+`AssertionError: 生成器被关闭时没有关掉上游连接`。
+
+### F13 [中] 配置两条非原子写入 + 坏配置无修复入口 —— 属实，已修
+
+`_recover_layout` 用 `shutil.copy2` 直写**现役**配置（与同文件 `_migrate_once` 的
+tmp+os.replace 不一致）；`.migrating` 是**固定**临时名，两进程并发首启会互相交错写同一个
+临时文件；坏 JSON 让 `server_app`/`stream_bridge` 的模块级 `CFG = load_config(...)` 抛异常
+⇒ 服务 import 阶段即崩、宿主只看到 code 1、界面无修复路径。
+
+修法：①新增 `_atomic_copy()`（唯一临时名 = pid + 纳秒，失败清掉自己的临时文件），迁移与
+补救扫描都改走它；②`load_config` 解析失败时 `_quarantine()` 把坏文件改名成
+`*.bad-YYYYmmdd-HHMMSS` 保留证据，再从历史位置/出厂模板重建；实在没有再返回 `{}`
+（各消费方都有代码内默认值）——**服务永远能起来**，这是与 integrated_settings 早就有的
+refuse+backup 防护对齐。
+
+牙齿证明：写坏配置后 `load_config` 必须返回 dict 并留下 `.bad-*` —— 旧代码直接
+`JSONDecodeError` 冒出来（= 服务崩在 import）。
+
+### 本轮未做
+
+**F16（8756 默认无鉴权/无过载防护/无 Origin 栅栏）** 留到下一轮：其中"默认生成随机 token"
+是**三端契约**（docs/cross-repo-consistency.md 列为契约但未实现），单方面改默认值会让
+头显连不上——需要先确定下发通道，不是能顺手改的。可先做的是 Origin 栅栏 + 并发上限 +
+收紧 100MB 体上限这三项与本机相关、不涉及跨端契约的部分。

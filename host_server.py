@@ -1417,9 +1417,42 @@ def _download_once(opener, url: str, dest: Path, prog=None) -> None:
                         prog(done, total)
         if done == 0:
             raise RuntimeError("服务器没有返回数据：" + url)
+        # **半截包不得扶正**（评审 F06）：旧实现无条件 os.replace，于是读循环因连接中断
+        # 提前 break 时，一个 done<total 的残缺文件被当成完整文件落到正式名字上；再叠上
+        # 下面"已存在就跳过"的判据，一次断流 = 永久损坏的模型，界面还显示「已安装」。
+        # 这里只留 .part：下次（含换通道）能续传，且 .part 不会被当成正式文件使用。
+        if total and done < total:
+            raise RuntimeError(
+                f"下载不完整（{done}/{total} 字节，连接提前中断）：{url}")
         os.replace(part, dest)
         return
     raise RuntimeError("下载重试仍失败：" + url)
+
+
+def _remote_size(url: str, timeout: int = 20) -> int:
+    """HEAD 取远端 Content-Length（拿不到返回 0 = 无法判断）。
+
+    用来复核**已存在**的本地文件是否完整（评审 F06）：旧判据只看 `size > 0` 就跳过，
+    于是一次断流留下的半截 model.safetensors 永远显示「已安装」、永远不重下。
+    通道顺序与 _download_to_file 一致（GitHub 走代理优先），拿不到长度就返回 0，
+    调用方按旧行为放行——不因为拿不到长度就把用户的文件删掉重下。
+    """
+    import urllib.parse
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    github = host == "github.com" or host.endswith(".github.com")
+    openers = ([_DL_OPENER_SYSTEM, _DL_OPENER_DIRECT] if github
+               else [_DL_OPENER_DIRECT, _DL_OPENER_SYSTEM])
+    for opener in openers:
+        try:
+            req = urllib.request.Request(url, method="HEAD",
+                                         headers={"User-Agent": "FunScriptCast-Nexus"})
+            with opener.open(req, timeout=timeout) as r:
+                cl = int(r.headers.get("Content-Length") or 0)
+            if cl > 0:
+                return cl
+        except Exception:
+            continue
+    return 0
 
 
 def _download_to_file(url: str, dest: Path, prog=None) -> None:
@@ -1526,7 +1559,20 @@ def _model_dl_worker(e: dict) -> None:
         for i, f in enumerate(e["files"]):
             dest = base / f["rel"]
             if dest.is_file() and dest.stat().st_size > 0:
-                continue                     # 重试/断点：已完成的文件跳过
+                # 复核大小（评审 F06）：只查 size>0 会让断流留下的半截文件永远"已安装"。
+                # 拿不到远端长度（分块/不支持 HEAD）就按旧行为放行，绝不因为无法判断而
+                # 删掉用户下好的文件。
+                want = _remote_size(f["url"])
+                if want and dest.stat().st_size != want:
+                    print("[models] %s 大小不符（本地 %d / 远端 %d）→ 删除重下"
+                          % (f["rel"], dest.stat().st_size, want), flush=True)
+                    RT.add_log("检测到不完整文件，重新下载：" + f["rel"], "warn")
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                else:
+                    continue                 # 重试/断点：已完成的文件跳过
 
             def prog(done, total, _i=i):
                 frac = (_i + (done / total if total else 0.0)) / n
