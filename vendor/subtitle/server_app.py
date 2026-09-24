@@ -118,9 +118,23 @@ _BOOT_TS = time.time()
 # 服务就永远回收不掉，等于又变回常驻。
 # ⚠️ 打点在请求**结束**（finally）而不是开始：一次超长请求（可能超过
 # idle_release_min）若只打开始点，reaper 会在它处理到一半时把它杀掉。
-_LAST_REQ_TS = _BOOT_TS
+#
+# 两个时钟（评审 F18）：**空闲判定必须用单调钟**——墙钟被 NTP 校正/双系统回拨时
+# `idle` 会变负 ⇒ 那约 3GB 的模型显存一直驻留到墙钟追回来；前跳超过 idle_release_min
+# 又会在两块请求之间把**正在使用**的服务杀掉。对外展示的 `last_req_ts` 必须仍是
+# **墙钟**（PC 界面按 `Date.now()/1000 - last_req_ts` 算"多久以前"），所以两个都打。
+_LAST_REQ_MONO = time.monotonic()   # 只用于空闲回收判定
+_LAST_REQ_WALL = _BOOT_TS           # 只用于 /health 对外展示
 _INFLIGHT = 0                    # 正在处理中的 /transcribe 数
 _INFLIGHT_LOCK = threading.Lock()
+
+
+def _touch_request_clock() -> None:
+    """一次识别请求收尾时同时刷新两个时钟（见上面两个变量的注释）。"""
+    global _LAST_REQ_MONO, _LAST_REQ_WALL
+    _LAST_REQ_MONO = time.monotonic()
+    _LAST_REQ_WALL = time.time()
+
 _MT_WARM = 0.0                   # 翻译预热完成时刻（0=未完成）：llama 端口就绪
                                  # ≠ 翻译热了，首条真实请求还欠系统提示词 prefill
                                  # + 首包 CUDA 路径的账（R63.2，预热请求补上后置时间戳）
@@ -173,7 +187,9 @@ async def _idle_reaper() -> None:
             inflight = _INFLIGHT
         if inflight > 0:
             continue
-        idle = time.time() - _LAST_REQ_TS
+        # 单调钟（评审 F18）：墙钟被回拨时 idle 会变负而永远不回收；前跳超过阈值
+        # 又会在两块请求之间把正在用的服务杀掉。判定只看单调钟。
+        idle = time.monotonic() - _LAST_REQ_MONO
         if idle < mins * 60:
             continue
         with _INFLIGHT_LOCK:      # 复核 + 退出原子化：在飞请求的打点会被这把锁挡住
@@ -552,8 +568,11 @@ def health():
         "translate_backend": state["translator"].backend if state["translator"] else None,
         "translate": state["translator"].describe() if state["translator"] else None,
         # 空闲回收透明化（R54）：PC 端界面用这两个字段显示"最近活动 + 还有多久
-        # 自动回收"，用户能看出服务为什么自己停了（而不是像凭空消失）
-        "last_req_ts": _LAST_REQ_TS,
+        # 自动回收"，用户能看出服务为什么自己停了（而不是像凭空消失）。
+        # last_req_ts 必须是**墙钟**（界面按 Date.now()/1000 - last_req_ts 算"多久以前"），
+        # 而空闲判定用的是单调钟（F18）——两者在 _touch_request_clock() 里一起打点。
+        "last_req_ts": _LAST_REQ_WALL,
+        "idle_sec": round(time.monotonic() - _LAST_REQ_MONO, 1),
         "idle_release_min": _idle_release_min(),
         # 翻译是否已用真实提示词预热（R63.2）：ready 只保证识别模型加载完，
         # 这里的时间戳非 0 才说明首句翻译不会再付 prefill 的账
@@ -719,33 +738,39 @@ def _hybrid_transcribe(pcm, lang, video_start_ms, seg_cfg,
 @app.post("/transcribe")
 async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0,
                      keep_from_ms: int = 0, translate: bool = True, partial: int = 0):
-    global _LAST_REQ_TS, _INFLIGHT
-    # 先看 Content-Length 再读体：超大请求直接拒收，不先把几百 MB 读进内存。
-    # 没有 Content-Length（分块传输）时由 read_capped_body 兜底——它边读边累加，
-    # 超限立刻中断，与 /transcribe/stream 共用同一实现（两个入口必须同一口径）。
-    cl = request.headers.get("content-length", "")
-    oversize = {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
-                "skipped": True, "error": f"请求体超过上限 {MAX_BODY_BYTES // (1024*1024)}MB"}
-    if cl.isdigit() and int(cl) > MAX_BODY_BYTES:
-        oversize["recommended_chunk_sec"] = _recommended_chunk_sec()
-        return oversize
-    from stream_bridge import read_capped_body
-    body = await read_capped_body(request, MAX_BODY_BYTES)
-    if body is None:
-        oversize["recommended_chunk_sec"] = _recommended_chunk_sec()
-        return oversize
+    global _LAST_REQ_MONO, _LAST_REQ_WALL, _INFLIGHT
+    # 进 handler **第一件事**就是自增在飞计数（评审 F10）。旧顺序是"先读体再自增"：
+    # 首个请求正在上传那几十~几百 KB 时 _INFLIGHT 仍是 0，空闲回收的临界点就会在
+    # 这一刻把服务 os._exit 掉 —— 丢一块 + 服务重启数十秒（/transcribe/stream 本来就是
+    # 先自增再读体，两个入口口径还不一致）。自增放这里，超大/超长提前返回也走 finally 归还。
     with _INFLIGHT_LOCK:
         _INFLIGHT += 1
     try:
+        # 先看 Content-Length 再读体：超大请求直接拒收，不先把几百 MB 读进内存。
+        # 没有 Content-Length（分块传输）时由 read_capped_body 兜底——它边读边累加，
+        # 超限立刻中断，与 /transcribe/stream 共用同一实现（两个入口必须同一口径）。
+        cl = request.headers.get("content-length", "")
+        oversize = {"language": None, "segments": [], "asr_ms": 0.0, "mt_ms": 0.0,
+                    "skipped": True, "error": f"请求体超过上限 {MAX_BODY_BYTES // (1024*1024)}MB"}
+        if cl.isdigit() and int(cl) > MAX_BODY_BYTES:
+            oversize["recommended_chunk_sec"] = _recommended_chunk_sec()
+            return oversize
+        from stream_bridge import read_capped_body
+        body = await read_capped_body(request, MAX_BODY_BYTES)
+        if body is None:
+            oversize["recommended_chunk_sec"] = _recommended_chunk_sec()
+            return oversize
         result = await _transcribe_impl(body, lang, video_start_ms, keep_from_ms, translate,
                                         partial == 1)
         # 契约 B：每个应答都带档位建议（含"音频过短"等提前返回，都会流经这里）
         result["recommended_chunk_sec"] = _recommended_chunk_sec()
         return result
     finally:
+        # **先刷时钟再减计数**（评审 F10）：反过来时，超长请求在"已减计数、时钟未刷"的
+        # 间隙里会被判成空闲而遭 os._exit（两块请求正好卡在临界点上）。
+        _touch_request_clock()
         with _INFLIGHT_LOCK:
             _INFLIGHT -= 1
-        _LAST_REQ_TS = time.time()   # 请求结束才刷新空闲时钟（见 _LAST_REQ_TS 注释）
 
 
 async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
@@ -850,13 +875,14 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
 async def transcribe_stream(request: Request, lang: str = "ja", translate: bool = True, video_start_ms: int = 0):
     # 空闲回收的打点与在飞计数必须覆盖流式路由：此前只有 /transcribe 打点，
     # 连续看片 15 分钟后 reaper 会在播放中途把服务杀掉（流式请求再密也救不了）。
-    global _LAST_REQ_TS, _INFLIGHT
+    global _LAST_REQ_MONO, _LAST_REQ_WALL, _INFLIGHT
     with _INFLIGHT_LOCK:
         _INFLIGHT += 1
     try:
         from stream_bridge import transcribe_stream as _impl   # 同目录，复用已验证实现
         return await _impl(request, lang, translate, video_start_ms)
     finally:
+        # 与 /transcribe 同口径：先刷时钟再减计数（评审 F10）
+        _touch_request_clock()
         with _INFLIGHT_LOCK:
             _INFLIGHT -= 1
-        _LAST_REQ_TS = time.time()   # 请求结束才刷新空闲时钟（与 /transcribe 同语义）

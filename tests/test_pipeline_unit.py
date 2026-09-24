@@ -1091,6 +1091,87 @@ def t_settings_cache_pair():
     assert H.load_settings().get("dlna_port") == 4242, "文件变了以后必须能读到新值"
 
 
+# 18 ------------- F10 + F18：在飞计数口径与空闲时钟
+def t_inflight_and_idle_clock():
+    """评审 F10（在飞计数/时钟顺序）+ F18（空闲判定要用单调钟）。
+
+    ① `/transcribe` 进 handler 就要自增在飞计数：旧顺序是"先读体再自增"，首个请求正在
+       上传时 _INFLIGHT 仍是 0，空闲回收的临界点会在这时把服务 os._exit 掉（丢一块 +
+       重启数十秒）；而 /transcribe/stream 本来就是先自增，两个入口口径还不一致。
+    ② finally 里必须**先刷时钟再减计数**：反过来时超长请求在"已减计数、时钟未刷"的
+       间隙里会被判成空闲而遭 os._exit。
+    ③ 空闲判定必须用单调钟（墙钟回拨 ⇒ 永不回收、显存常驻；前跳 ⇒ 误杀在用服务），
+       而对外的 last_req_ts 仍须是墙钟（界面按 Date.now()/1000 - last_req_ts 算）。
+    """
+    import asyncio
+    import time as _time
+
+    import server_app as sa
+    import stream_bridge as sb
+
+    orig_read, orig_impl = sb.read_capped_body, sa._transcribe_impl
+    orig_lock = sa._INFLIGHT_LOCK
+    during_read = []
+
+    async def _fake_read(req, cap=None):
+        with sa._INFLIGHT_LOCK:                 # 读体**期间**观察在飞计数
+            during_read.append(sa._INFLIGHT)
+        return b"\x00\x01" * 4000
+
+    async def _fake_impl(body, lang, vs, kf, tr, want_partial=False):
+        return {"language": lang, "segments": [], "asr_ms": 0.0, "skipped": True}
+
+    class SpyLock:
+        """记录"每次释放 _INFLIGHT_LOCK 那一刻"的空闲时钟值。"""
+
+        def __init__(self, real):
+            self._real = real
+            self.snapshots = []
+
+        def __enter__(self):
+            self._real.acquire()
+            return self
+
+        def __exit__(self, *a):
+            self.snapshots.append(sa._LAST_REQ_MONO)
+            self._real.release()
+            return False
+
+    class FakeReq:
+        headers = {"content-length": "8000"}
+
+    spy = SpyLock(orig_lock)
+    try:
+        sb.read_capped_body = _fake_read
+        sa._transcribe_impl = _fake_impl
+        sa._INFLIGHT_LOCK = spy
+        # 把空闲时钟推老：如果 finally 里"先减计数后刷时钟"，最后一次快照就会看到老值
+        sa._LAST_REQ_MONO = _time.monotonic() - 600
+        before = sa._INFLIGHT
+        out = asyncio.run(sa.transcribe(FakeReq(), lang="ja", video_start_ms=0,
+                                        keep_from_ms=0, translate=False, partial=0))
+    finally:
+        sb.read_capped_body, sa._transcribe_impl = orig_read, orig_impl
+        sa._INFLIGHT_LOCK = orig_lock
+
+    assert out.get("skipped") is True, f"假实现应当返回结果：{out}"
+    assert during_read and during_read[0] >= 1, \
+        f"读体期间在飞计数应当已经 >0（旧实现是读完之后才自增）：{during_read}"
+    assert sa._INFLIGHT == before, f"计数必须归还：{sa._INFLIGHT} vs {before}"
+    last_snapshot = spy.snapshots[-1]
+    assert last_snapshot > _time.monotonic() - 5, (
+        "减计数那一刻空闲时钟还是旧的 ⇒ finally 里把顺序写反了（F10：超长请求会被"
+        f"误判空闲而 os._exit）；快照={last_snapshot:.1f}")
+    # ③ 两个时钟都在请求收尾时刷新：内部单调钟 + 对外墙钟
+    assert abs(sa._LAST_REQ_WALL - _time.time()) < 5, "对外墙钟没有刷新（界面会显示错的活动时间）"
+    assert sa._LAST_REQ_MONO <= _time.monotonic(), "单调钟不应超前"
+    # reaper 的判据必须建立在单调钟上（源码级检查：墙钟减法一旦回来就是 F18 复发）
+    import inspect
+    src = inspect.getsource(sa._idle_reaper)
+    assert "time.monotonic() - _LAST_REQ_MONO" in src, \
+        "空闲判定又用回墙钟了（时钟回拨会永不回收、前跳会误杀在用服务）"
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -1118,6 +1199,7 @@ if __name__ == "__main__":
     check("F13 坏配置自恢复 + 写入原子", t_config_corruption_recovery)
     check("F16 8756 跨站栅栏 + 过载快速失败（不涉及跨端契约部分）", t_lan_open_guards)
     check("F02 设置缓存 key/data 成对（杜绝错配命中）", t_settings_cache_pair)
+    check("F10/F18 在飞计数口径 + 空闲判定用单调钟", t_inflight_and_idle_clock)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
