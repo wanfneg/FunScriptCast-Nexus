@@ -1213,6 +1213,178 @@ def t_stream_disconnect_closes_upstream():
         "BaseException，`except Exception` 捕不到，必须靠 finally 收尾")
 
 
+# 14b ------------ F14：流式转写必须把源语言透传给上游
+def t_stream_passes_language_upstream():
+    """评审 F14。
+
+    `/transcribe/stream?lang=en` 的 lang 此前一路传到 stream_bridge 就被丢掉：
+    `_multipart` 只发 model/stream/file 三个字段 ⇒ 上游按自己的缺省语言（日语）解码，
+    ja 恰好撞对、en 必错，而且错得**没有任何日志**（离线路径早就修过同类问题）。
+    上游 multipart 的字段名以 audiocpp_server **自报的路由说明**为准：
+    `POST /v1/audio/transcriptions  fields: file, model, language, prompt, stream`。
+
+    做法：假 HTTPConnection 抓真实 POST 出来的 multipart body，驱动真实的
+    transcribe_stream 生成器 —— 测的是"请求体里到底有没有那个字段"，
+    而不是"某个函数被调用过"。
+    """
+    import asyncio
+    import http.client as _http_client
+
+    import stream_bridge as sb
+
+    posted = {}
+
+    class FakeConn:
+        def __init__(self, *a, **kw):
+            pass
+
+        def request(self, method, url, body=None, headers=None):
+            posted["body"] = body
+            posted["url"] = url
+            posted["headers"] = headers
+
+        def getresponse(self):
+            class R:
+                status = 200
+                _sent = False
+
+                def read1(self, n):
+                    if self._sent:
+                        return b""
+                    self._sent = True
+                    return b"data: [DONE]\n\n"
+                read = read1
+            return R()
+
+        def close(self):
+            pass
+
+    orig_conn_cls = _http_client.HTTPConnection
+    orig_body = sb.read_capped_body
+
+    async def _fake_body(request):
+        return b"\x00\x01" * 4000                   # 过 3200 字节门槛
+
+    class FakeReq:
+        pass
+
+    async def _run(lang):
+        resp = await sb.transcribe_stream(FakeReq(), lang=lang, translate=False,
+                                          video_start_ms=0)
+        agen = resp.body_iterator
+        first = await agen.__anext__()              # 走到第一个 yield（请求已发出）
+        await agen.aclose()
+        return first
+
+    try:
+        sb.http.client.HTTPConnection = FakeConn
+        sb.read_capped_body = _fake_body
+        asyncio.run(_run("en"))
+    finally:
+        sb.http.client.HTTPConnection = orig_conn_cls
+        sb.read_capped_body = orig_body
+
+    body = posted.get("body") or b""
+    assert b'name="language"' in body, (
+        "流式请求没带 language 字段（F14）：上游只能按自己的缺省语言解码，"
+        f"英语源在流式模式下按日语解。实际请求体：{body[:300]!r}")
+    assert b"\r\n\r\nEnglish\r\n" in body, \
+        f"language 字段的值不是 en→English 映射：{body[:400]!r}"
+
+    # 判据必须与离线路径**同源**（同一张映射表、同一个值）：两边各写一份迟早漂移，
+    # 而 F14 的起因正是"离线路径修了语言、流式路径压根没传"。
+    from audiocpp_backend import AUDIOCPP_LANG
+    assert sb._lang_name("ja") == AUDIOCPP_LANG["ja"], sb._lang_name("ja")
+    assert sb._lang_name("en") == AUDIOCPP_LANG["en"], sb._lang_name("en")
+    assert sb._lang_name("EN-US") == "English", "带地区码的 lang_key 要归一"
+    assert sb._lang_name("ko") == "", "映射不到的语言必须返回空串（宁可用上游缺省）"
+    assert sb._lang_name(None) == ""
+
+    # 映射不到语言 ⇒ 请求体里连字段都不出现；其余三个字段一个不能少（回归锁）
+    body2, _ = sb._multipart(b"\x00" * 8, "m", "")
+    assert b'name="language"' not in body2, "映射不到语言时不该瞎猜一个值发上去"
+    for f in (b'name="model"', b'name="stream"', b'name="file"'):
+        assert f in body2, f"重构字段循环时弄丢了 {f!r}"
+    body3, _ = sb._multipart(b"\x00" * 8, "m", "English")
+    assert b'name="language"' in body3 and b'name="model"' in body3
+
+
+# 14c ------------ F14 兜底：上游若不认 language 字段，不能把流式打成 4xx
+def t_stream_language_field_rejected_fallback():
+    """F14 的兜底半条：多带一个表单字段**绝不能**让整条流式字幕变成 4xx。
+
+    上游只在自己打印的路由说明里提过 `language`（`POST /v1/audio/transcriptions
+    fields: file, model, language, prompt, stream`），字段名与取值（"English" 而不是
+    "en"）无法在本机不加载识别模型的前提下实测。所以：上游若回 400/415/422，
+    去掉该字段重发一次，退回改动前的行为（按上游缺省语言解码），并留日志。
+    """
+    import asyncio
+    import http.client as _http_client
+
+    import stream_bridge as sb
+
+    seen = []
+
+    class FakeConn:
+        def __init__(self, *a, **kw):
+            self.bodies = []
+
+        def request(self, method, url, body=None, headers=None):
+            self.bodies.append(body)
+            seen.append(body)
+
+        def getresponse(self):
+            first = len(seen) == 1
+            bad = first and b'name="language"' in (seen[0] or b"")
+
+            class R:
+                status = 400 if bad else 200
+                _sent = False
+
+                def read1(self, n):
+                    if self._sent:
+                        return b""
+                    self._sent = True
+                    return b"data: [DONE]\n\n"
+                read = read1
+            return R()
+
+        def close(self):
+            pass
+
+    orig_conn_cls = _http_client.HTTPConnection
+    orig_body = sb.read_capped_body
+
+    async def _fake_body(request):
+        return b"\x00\x01" * 4000
+
+    class FakeReq:
+        pass
+
+    async def _collect():
+        resp = await sb.transcribe_stream(FakeReq(), lang="en", translate=False,
+                                          video_start_ms=0)
+        out = []
+        async for line in resp.body_iterator:
+            out.append(line)
+        return out
+
+    try:
+        sb.http.client.HTTPConnection = FakeConn
+        sb.read_capped_body = _fake_body
+        lines = asyncio.run(_collect())
+    finally:
+        sb.http.client.HTTPConnection = orig_conn_cls
+        sb.read_capped_body = orig_body
+
+    assert len(seen) == 2, f"带 language 被 400 后应当去掉字段重发一次：{len(seen)} 次"
+    assert b'name="language"' in seen[0], "第一次请求必须带 language（否则兜底逻辑没被触发）"
+    assert b'name="language"' not in seen[1], "重发时必须去掉 language 字段"
+    assert any("DONE" in x for x in lines), f"重发成功后应正常收尾：{lines[:3]}"
+    assert not any("upstream 400" in x for x in lines), \
+        f"重发成功了却仍把 400 报给头显：{lines[:3]}"
+
+
 # 15 ------------- F13：坏配置必须能自恢复；写入必须原子
 def t_config_corruption_recovery():
     """评审 F13。
@@ -2075,6 +2247,8 @@ if __name__ == "__main__":
     check("F24 MT 逐句路径熔断门 + 后端超时按模式收窄", t_mt_path_breaker_and_timeout)
     check("F23 切模型竞态/滞回/预热标记失效", t_model_switch_race_hysteresis_warm)
     check("F15 流式断流关掉上游连接（GeneratorExit 兜底）", t_stream_disconnect_closes_upstream)
+    check("F14 流式转写透传源语言（与离线同一张映射表）", t_stream_passes_language_upstream)
+    check("F14 兜底 上游拒 language 字段时不算流式失败", t_stream_language_field_rejected_fallback)
     check("F13 坏配置自恢复 + 写入原子", t_config_corruption_recovery)
     check("F16 8756 跨站栅栏 + 过载快速失败（不涉及跨端契约部分）", t_lan_open_guards)
     check("F02 设置缓存 key/data 成对（杜绝错配命中）", t_settings_cache_pair)

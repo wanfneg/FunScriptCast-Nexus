@@ -125,6 +125,26 @@ def _asr_upstream_default() -> str:
 ASR_BASE = _asr_upstream_default()
 ASR_MODEL = _ASR_STREAM_MODEL
 
+# 源语言 → 上游语言名（评审 F14）。**判据只写一份**：这里 import 离线路径那份
+# `AUDIOCPP_LANG`（{"ja": "Japanese", "en": "English"}），不再抄一遍——两边各写一份
+# 迟早会漂移，而 F14 的起因正是"离线路径修了语言、流式路径压根没传"。
+try:
+    from audiocpp_backend import AUDIOCPP_LANG as _LANG_MAP
+except Exception:               # 依赖缺失也不该把流式桥挡在启动前
+    _LANG_MAP = {"ja": "Japanese", "en": "English"}
+
+
+def _lang_name(lang_key: str) -> str:
+    """请求的 lang_key（ja/en…）→ 上游 multipart 的 language 字段值。
+
+    取的是与离线路径**同一个映射表的同一个值**：同一次会话里离线/流式两种模式
+    必须按同一种语言解码，否则会出现"离线模式对、流式模式错"这种最难查的不一致。
+    映射不到（历史配置里的 ko/zh 等）返回空串，调用方据此**不传该字段** ——
+    上游缺省语言总好过我们瞎猜一个。
+    """
+    key = str(lang_key or "").strip().lower().split("-")[0]
+    return str(_LANG_MAP.get(key) or "")
+
 # 块边界碎片去重：重叠区被相邻块重复识别时，常切出上一块句子的**前缀碎片**
 # （实测："今日。"、"てるんだ。"）。与最近几条已出句比对，新句是其中某条的
 # 子串 → 判为碎片丢弃（真重复的短句如「はい」连发会被误杀，量极少可接受）。
@@ -199,10 +219,21 @@ def _wav_wrap(pcm: bytes, sr: int = 16000, ch: int = 1, bits: int = 16) -> bytes
     return hdr + pcm
 
 
-def _multipart(pcm: bytes, model: str) -> tuple[bytes, str]:
+def _multipart(pcm: bytes, model: str, language: str = "") -> tuple[bytes, str]:
+    """上游是 multipart 表单。字段名以 audiocpp_server 自报的路由说明为准：
+    `POST /v1/audio/transcriptions  fields: file, model, language, prompt, stream`。
+
+    **language（评审 F14）**：此前这里只发 model/stream/file，`lang` 参数虽然从
+    /transcribe/stream 一路传到本模块，却在这里被丢掉 ⇒ 英语源在流式模式下按上游
+    缺省语言（日语）解码（ja 恰好撞对、en 必错，且错得没有任何日志）。现在按
+    离线路径同一张映射表传 `language`；为空（映射不到的语言）时不发该字段。
+    """
     boundary = "----vrfsc" + uuid.uuid4().hex
     out = bytearray()
-    for name, value in (("model", model), ("stream", "true")):
+    fields = [("model", model), ("stream", "true")]
+    if language:
+        fields.append(("language", language))
+    for name, value in fields:
         out += f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode()
     out += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n"
             f"Content-Type: audio/wav\r\n\r\n").encode()
@@ -369,12 +400,15 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
 
         conn = None
         try:
-            payload, boundary = _multipart(pcm, ASR_MODEL)
+            # 语言必须在这里传下去（F14）：`lang` 是本请求的源语言，请求体里带上
+            # 上游才知道该按哪种语言解码。空串表示映射不到 → 不发该字段。
+            lang_field = _lang_name(lang)
+            payload, boundary = _multipart(pcm, ASR_MODEL, lang_field)
 
-            def _open_upstream():
+            def _open_upstream(body, bnd):
                 c = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=600)
-                c.request("POST", "/v1/audio/transcriptions", payload, {
-                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                c.request("POST", "/v1/audio/transcriptions", body, {
+                    "Content-Type": f"multipart/form-data; boundary={bnd}",
                     "Accept": "text/event-stream",
                 })
                 return c, c.getresponse()
@@ -382,7 +416,20 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
             # 上游 HTTP 的连接/响应/逐块读取全是阻塞调用，**必须进线程池**：
             # 直接跑在事件循环里会把 /health 与并发的 /transcribe 一起卡住
             # （ASR 一跑就是数秒，本桥以 server_app 路由形式运行，共用一个循环）。
-            conn, resp = await run_in_threadpool(_open_upstream)
+            conn, resp = await run_in_threadpool(_open_upstream, payload, boundary)
+            if lang_field and resp.status in (400, 415, 422):
+                # 兜底（F14）：万一上游不认这个字段（或只认 ISO 码而不是 "English"），
+                # **绝不能**因为多带一个字段把整条流式字幕打成 4xx —— 去掉它重发一次，
+                # 退回改动前的行为（按上游缺省语言解码），并留一行日志。
+                # 有语言更好；没有也不能更差。
+                print(f"[stream] 上游 {resp.status} 拒绝 language={lang_field!r}，"
+                      f"去掉该字段重发（本次流式按上游缺省语言解码）", flush=True)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                payload, boundary = _multipart(pcm, ASR_MODEL, "")
+                conn, resp = await run_in_threadpool(_open_upstream, payload, boundary)
             if resp.status != 200:
                 yield f"data: {json.dumps({'type': 'error', 'error': f'upstream {resp.status}'})}\n\n"
                 _log_done()
