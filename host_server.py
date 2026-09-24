@@ -1115,6 +1115,26 @@ def sub_stop() -> dict:
     return {"ok": True, "stopped": stopped}
 
 
+def _restart_sub_if_running() -> None:
+    """字幕服务在跑就重启（配置变更立即生效）；没在跑则下次按需拉起。
+
+    供下载完成钩子（R96 GPU 运行时）这类"没有 UI 帮忙点重启"的服务端路径用。
+    sub_stop 会连 audiocpp 子进程一起带走，模型内存随之释放；sub_start 复用
+    现有拉起链路（含端口占用预检），失败只记日志不抛——下载本身已经成功，
+    不能让收尾动作把整单报成失败。
+    """
+    with RT.lock:
+        alive = bool(RT.sub_proc and RT.sub_proc.poll() is None)
+    if not alive:
+        return
+    try:
+        sub_stop()
+        time.sleep(1.0)
+        sub_start()
+    except Exception as ex:
+        RT.add_log("字幕服务自动重启失败（可手动重启）：" + str(ex), "warn")
+
+
 def sub_state() -> dict:
     with RT.lock:
         proc = RT.sub_proc
@@ -1325,6 +1345,24 @@ MODELS_CATALOG = [
         "files": [
             {"rel": "llama-runtime-windows.zip",
              "url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest/download/llama-runtime-windows.zip"},
+        ],
+    },
+    {
+        # R96：audio.cpp CUDA 运行时（ASR GPU 加速，实测 RTF 0.80→0.049 ≈ 16 倍）。
+        # 不随包（2GB 级），界面按需下载；zip 只含 gpu\（与内置 cpu\ 共存于
+        # vendor\audiocpp），解压后 _model_dl_worker 自动把 asr.audiocpp.backend
+        # 切到 cuda 并重启字幕服务。gpu\ 缺失时 audiocpp 后端回退 cpu（见
+        # audiocpp_backend.py），所以这条目装没装都不破坏 CPU 路径。
+        "id": "audiocpp-cuda",
+        "role": "asr-runtime",
+        "label": "识别运行时 · GPU 加速（CUDA，需 NVIDIA 显卡，识别更快）",
+        "kind": "zip",
+        "check_file": "gpu/audiocpp_server.exe",
+        "dest_dir": APP_DIR / "vendor" / "audiocpp",
+        "size_gb": 1.9,
+        "files": [
+            {"rel": "audiocpp-runtime-windows-cuda.zip",
+             "url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest/download/audiocpp-runtime-windows-cuda.zip"},
         ],
     },
     {
@@ -1556,7 +1594,7 @@ def _download_to_file(url: str, dest: Path, prog=None) -> None:
 
 def _model_installed(e: dict) -> bool:
     if e.get("kind") == "zip":               # 运行时压缩包：看关键可执行文件
-        return (e["dest_dir"] / "llama-server.exe").is_file()
+        return (e["dest_dir"] / e.get("check_file", "llama-server.exe")).is_file()
     if e.get("repo_dirname"):                # whisper：HF 缓存结构
         repo = _hf_hub_dir() / e["repo_dirname"]
         ref = repo / "refs" / "main"
@@ -1615,11 +1653,21 @@ def _model_dl_worker(e: dict) -> None:
                     z.extractall(e["dest_dir"])
             for zp in zpaths:
                 zp.unlink(missing_ok=True)
-            if not (e["dest_dir"] / "llama-server.exe").is_file():
-                raise RuntimeError("解压后缺少 llama-server.exe（安装包内容不符）")
+            check = e.get("check_file", "llama-server.exe")
+            if not (e["dest_dir"] / check).is_file():
+                raise RuntimeError("解压后缺少 " + check + "（安装包内容不符）")
             with _DL_LOCK:
                 _MODEL_DL[id_].update(state="done", pct=100)
             RT.add_log("模型下载完成：" + e["label"], "ok")
+            if e.get("role") == "asr-runtime":
+                # R96：GPU 运行时到手即启用——用户下它就是为了 GPU；想回 CPU
+                # 在界面「识别引擎」里切（gpu\ 缺失时后端也会自动回退，双保险）。
+                try:
+                    save_subtitle_config({"asr": {"audiocpp": {"backend": "cuda"}}})
+                    RT.add_log("识别后端已切换为 GPU（cuda）", "ok")
+                    _restart_sub_if_running()
+                except Exception as ex:
+                    print("[models] 自动切换 GPU 后端失败（忽略）：", ex, flush=True)
             return
         if e.get("repo_dirname"):
             # 修复历史损坏：此前版本给 refs/main 写过带换行的值，faster-whisper
@@ -2623,7 +2671,13 @@ def subtitle_config() -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
     # API Key 不回明文给前端（只回 api_key_set / api_key_tail，前端显示占位符）
-    return {"ok": True, "path": str(cfg_file), "config": _mask_translate_secrets(cfg)}
+    return {
+        "ok": True,
+        "path": str(cfg_file),
+        "config": _mask_translate_secrets(cfg),
+        # R96：GPU 识别运行时在不在——界面据此决定「识别引擎」下拉要不要出 GPU 项
+        "asr_gpu_runtime": (APP_DIR / "vendor" / "audiocpp" / "gpu" / "audiocpp_server.exe").is_file(),
+    }
 
 
 def save_subtitle_config(patch: dict) -> dict:

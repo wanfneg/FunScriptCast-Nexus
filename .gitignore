@@ -64,3 +64,4 @@ nul
 build/_release-carry/
 build/_audiocpp-stage/llama-runtime-windows.zip
 build/qq-promo/*.zip
+build/_audiocpp-cuda-stage/

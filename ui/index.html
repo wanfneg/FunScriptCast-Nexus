@@ -421,8 +421,9 @@
           <div class="grid g2 gap-2">
             <label class="field">
               <span>识别引擎</span>
+              <!-- R96：CPU/GPU 后端选择；GPU 项由 app.js 在 gpu\ 运行时已下载时才补出 -->
               <select class="input" id="asrBackend">
-                <option value="audiocpp">Qwen3（默认）</option>
+                <option value="cpu">CPU</option>
               </select>
             </label>
             <label class="field">

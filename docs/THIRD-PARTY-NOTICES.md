@@ -11,6 +11,7 @@
 | Python 3.10 embeddable runtime | PSF-2.0 | Python Software Foundation | `runtime\LICENSE.txt`（随包 ✓） | 无 |
 | tools/adb（adb.exe、AdbWinApi.dll、AdbWinUsbApi.dll） | Apache-2.0 | The Android Open Source Project | `tools\adb\LICENSE.txt` + `NOTICE` | ✅ 已补 |
 | vendor/llama（llama.cpp 运行时：llama-server.exe、ggml/cublas 等 DLL） | MIT | (c) 2023 Georgi Gerganov 及贡献者 | `vendor\llama\LICENSE-llama.cpp`（✅ 已补）；`LICENSE-LLVM-OpenMP`（原有 ✓） | ✅ 已补 |
+| NVIDIA CUDA 运行库（vendor/llama 及识别 GPU 运行时下载包内的 cublas64_12.dll、cublasLt64_12.dll、cudart64_12.dll、cufft64_11.dll） | NVIDIA CUDA Toolkit 补充许可（可再分发） | NVIDIA Corporation | 随 NVIDIA CUDA Toolkit 分发的再分发组件，完整条款以 https://docs.nvidia.com/cuda/eula/ 为准 | ✅ R96 补记（此前 cublas 等 DLL 混在 llama.cpp MIT 行下，不准确） |
 | ui/fonts/Inter | SIL OFL-1.1 | The Inter Project Authors (rsms) | `ui\fonts\LICENSE-Inter-OFL.txt` | ✅ 已补 |
 | ui/fonts/JetBrains Mono | SIL OFL-1.1 | The JetBrains Mono Project Authors | `ui\fonts\LICENSE-JetBrainsMono-OFL.txt` | ✅ 已补 |
 | ui/fonts/Space Grotesk | SIL OFL-1.1 | The Space Grotesk Project Authors | `ui\fonts\LICENSE-SpaceGrotesk-OFL.txt` | ✅ 已补 |

@@ -104,6 +104,12 @@ class AudioCppBackend:
         _d = Path(str(cfg.get("dir") or AUDIOCPP_DIR))
         self.dir = _d if _d.is_absolute() else (BASE_DIR / _d).resolve()
         self.backend = str(cfg.get("backend", "cpu"))          # cpu | cuda
+        # GPU 运行时缺失兜底（R96）：cuda 配了但 gpu\audiocpp_server.exe 不在
+        # （没下载过/被删/换机），若照常启动会用 exe_dir=gpu\ 找不到可执行文件、
+        # VAD CLI 也一起消失 → 整条字幕链路瘫痪（块块 skipped）。静默回退 CPU。
+        if self.backend != "cpu" and not (self.dir / "gpu" / "audiocpp_server.exe").is_file():
+            print("[asr] audiocpp backend=cuda 但 gpu\\audiocpp_server.exe 不存在，回退 cpu", flush=True)
+            self.backend = "cpu"
         self.threads = int(cfg.get("threads", max(1, (os.cpu_count() or 4) - 1)))
         self.port = int(cfg.get("port", DEFAULT_PORT))
         self.host = str(cfg.get("host", "127.0.0.1"))
