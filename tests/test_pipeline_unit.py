@@ -25,7 +25,18 @@ sys.path.insert(0, str(SUB))
 # 轻则在那儿留下 `.layout-v2` 标记（补救扫描被提前用掉），重则用**仓库模板**播种
 # subtitle_config.json（空 key），把真实 key 挡在迁移之外——本机已经这样中过一次。
 # 单个测试内部可以再改（迁移测试就来回切），但默认值必须是隔离的。
-os.environ["NEXUS_USER_DIR"] = tempfile.mkdtemp(prefix="nexus-unittest-user-")
+_USER_TMP = tempfile.mkdtemp(prefix="nexus-unittest-user-")
+os.environ["NEXUS_USER_DIR"] = _USER_TMP
+# 跑完自己收尾（R92 顺手清理）：mkdtemp 只管建不管删，本机就这么攒下了 160+ 个
+# `nexus-unittest-user-*` 空壳目录（每个都小，但都在系统盘的 %TEMP% 里）。
+# 不放在 finally 里是因为入口是模块级的 `sys.exit(1)`，atexit 两种路径都会走到。
+import atexit  # noqa: E402
+import shutil  # noqa: E402
+
+
+@atexit.register
+def _cleanup_user_tmp():
+    shutil.rmtree(_USER_TMP, ignore_errors=True)
 
 FAILED = []
 
