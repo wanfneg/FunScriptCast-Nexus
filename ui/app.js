@@ -675,7 +675,7 @@
         if (m.state === "done" && m.role === "translate" && !S.modelDoneSeen[m.id]) {
           S.modelDoneSeen[m.id] = true;
           S.localModels = null;
-          loadSubtitleConfig();
+          loadSubtitleConfig({ onlyModels: true });   // F08：只刷新下拉，不覆盖用户输入
         }
       });
       clearTimeout(modelPollTimer);
@@ -683,7 +683,22 @@
     });
   }
 
-  function loadSubtitleConfig() {
+  function loadSubtitleConfig(opts) {
+    var onlyModels = !!(opts && opts.onlyModels);
+    /* F08：两条护栏，缺一条就会静默吃掉用户没保存的输入。
+       ① 只刷新模型下拉的路径（模型下载完成时走这条）：新模型要立刻可选，但**绝不碰**
+          其余输入。此前那条路径直接整表重填——用户改到一半（比如正准备填云端 key），
+          下载一完成表单就被服务端旧值覆盖，他再点保存就把旧值写回去（以为配好了云端、
+          实际还在 local）。
+       ② 整表重填前先看 dirty：用户动过任何一个配置输入就不再覆盖（与 2.5s 补拉同一判据）。
+          传的是**当前下拉值**而不是配置值：新选项出现的同时保住用户的选择。 */
+    if (onlyModels) {
+      fillAsrModelSelect($("#asrModel") ? $("#asrModel").value : "");
+      renderLocalModelSelect($("#mtLocalModel") ? $("#mtLocalModel").value : "",
+                             $("#mtLocalModelEn") ? $("#mtLocalModelEn").value : "");
+      return;
+    }
+    if (S.subCfgDirty) return;
     api("/api/subtitle/config").then(function (r) {
       if (!r.ok) return;
       var c = r.config || {};
@@ -774,16 +789,20 @@
     /* 添加媒体根：走 /api/dlna/roots —— 它会顺手校验路径是否存在。
        不校验的话，路径写错只表现为"头显里那个文件夹是空的"，猜不到原因。 */
     function addRoots(list) {
-      var roots = (S.settings.dlna_roots || []).slice();
-      var added = 0, dup = 0;
-      (list || []).forEach(function (p) {
-        p = String(p == null ? "" : p).trim();
-        if (!p) return;
-        if (roots.indexOf(p) >= 0) { dup++; return; }
-        roots.push(p); added++;
-      });
-      if (!added) { toast(dup ? "这些目录已经在列表里了" : "请先选择或输入目录", "", "warn"); return; }
-      api("/api/dlna/roots", "POST", { roots: roots }).then(function (r) {
+      /* F09：先取**服务端当前值**再改，不拿本地缓存（S.settings）当基底全量回写。
+         本地缓存只靠 1s 轮询刷新，背靠背两次操作会丢更新：删 A → 轮询带回仍含 A 的旧
+         列表 → 添加 B 时把 A 一起 POST 回去（刚删的目录复活，而 toast 已经说过"已移除"）。 */
+      api("/api/settings").then(function (cur) {
+        var roots = (((cur || {}).settings || {}).dlna_roots || []).slice();
+        var added = 0, dup = 0;
+        (list || []).forEach(function (p) {
+          p = String(p == null ? "" : p).trim();
+          if (!p) return;
+          if (roots.indexOf(p) >= 0) { dup++; return; }
+          roots.push(p); added++;
+        });
+        if (!added) { toast(dup ? "这些目录已经在列表里了" : "请先选择或输入目录", "", "warn"); return; }
+        api("/api/dlna/roots", "POST", { roots: roots }).then(function (r) {
         /* 保存失败必须可见：服务端写盘失败回 ok:false，此时不清输入框、不报成功
            （网络失败由 api() 统一 toast）。与 saveSetting 的处理同口径。 */
         if (!r || r.ok === false) {
@@ -802,6 +821,7 @@
           toast("需重启 DLNA 生效", r.restart_hint || "运行中的 DLNA 不会自动加载新目录", "warn");
         }
         poll(true);
+        });
       });
     }
     $("#addRoot").addEventListener("click", function () { addRoots([$("#newRoot").value]); });
@@ -823,13 +843,17 @@
       // 按**路径值**删除，不再按下标：下标只在"渲染那一刻"与列表对齐，
       // 列表一旦在两次轮询之间变化，就会删错条目。
       var p = b.getAttribute("data-del-root");
-      var roots = (S.settings.dlna_roots || []).slice();
-      var i = roots.indexOf(p);
-      if (i < 0) { toast("该目录已不在列表中", p || "", "warn"); poll(true); return; }
-      var removed = roots.splice(i, 1);
-      api("/api/settings", "POST", { dlna_roots: roots }).then(function () {
-        toast("已移除", removed[0] || "");
-        poll(true);
+      /* F09：同样先取服务端当前值再删。基于本地缓存全量回写时，"删 A、加 B"这类
+         背靠背操作会让 A 复活（轮询带回的旧列表把 A 又写回去）。 */
+      api("/api/settings").then(function (cur) {
+        var roots = (((cur || {}).settings || {}).dlna_roots || []).slice();
+        var i = roots.indexOf(p);
+        if (i < 0) { toast("该目录已不在列表中", p || "", "warn"); poll(true); return; }
+        var removed = roots.splice(i, 1);
+        api("/api/settings", "POST", { dlna_roots: roots }).then(function () {
+          toast("已移除", removed[0] || "");
+          poll(true);
+        });
       });
     });
     $("#dlnaCopy").addEventListener("click", function () {
@@ -878,6 +902,9 @@
       if (k) body.translate.openai.api_key = k;
       api("/api/subtitle/config", "POST", body).then(function (r) {
         if (r.ok) {
+          /* 保存成功后表单与服务端一致了，清掉 dirty（F08）：否则"用户动过"这个标记
+             会一直为真，后续所有自动回填（含 2.5s 补拉）永久让路。 */
+          S.subCfgDirty = false;
           toast("翻译设置已保存", "字幕服务正在重启以加载新模型", "ok");
           restartSubForConfig();
         } else {
