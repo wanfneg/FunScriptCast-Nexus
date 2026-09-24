@@ -2922,3 +2922,57 @@ URL/缓存的兼容性）；多根分支不动。
 放在最前，所以对**未修**的代码给出的是行为级失败
 （`解析仍是 AF_INET —— IPv6 的 ULA/回环不受检`），而不是"函数不存在"的 AttributeError；
 后面再用假 socket 断言公网放行、回环/私网/`::1`/拿不到对端一律拒。
+
+---
+
+## R86 审查报告第十批修复：F03 / F04 / F05（宿主三件）
+
+### F03 [中] 看门狗 3 秒窗口内不核对代数，主动停止被误报为启动失败 —— 属实，已修
+
+`_watch_subtitle` 的早退路径（进程在启动窗口内退出）**无条件**写 `RT.sub_error` 并记
+「字幕服务启动失败」；而同函数后段（运行中崩溃那条）本来就有 `ours and gen == RT.sub_gen`
+的归属核对——唯独这条漏了。序列：启动后 3 秒内点「停止」→ `sub_stop()` 先清
+`RT.sub_proc`、`sub_gen += 1`、再 taskkill 掉**正是 watcher 手里的那个 proc** ⇒ 被报成故障，
+状态还停在 error 直到下次启动。顺带修掉第二个隐患：无核对的 `RT.sub_proc = None` 若落在
+新一轮 `sub_start` 的 Popen 登记之后，会把**新进程的句柄**抹掉。
+
+修法：进函数就记下代数，早退路径先算 `ours = (RT.sub_proc is proc) and gen0 == RT.sub_gen`，
+**只在自己人**时才写错误与清句柄，否则静默收场。
+
+牙齿证明（这条不需要新函数，旧代码直接行为级失败）：
+`AssertionError: 主动停止被误报成启动失败（F03）：'子进程退出（code 1）：无输出'`
+
+### F04 [中] ASR_MODEL 兜底是死代码、缺省模型路径指向不存在的目录 —— 三条全部属实，已修
+
+1. 宿主读的是 `asr.model`，而真正的键是 `asr.audiocpp.model`（模板 asr 段实测**只有后者**）
+   ⇒ 判断恒为"配置没写"，`env.setdefault("ASR_MODEL", …)` 永远执行；
+2. 而**全仓没有任何代码读 `ASR_MODEL`**（grep 逐条核对：其余命中都是无关的 `asr_model`
+   JSON 字段与 stream_bridge 自己的模型 id 常量）⇒ 注入等于白注入；
+3. `audiocpp_backend` 的缺省模型路径写的是 `self.dir/"models"/…` =
+   `vendor\audiocpp\models\Qwen3-ASR-0.6B` —— 实测**该目录不存在**（只有 assets/cpu/LICENSE），
+   真模型在 `<安装目录>\models\Qwen3-ASR-0.6B`。
+
+后果：配置缺 model 时服务照常就绪、`/health` 报 ready，但每条转写都因模型不存在失败。
+
+修法：①后端把优先级定为 **config > 环境变量 `ASR_MODEL` > 安装目录 `models\Qwen3-ASR-0.6B`**
+（新增 `_install_models_dir()`，与宿主 `MODELS_DIR` 同源 = `user_paths.models_dir()`）；
+②宿主读**真正的键**（`asr.audiocpp.model`，兼容遗留的 `asr.model`）。
+两边对上之后，"宿主兜底注入"这个设计才真的生效。
+
+牙齿证明（源码级策略断言放在最前，给出行为级失败）：
+`AssertionError: 宿主读模型键时没有看 asr.audiocpp.model（F04：那个判断恒为真）`
+
+### F05 [中] 孤儿 reap 与自动启动的复用判定竞态 —— 属实，已修
+
+`subtitle_auto_start` 时 `sub_start()` 之后**立刻**起 reap 线程（`host_server` 启动体检），
+而判据只有 `sub_port_open()`。uvicorn 是**先跑 `lifespan.startup()` 再绑端口**，audiocpp 的
+模型加载要几十秒 —— 这段窗口里端口是关的，reap 就会把 `ensure_server()` 刚认领的 8083
+孤儿杀掉；之后 `/health` 仍报 ready，但所有转写 backend_unavailable，要等 5 分钟空闲回收
++ 重拉才自愈。两个组件对同一进程的所有权判定互相矛盾。
+
+修法：`reap_orphan_audiocpp(wait_start_sec=…)` —— 启动体检传 180 秒"落定窗口"，先等
+`RT.sub_starting` 变假（启动成功则端口已开、直接返回；启动失败则该进程确实是孤儿、该清），
+`sub_stop()` 那条调用不传窗口、行为不变。
+
+牙齿证明：`AssertionError: 启动体检没有传启动落定窗口（F05：会把刚认领的 audiocpp 孤儿杀掉）`
+（策略断言）+ 行为断言（启动中绝不杀、启动失败后的残留该清）。

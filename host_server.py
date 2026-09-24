@@ -859,7 +859,15 @@ def sub_start() -> dict:
             # 所以这里只在 config 完全没写模型时才兜底注入绝对路径。
             try:
                 _cfg = json.loads(subtitle_cfg_path().read_text(encoding="utf-8"))
-                _m = str((_cfg.get("asr") or {}).get("model") or "").strip()
+                _asr = _cfg.get("asr") or {}
+                # ⚠ 真正的键是 `asr.audiocpp.model`（audiocpp 后端读的就是它）；
+                # `asr.model` 是本文件早先版本/模板里的遗留键，这里作为兼容一起看。
+                # 此前只读 `asr.model`，而模板里根本没这个键 ⇒ 判断恒为"没写"，
+                # 那个 setdefault 永远执行，可全仓又没有任何代码读 ASR_MODEL
+                # —— 设计意图整体落空（评审 F04）。现在两边都对上了：
+                # 本文件读对键，audiocpp_backend 也把 ASR_MODEL 纳入模型路径兜底。
+                _m = str((_asr.get("audiocpp") or {}).get("model")
+                         or _asr.get("model") or "").strip()
             except Exception:
                 _m = ""
             if not _m and MODELS_DIR.exists():
@@ -935,16 +943,30 @@ def _watch_subtitle(proc: "subprocess.Popen") -> None:
 
     t = threading.Thread(target=reader, daemon=True, name="sub-out")
     t.start()
+    # 记下本进程的代数：判断"这次退出是不是我们自己造成的"要用它（评审 F03）
+    with RT.lock:
+        gen0 = RT.sub_gen
     # 3 秒后检查是否已经退出
     for _ in range(12):
         time.sleep(0.25)
         if proc.poll() is not None:
             break
     if proc.poll() is not None:
-        detail = " / ".join(tail[-3:]) or "无输出"
+        # **必须核对归属**（评审 F03）：启动后 3 秒内点「停止」时，sub_stop 会先
+        # `RT.sub_proc = None`、再 `sub_gen += 1`、然后 taskkill 掉**正是 watcher 手里的
+        # 这个 proc** —— 旧实现无条件写 sub_error 并记「启动失败」，把用户的主动停止报成
+        # 故障，状态还停在 error 直到下次启动。同函数后段（运行中崩溃那条）本来就有这套
+        # 核对，唯独这条早退路径漏了。
+        # 顺带修掉第二个隐患：无核对的 `RT.sub_proc = None` 若落在新一轮 sub_start 的
+        # Popen 登记之后，会把**新进程的句柄**抹掉。
         with RT.lock:
-            RT.sub_error = f"子进程退出（code {proc.returncode}）：{detail}"
-            RT.sub_proc = None
+            ours = (RT.sub_proc is proc) and gen0 == RT.sub_gen
+            if ours:
+                RT.sub_error = f"子进程退出（code {proc.returncode}）" \
+                               f"：{' / '.join(tail[-3:]) or '无输出'}"
+                RT.sub_proc = None
+        if not ours:
+            return                      # 主动停止（或已被新一轮启动接管）：静默收场
         RT.add_log(f"字幕服务启动失败：{RT.sub_error}", "err")
         return
     # 撑过启动窗口：继续盯到进程退出为止。正常停止（sub_stop）会使代数 +1 或
@@ -1041,11 +1063,26 @@ def _audiocpp_port() -> int:
         return 8083
 
 
-def reap_orphan_audiocpp() -> int:
+def reap_orphan_audiocpp(wait_start_sec: float = 0.0) -> int:
     """收拾"在跑但没有字幕服务在用"的 audiocpp 后端，返回清掉的个数。
 
     宿主被强杀时它会变成孤儿（见 _kill_tree 的说明），带着约 3 GB 内存常驻。
+
+    `wait_start_sec`（评审 F05）：启动体检专用——先等字幕服务的启动尝试**落定**再判断。
+    为什么必须等：uvicorn 是**先跑 lifespan.startup() 再绑端口**，而 audiocpp 的模型加载
+    要几十秒；这段窗口里 `sub_port_open()` 是假，按"端口没开 = 没人用"去 reap，就会把
+    `ensure_server()` 刚认领的 8083 孤儿杀掉 —— 之后 /health 仍报 ready，但所有转写
+    backend_unavailable，要等 5 分钟空闲回收 + 重拉才自愈。等了之后，宿主与字幕服务
+    对"这个进程是谁的"判定才一致。
     """
+    if wait_start_sec > 0:
+        deadline = time.time() + wait_start_sec
+        while time.time() < deadline:
+            with RT.lock:
+                starting = RT.sub_starting
+            if not starting:
+                break                   # 启动已落定（成功或失败），可以判断了
+            time.sleep(0.25)
     if sub_port_open():
         return 0                     # 字幕服务在，audiocpp 是它在用的，别动
     n = 0
@@ -3186,7 +3223,10 @@ def run(open_window: bool = True) -> None:
 
     # 启动体检：上次被强杀可能留下 audiocpp 常驻进程（约 3 GB 内存）。
     # 判据是"它在跑，但字幕服务并不在"——那它就没有主人，是残留。
-    threading.Thread(target=reap_orphan_audiocpp, daemon=True, name="reap-audiocpp").start()
+    # ⚠ 必须给启动中的字幕服务一个**落定窗口**（评审 F05）：uvicorn 先跑 lifespan 再绑
+    # 端口，模型加载那几十秒里端口是关的，此时 reap 会把服务刚认领的 audiocpp 孤儿杀掉。
+    threading.Thread(target=lambda: reap_orphan_audiocpp(wait_start_sec=180.0),
+                     daemon=True, name="reap-audiocpp").start()
 
     if not open_window:
         # 无窗口模式（调试/被外部托管）：保持进程存活

@@ -73,6 +73,21 @@ def _run_dir() -> Path:
         return Path(tempfile.gettempdir())
 
 
+def _install_models_dir() -> Path:
+    """安装目录的 `models\\`（与宿主 `MODELS_DIR = APP_DIR/models` 同源）。
+
+    ⚠ 缺省模型路径曾写成 `self.dir/"models"/…` = `vendor\\audiocpp\\models\\Qwen3-ASR-0.6B`
+    —— 那个目录**根本不存在**（实测 `vendor\\audiocpp` 只有 assets/cpu/LICENSE），而模型
+    下载器把它下到 `<安装目录>\\models\\Qwen3-ASR-0.6B`（评审 F04）。配置里写了
+    `asr.audiocpp.model` 时走配置，这条只是"配置没写"时的兜底。
+    """
+    try:
+        import user_paths
+        return Path(user_paths.models_dir())
+    except Exception:
+        return BASE_DIR.parents[1] / "models"
+
+
 class AudioCppError(RuntimeError):
     pass
 
@@ -96,7 +111,12 @@ class AudioCppBackend:
         # 的 models\），但 audio.cpp 是拿**它自己那份配置文件的所在目录**去解析的 ——
         # 实测传相对路径时上游注册成 <临时目录>\..\..\models\... 找不到文件：
         # 流式返回 segments=0、离线整段空译文。所以这里先解析成绝对路径再写进临时配置。
-        _m = Path(str(cfg.get("model") or (self.dir / "models" / "Qwen3-ASR-0.6B")))
+        # 模型路径优先级：config 的 asr.audiocpp.model > 环境变量 ASR_MODEL（宿主在
+        # "配置完全没写"时注入的绝对路径 —— 此前那是**死代码**，全仓无人读它，评审 F04）
+        # > 安装目录 models\Qwen3-ASR-0.6B。
+        _m = Path(str(cfg.get("model")
+                      or os.environ.get("ASR_MODEL")
+                      or (_install_models_dir() / "Qwen3-ASR-0.6B")))
         self.model = str(_m if _m.is_absolute() else (BASE_DIR / _m).resolve())
         self.vad_model = str(cfg.get("vad_model") or
                              (self.dir / "assets" / "framework" / "models" / "silero_vad"))

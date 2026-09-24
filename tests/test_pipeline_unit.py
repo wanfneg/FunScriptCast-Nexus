@@ -1569,6 +1569,172 @@ def t_dlna_strm_peer_check():
     assert dl._peer_is_public(_Conn(None)) is False, "拿不到对端时必须 fail-closed"
 
 
+# 26 ------------- F04：ASR 模型路径的三级兜底（配置 > 环境变量 > 安装目录 models）
+def t_asr_model_path_fallbacks():
+    """评审 F04：两件事一起坏了，导致"宿主注入模型路径"的设计整体落空：
+
+      ① 宿主读的是 `asr.model`，而真正的键是 `asr.audiocpp.model`（模板里根本没有前者的）
+         ⇒ 判断恒为"配置没写"，那个 `env.setdefault("ASR_MODEL", …)` 永远执行；
+      ② 可全仓**没有任何代码读 ASR_MODEL** ⇒ 注入等于白注入；
+      ③ 而 audiocpp 后端的缺省模型路径写的是 `self.dir/"models"/…` =
+         `vendor\\audiocpp\\models\\Qwen3-ASR-0.6B` —— 那个目录**不存在**（实测只有
+         assets/cpu/LICENSE），真模型在 `<安装目录>\\models\\Qwen3-ASR-0.6B`。
+    结果是：配置缺 model 时服务照常就绪、`/health` 报 ready，但每条转写都因模型不存在失败。
+    """
+    import sys as _sys
+
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in _sys.path:
+        _sys.path.insert(0, str(root))
+    import audiocpp_backend as ab
+    import user_paths
+
+    # ① **先做源码级策略断言**（不依赖新函数 ⇒ 对修复前的代码也能给出行为级失败）：
+    #    宿主读模型键时必须看 `asr.audiocpp.model`。旧代码只读 `asr.model`，而模板里
+    #    根本没有那个键 ⇒ 判断恒为"没写"，注入逻辑失去意义。
+    import inspect
+    import host_server as H
+    src = inspect.getsource(H.sub_start)
+    assert '"audiocpp"' in src and "ASR_MODEL" in src, \
+        "宿主读模型键时没有看 asr.audiocpp.model（F04：那个判断恒为真）"
+
+    # ③ 缺省路径必须指向**安装目录**的 models（而不是 vendor\audiocpp\models）
+    assert ab._install_models_dir() == Path(user_paths.models_dir()), \
+        f"缺省模型目录不对：{ab._install_models_dir()} vs {user_paths.models_dir()}"
+
+    saved = os.environ.pop("ASR_MODEL", None)
+    try:
+        be = ab.AudioCppBackend({"backend": "cpu"})
+        want = str((Path(user_paths.models_dir()) / "Qwen3-ASR-0.6B").resolve())
+        assert be.model == want, f"缺省模型路径应当指向安装目录 models：{be.model}"
+        assert "audiocpp" not in be.model.replace("\\", "/").lower(), \
+            f"缺省路径不该落到 vendor/audiocpp 下（那目录不存在）：{be.model}"
+
+        # ② 环境变量必须真的被读（否则宿主的注入是死代码）
+        os.environ["ASR_MODEL"] = str(root / "models" / "ENV-MODEL")
+        be2 = ab.AudioCppBackend({"backend": "cpu"})
+        assert be2.model == str((root / "models" / "ENV-MODEL").resolve()), \
+            f"ASR_MODEL 没被采纳（宿主的兜底注入成了死代码）：{be2.model}"
+
+        # ① 配置优先于环境变量
+        be3 = ab.AudioCppBackend({"backend": "cpu", "model": "../../models/CFG-MODEL"})
+        assert be3.model.endswith("CFG-MODEL"), f"配置应当优先：{be3.model}"
+    finally:
+        os.environ.pop("ASR_MODEL", None)
+        if saved is not None:
+            os.environ["ASR_MODEL"] = saved
+
+
+# 27 ------------- F05：孤儿 reap 必须等字幕服务启动落定
+def t_reap_waits_for_sub_start():
+    """评审 F05：宿主启动时 `sub_start()` 之后**立刻**起 reap 线程，而判据只有
+    `sub_port_open()`。uvicorn 是**先跑 lifespan.startup() 再绑端口**，而 audiocpp 的
+    模型加载要几十秒 —— 这段窗口里端口是关的，reap 会把 `ensure_server()` 刚认领的
+    8083 孤儿杀掉；之后 /health 仍报 ready，但所有转写 backend_unavailable，
+    要等 5 分钟空闲回收 + 重拉才自愈。
+
+    修法：启动体检给一个"启动落定"窗口（等 `RT.sub_starting` 变假），之后才判断；
+    启动中端口开了就直接返回（有人用，别动）。`sub_stop()` 那条调用不传窗口、行为不变。
+    """
+    import sys as _sys
+    import time as _time
+
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in _sys.path:
+        _sys.path.insert(0, str(root))
+    import host_server as H
+
+    # ① **先做源码级断言**（对修复前的代码也能给出行为级失败）：启动体检的调用点
+    #    必须传 wait_start_sec，否则就是原样复现 F05。
+    src = (root / "host_server.py").read_text(encoding="utf-8")
+    assert "reap_orphan_audiocpp(wait_start_sec=180.0)" in src, \
+        "启动体检没有传启动落定窗口（F05：会把刚认领的 audiocpp 孤儿杀掉）"
+
+    # ② 行为：启动中（sub_starting=True）且端口未开时**绝不杀**，等落定后端口开了就放行
+    killed = []
+    saved = (H.RT.sub_starting, H.sub_port_open, H._port_owner_pids, H._kill_tree,
+             H._proc_name)
+    try:
+        H.RT.sub_starting = True
+        H.sub_port_open = lambda timeout=0.4: False          # 模型还在加载，端口没开
+        H._port_owner_pids = lambda port: [4242]
+        H._proc_name = lambda pid: "audiocpp_server.exe"
+        H._kill_tree = lambda pid: killed.append(pid)
+
+        import threading
+        # 0.6 秒后"启动落定且端口开了"（模拟 lifespan 起来后绑上端口）
+        def _settle():
+            _time.sleep(0.6)
+            H.RT.sub_starting = False
+            H.sub_port_open = lambda timeout=0.4: True
+        threading.Thread(target=_settle, daemon=True).start()
+
+        n = H.reap_orphan_audiocpp(wait_start_sec=5.0)
+        assert n == 0 and not killed, f"启动中/已就绪都不该杀任何进程：n={n} killed={killed}"
+
+        # ③ 启动落定但端口始终没开（启动失败）→ 该进程确实是孤儿，应当清理
+        H.RT.sub_starting = False
+        H.sub_port_open = lambda timeout=0.4: False
+        n2 = H.reap_orphan_audiocpp(wait_start_sec=0.2)
+        assert n2 == 1 and killed == [4242], f"启动失败后的残留应当被清理：{killed}"
+    finally:
+        (H.RT.sub_starting, H.sub_port_open, H._port_owner_pids, H._kill_tree,
+         H._proc_name) = saved
+
+
+# 28 ------------- F03：看门狗启动窗口内必须核对归属
+def t_watch_subtitle_ownership():
+    """评审 F03：`_watch_subtitle` 的 3 秒启动窗口内进程退出路径**不核对代数/归属**：
+    启动后 3 秒内点「停止」时，`sub_stop()` 会先清 `RT.sub_proc`、`sub_gen += 1`、
+    再 taskkill 掉正是 watcher 手里的那个 proc —— 旧实现无条件写 `sub_error` 并记
+    「字幕服务启动失败」，把用户的**主动停止**报成故障，状态还停在 error 直到下次启动。
+    同函数后段（运行中崩溃）本来就有这套核对，唯独这条早退路径漏了。
+
+    顺带：无核对的 `RT.sub_proc = None` 若落在新一轮 sub_start 的 Popen 登记之后，
+    会把**新进程的句柄**抹掉。
+    """
+    import sys as _sys
+
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in _sys.path:
+        _sys.path.insert(0, root)
+    import host_server as H
+
+    class FakeProc:
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stdout = None          # reader 线程会 assert 非空 → 被 except 吃掉
+
+        def poll(self):
+            return self.returncode      # 立即"已退出" ⇒ 3 秒窗口那一圈只睡 0.25s
+
+        def wait(self):
+            return self.returncode
+
+    saved = (H.RT.sub_proc, H.RT.sub_gen, H.RT.sub_error)
+    try:
+        # ---- 场景 A：用户主动停止（sub_stop 已清 sub_proc、代数 +1）→ 不是故障 ----
+        H.RT.sub_error = ""
+        H.RT.sub_proc = None
+        H.RT.sub_gen = 7
+        H._watch_subtitle(FakeProc(1))
+        assert H.RT.sub_error == "", \
+            f"主动停止被误报成启动失败（F03）：{H.RT.sub_error!r}"
+
+        # ---- 场景 B：真的秒退（归属仍是自己）→ 必须如实上报，供界面诊断 ----
+        H.RT.sub_error = ""
+        proc = FakeProc(1)
+        H.RT.sub_proc = proc
+        gen_at_start = H.RT.sub_gen
+        H._watch_subtitle(proc)
+        assert "子进程退出" in H.RT.sub_error, \
+            f"真正的启动失败必须上报（否则界面一直显示加载中）：{H.RT.sub_error!r}"
+        assert H.RT.sub_proc is None, "归属自己的失败路径应当清掉句柄"
+        assert H.RT.sub_gen == gen_at_start, "不该无故改代数"
+    finally:
+        (H.RT.sub_proc, H.RT.sub_gen, H.RT.sub_error) = saved
+
+
 if __name__ == "__main__":
     print("== 管线单元冒烟 ==")
     check("llama 锁可重入（超时收尾不再自锁死）", t_llama_lock_reentrant)
@@ -1604,6 +1770,9 @@ if __name__ == "__main__":
     check("F26 .strm 代理短读关闭连接（不让客户端死等）", t_dlna_strm_proxy_truncation)
     check("F28 设备目录护栏（delete_extra 越界防线）", t_device_folder_guard)
     check("F27 .strm 代理对端核对（DNS 重绑定/ IPv6）", t_dlna_strm_peer_check)
+    check("F04 ASR 模型路径三级兜底（配置>环境变量>安装目录）", t_asr_model_path_fallbacks)
+    check("F05 reap 等字幕服务启动落定（不杀刚认领的 ASR）", t_reap_waits_for_sub_start)
+    check("F03 看门狗启动窗口核对归属（主动停止≠启动失败）", t_watch_subtitle_ownership)
     if FAILED:
         print(f"\n{len(FAILED)} 项失败：{FAILED}")
         sys.exit(1)
