@@ -87,7 +87,7 @@ ASR_MODEL=models/Qwen3-ASR-1.7B TRANSLATE_BACKEND=openai .venv/Scripts/python.ex
 
 ## 6. 实测数据
 
-见 [RESULTS.md](RESULTS.md)：0.6B/1.7B 速度与准确率对比、翻译模型对比、显存冲突实测。
+开发期间完成过 0.6B/1.7B 速度与准确率对比、翻译模型对比、显存冲突实测（详细实测数据文档未随本仓库分发）。
 
 ## 7. 头显端使用（已实现）
 

@@ -1,6 +1,6 @@
 # 第三方组件与许可声明（THIRD-PARTY-NOTICES）
 
-> 本文件是 FunScriptCast-Nexus 的开源组件台账（SBOM）。配合《开源许可合规审查-R69.md》使用。
+> 本文件是 FunScriptCast-Nexus 的开源组件台账（SBOM），也是本项目开源许可合规结论的自包含权威记录（源自 R69 轮开源许可合规审查；整改与移除结论完整保留于下文各表，不依赖外部文档）。
 > 分发形态：安装包含 宿主 exe / embeddable Python runtime / ui / vendor / tools；
 > **模型权重不进安装包**，由用户在界面内自行下载（setup.iss 明确不碰 models\）。
 

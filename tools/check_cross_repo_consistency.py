@@ -2,7 +2,7 @@
 """check_cross_repo_consistency.py —— 双端复制文件一致性【信息性】检查（F32 配套）
 
 手机端 FunScriptCast 与头显端 VRFunScriptCast 各持一份全量复制的核心文件
-（清单见 docs/cross-repo-consistency.md 第 1 节）。本脚本逐对比较 SHA256 与
+（清单内嵌于下方 PAIRS）。本脚本逐对比较 SHA256 与
 diff 行数量级，帮助回移前后对照。
 
 ⚠️ 这不是硬门禁：
@@ -32,7 +32,7 @@ _DEFAULT_VR = _NEXUS_ROOT.parent / "VRFunScriptCast"
 _PHONE_SRC = "app/src/main/java/com/funscriptcast"
 _VR_SRC = "funscriptcore/src/main/java/com/funscriptcast"
 
-# 与 docs/cross-repo-consistency.md 第 1 节同一份清单（改动必须两处同步）。
+# 双端复制文件清单（本脚本内嵌，即唯一权威清单）。
 # 每行：(phone 相对路径, vr 相对路径, 说明)
 PAIRS = [
     ("data/AiSubtitleEngine.kt", "engine/AiSubtitleEngine.kt", "AI 字幕引擎"),
@@ -106,8 +106,8 @@ def main() -> int:
               f"  ({sha256(a)} / {sha256(b)})")
 
     print(f"[parity] 比对 {compared}/{len(PAIRS)} 对，其中 {differ} 对内容不同")
-    print("[parity] 提示：差异属预期（刻意分叉 + 待回移并存），处置见 "
-          "docs/cross-repo-consistency.md；退出码仅提示，不作为门禁。")
+    print("[parity] 提示：差异属预期（刻意分叉 + 待回移并存），处置以各仓库迭代记录为准；"
+          "退出码仅提示，不作为门禁。")
     return 1 if differ else 0
 
 
