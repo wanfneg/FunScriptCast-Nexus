@@ -216,7 +216,7 @@ def quality_pass(args, pcm_src: Path) -> "tuple[int, float, Path]":
         [str(PY), str(ROOT / "tests" / "offline_to_json.py"), str(pcm_slice), str(out),
          "--url", f"http://127.0.0.1:{PORT}",
          "--start-ms", str(args.start * 1000),
-         "--chunk-sec", str(int(args.chunk_sec)),
+         "--chunk-sec", str(args.chunk_sec),
          "--overlap-sec", str(args.overlap_sec)],
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     wall = time.time() - t0
