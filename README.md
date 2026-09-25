@@ -10,7 +10,7 @@
 
 **沟通渠道**：QQ `2831691505`
 ---
-面向 VR 观影的 PC 端控制中枢：**DLNA 媒体服务 + AI 实时字幕 + 设备同步**，一个窗口、一个托盘。
+面向 VR 观影的 PC 端控制中枢：**DLNA 媒体服务 + AI 实时字幕 + 设备同步**。
 
 - 下载安装包：[Releases](https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest)（Windows 10/11 x64，约 80MB，识别运行时已内置）
 - 源码即本仓库（公开），构建与开发说明见文末
