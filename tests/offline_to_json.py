@@ -35,8 +35,8 @@ def main() -> int:
     pcm = open(args.pcm, "rb").read()
     if len(pcm) % 2:
         pcm = pcm[:-1]
-    chunk_bytes = args.chunk_sec * SR * BYTES_PER_SAMPLE
-    stride_bytes = max(args.chunk_sec - args.overlap_sec, 1) * SR * BYTES_PER_SAMPLE
+    chunk_bytes = int(args.chunk_sec * SR * BYTES_PER_SAMPLE)
+    stride_bytes = int(max(args.chunk_sec - args.overlap_sec, 1) * SR * BYTES_PER_SAMPLE)
     u = urllib.parse.urlparse(args.url)
 
     segs: list[dict] = []
