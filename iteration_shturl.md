@@ -3643,3 +3643,15 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 **遗留**：评分器解析键名与矩阵表格脱节（成绩在 score_*.json，表列空）、lag maxS 字段与 p90 矛盾待查、全片复测 1.7B、COMET-QE 类专用翻译指标、8791 卡死 bug。
 
 **R98 补记（全片复测 + 生产切换）**：全片 1254s 新口径对比——1.7B+1.5B 召回 0.780/精度 0.688/文本命中 78/126/幻觉率 21.7%，vs 现役 0.6B+7B 召回 0.690/精度 0.592/命中 69/126/幻觉 12.1%；时序与翻译延迟完全相同（p50 1.25s），缺译均 0。600s 结论全片成立。**生产已切 1.7B+Sakura-1.5B**（host API 深合并 + 重启 + 真实音频验证，显存 6822/8188 比 0.6B+7B 的 7.7GB 更宽裕）。注意：宿主进程今晚第二次无故消失（02:50 一次、04:4x 一次），原因未查明，值得排查。修复链：offline_to_json 接受浮点 chunk/overlap + 派生字节数取整。
+
+## R99（2026-09-25）：GitHub 公开仓库卫生审计与修复（工作流）
+
+**做法**：三路并行清点（远端 API / 189 跟踪文件逐个定性 / 全历史 268 提交考古）→ 独立复核 → 修复推送 → 远端验证。prepare-commit-msg 钩子（提交信息固定为项目名，用户明确设置）被执行 agent 请示后裁定保留原样。
+
+**已执行并推送（f6e75dc）**：31 个文件从公开仓删除（两份审查报告、cross-repo-consistency.md、RESULTS.md、3 个内部日志、config.json.bak-prompt、评测产物、build/_audiocpp-stage 全部二进制、"-"）；MIT LICENSE 补上（community-profile 已检测到 MIT）；THIRD-PARTY-NOTICES 引用改自包含。_combo_judge_* 与 "-" 在推送前已删，实际从未公开。
+
+**历史考古（重要）**：268 提交全历史零真实密钥（双方法交叉：token 前缀/私钥块/Bearer/api_key 赋值全 0 命中，仅单测占位符与 README 示例；config.json 历史 api_key 恒空）→ **无需为密钥改写历史**。本地 .git 1.73GB 瘦身方案：两巨型 zip 仅被 refs/original/refs/heads/main 持活（未推送），update-ref -d + reflog expire + gc 即回落 ~0.2-0.3GB（无强推无远端影响；先 bundle 备份）。若要从公开历史抹 140MB 构建产物/报告/赞助码痕迹才需 filter-repo+强推（268 hash 全变、7 tags 重打、fork 失效）——不建议（无密钥）。赞助码旧图历史可取，担心则换收款码。
+
+**存疑未动（等主人定夺）**：iteration_shturl.md（3645 行内部日志，被 AI-SUBTITLE-STATUS.md/hybrid_segmenter.py/test_pipeline_unit.py 引用，删则悬空）、sim_*.json（含本机 IP/GPU 型号，轻微机器信息）、design/**、qq-promo 系列图（与 docs/screenshots 字节级重复，~7MB 冗余）、build/_readme_*（过时残留，含 QQ 号）、tools/release_notes.md。
+
+**Community Standards 剩余缺口**：description 空、topics 空、无 CoC/contributing/issue_template（个人项目可不做）。
