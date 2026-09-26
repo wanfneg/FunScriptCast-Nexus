@@ -958,29 +958,31 @@ def _apply_completeness_gate(result: dict, lang: str, req_end_ms: int,
             r"(?:て|で|ば|けど|けどう|が|し|から|って|のに|より|ながら|つつ|"
             r"という|ようで|そうで|なくて|なく|ず|ぬ|わりで)$")
     GAP_MS = 1200
-    with _COMPLETENESS_LOCK:
-        held_text, held_s, held_e = _completeness_take_pending()
-        segs = result.get("segments") or []
-        held_now = 0
-        if held_text:
-            gap = (segs[0].get("start_ms") or req_end_ms) - held_e if segs \
-                else (req_end_ms - held_e)
-            if segs and gap <= GAP_MS:
-                s0 = segs[0]
-                s0["text"] = held_text + (s0.get("text") or "")
-                s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
-            else:
-                # 真停顿或超时：半句按原样放行成独立句（翻译在本请求内照做）
-                segs.insert(0, {"text": held_text, "start_ms": held_s,
-                                "end_ms": held_e})
-        if segs and not any(s.get("partial") for s in segs):
-            last = segs[-1]
-            tail = re.sub(r"[。．！？!?…\s]+$", "", last.get("text") or "")
-            if _INCOMPLETE_TAIL.search(tail):
-                _completeness_store(segs.pop())
-                held_now = 1
-        result["segments"] = segs
-        return held_now
+    # 锁纪律：本函数体**不能**整体包 _COMPLETENESS_LOCK——它内部调用的
+    # _completeness_take_pending/store 各自持锁，threading.Lock 不可重入，
+    # 整体包裹会自锁死请求线程（实测 600s 超时就是这么来的）。
+    held_text, held_s, held_e = _completeness_take_pending()
+    segs = result.get("segments") or []
+    held_now = 0
+    if held_text:
+        gap = (segs[0].get("start_ms") or req_end_ms) - held_e if segs \
+            else (req_end_ms - held_e)
+        if segs and gap <= GAP_MS:
+            s0 = segs[0]
+            s0["text"] = held_text + (s0.get("text") or "")
+            s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
+        else:
+            # 真停顿或超时：半句按原样放行成独立句（翻译在本请求内照做）
+            segs.insert(0, {"text": held_text, "start_ms": held_s,
+                            "end_ms": held_e})
+    if segs and not any(s.get("partial") for s in segs):
+        last = segs[-1]
+        tail = re.sub(r"[。．！？!?…\s]+$", "", last.get("text") or "")
+        if _INCOMPLETE_TAIL.search(tail):
+            _completeness_store(segs.pop())
+            held_now = 1
+    result["segments"] = segs
+    return held_now
 
 
 async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
