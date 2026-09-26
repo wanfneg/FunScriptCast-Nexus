@@ -941,7 +941,13 @@ def _completeness_take_pending():
 
 def _apply_completeness_gate(result: dict, lang: str, req_end_ms: int,
                              max_hold_ms: int, want_partial: bool) -> int:
-    """返回本请求扣住的段数（0 或 1）。合并/放行结果就地写回 result。"""
+    """返回本请求扣住的段数（0 或 1）。合并/放行结果就地写回 result。
+
+    判定用两个特征（classifier_utterance 的思路，特征我们拿得到的那部分）：
+    ① 文本形态：末尾是接续形（て/で/が/けど…）= 半句；② 音频间隙：扣住的半句
+    与下一段的间隔 ≤1.2s = 换气停顿（合并），>1.2s = 真停顿（半句立刻放行成
+    独立句，宁可显示半句也不无限扣）。max_hold_ms 保留为无后续硬顶。
+    """
     global _PENDING_HOLD
     if want_partial or not (lang or "").startswith("ja"):
         return 0
@@ -951,23 +957,26 @@ def _apply_completeness_gate(result: dict, lang: str, req_end_ms: int,
         _INCOMPLETE_TAIL = re.compile(
             r"(?:て|で|ば|けど|けどう|が|し|から|って|のに|より|ながら|つつ|"
             r"という|ようで|そうで|なくて|なく|ず|ぬ|わりで)$")
+    GAP_MS = 1200
     with _COMPLETENESS_LOCK:
         held_text, held_s, held_e = _completeness_take_pending()
         segs = result.get("segments") or []
-        if held_text and segs:
-            s0 = segs[0]
-            s0["text"] = held_text + (s0.get("text") or "")
-            s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
-        elif held_text and (req_end_ms - held_e) > max_hold_ms:
-            # 超时仍无后续：半句按原样放行（宁可显示半句也不无限扣）
-            segs = [{"text": held_text, "start_ms": held_s, "end_ms": held_e}]
-            result["segments"] = segs
         held_now = 0
+        if held_text:
+            gap = (segs[0].get("start_ms") or req_end_ms) - held_e if segs \
+                else (req_end_ms - held_e)
+            if segs and gap <= GAP_MS:
+                s0 = segs[0]
+                s0["text"] = held_text + (s0.get("text") or "")
+                s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
+            else:
+                # 真停顿或超时：半句按原样放行成独立句（翻译在本请求内照做）
+                segs.insert(0, {"text": held_text, "start_ms": held_s,
+                                "end_ms": held_e})
         if segs and not any(s.get("partial") for s in segs):
             last = segs[-1]
             tail = re.sub(r"[。．！？!?…\s]+$", "", last.get("text") or "")
-            if not (held_text and (req_end_ms - held_e) > max_hold_ms) and \
-                    _INCOMPLETE_TAIL.search(tail):
+            if _INCOMPLETE_TAIL.search(tail):
                 _completeness_store(segs.pop())
                 held_now = 1
         result["segments"] = segs
