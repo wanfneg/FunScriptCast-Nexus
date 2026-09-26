@@ -3655,3 +3655,14 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 **存疑未动（等主人定夺）**：iteration_shturl.md（3645 行内部日志，被 AI-SUBTITLE-STATUS.md/hybrid_segmenter.py/test_pipeline_unit.py 引用，删则悬空）、sim_*.json（含本机 IP/GPU 型号，轻微机器信息）、design/**、qq-promo 系列图（与 docs/screenshots 字节级重复，~7MB 冗余）、build/_readme_*（过时残留，含 QQ 号）、tools/release_notes.md。
 
 **Community Standards 剩余缺口**：description 空、topics 空、无 CoC/contributing/issue_template（个人项目可不做）。
+
+## R100（2026-09-25）：Windows 实时字幕（Live Captions）引擎调查——挖到了，但许可封死提取路线
+
+**背景**：用户看到 Win11 实时字幕日语质量好速度快，要求挖本体或研究原理。
+
+**取证结论（本机实测）**：
+- 本体 = `C:\Windows\System32\LiveCaptions.exe` + `onnxruntime.dll`（System32 自带推理运行时）。
+- 模型 = `C:\Program Files\WindowsApps\MicrosoftWindows.Speech.ja-JP.1_1.0.21.0_x64__cw5n1h2txyewy`（199MB，按需语言包）：**量化 RNN-T 流式栈**（encoder 91.6MB + decoder 15.5MB + joint 3.3MB + lid 21.3MB + svad 流式 VAD），`sr.ini` 全配置可读：spec-type=rnnt1、feature-dim=80、ms-per-frame=40、beam-width=7、4900 token。即 Azure Speech 通用流式模型 int8 CPU 版——快的原因：词级流式 40ms 粒度 + int8 CPU 推理，无 GPU 依赖。
+- 模型文件= 明文许可声明头 + 未加密 ONNX protobuf（张力名 cache_frames/inp_cache_k 等可见）。**但声明明确**：不得绕过技术限制、不得逆向反汇编、不得作为独立方案提供给他人使用、除书面协议外不得分发（ref 2774316）。→ 剥头喂 sherpa-onnx（支持同构 encoder/decoder/joint）技术上可行但违反内嵌许可，**项目刚开源 MIT 更不可为**。结论：提取调用路线封死，写明原因。
+
+**可行替代路线**：① UI Automation 读 LiveCaptions 窗口文本（不碰模型，纯无障碍接口，合规）：Live Captions 吃系统音频=宿主播放的视频，宿主轮询取词、按播放位置对齐、接 Sakura 翻译下发——零模型成本可实验；缺点无原生时间戳。② Azure Speech SDK 官方路线（同款模型，云端计费/嵌入式需 MS 书面授权）。③ 维持 Qwen3-ASR（全片 0.78 召回/1.25s 翻译延迟）。
