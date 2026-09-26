@@ -952,9 +952,10 @@ def _apply_line_merge(result: dict, lang: str, req_end_ms: int,
     """
     if want_partial or not (lang or "").startswith("ja"):
         return 0
-    target = max(4, int(cfg.get("target_len", 14)))
+    target = max(4, int(cfg.get("target_len", 12)))
     gap_max = max(500, int(cfg.get("gap_ms", 3000)))
     max_hold = max(1500, int(cfg.get("max_hold_ms", 5000)))
+    max_span = max(max_hold, int(cfg.get("max_span_ms", 10000)))
     held_text, held_s, held_e = _lm_take()
     segs = result.get("segments") or []
     held_now = 0
@@ -967,12 +968,15 @@ def _apply_line_merge(result: dict, lang: str, req_end_ms: int,
         elif gap > gap_max or (req_end_ms - held_e) > max_hold:
             # 真停顿/超时：按原样放行成独立行（翻译在本请求内照做）
             segs.insert(0, {"text": held_text, "start_ms": held_s, "end_ms": held_e})
+        elif (req_end_ms - held_s) > max_span:
+            # 合并链总跨度到顶：按原样放行，别让一行字幕追着对白跑十几秒
+            segs.insert(0, {"text": held_text, "start_ms": held_s, "end_ms": held_e})
         else:
             _lm_store({"text": held_text, "start_ms": held_s, "end_ms": held_e})
             return 1   # 行还不足长、也没超时：继续扣，本响应不给段
     if segs and not any(s.get("partial") for s in segs):
         last = segs[-1]
-        if len(_lm_strip(last.get("text") or "")) < target:
+        if len(_lm_strip(last.get("text") or "")) < target and                 (req_end_ms - (last.get("start_ms") or req_end_ms)) <= max_span:
             _lm_store(segs.pop())
             held_now = 1
     result["segments"] = segs
