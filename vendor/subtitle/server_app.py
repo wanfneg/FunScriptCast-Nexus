@@ -920,19 +920,20 @@ _LM_PENDING = None   # {"text":…, "start_ms":…, "end_ms":…} 或 None
 
 def _lm_store(seg: dict) -> None:
     global _LM_PENDING
-    _LM_PENDING = {"text": seg.get("text") or "",
-                   "start_ms": seg.get("start_ms") or 0,
-                   "end_ms": seg.get("end_ms") or seg.get("start_ms") or 0}
+    with _LINE_MERGE_LOCK:
+        _LM_PENDING = {"text": seg.get("text") or "",
+                       "start_ms": seg.get("start_ms") or 0,
+                       "end_ms": seg.get("end_ms") or seg.get("start_ms") or 0}
 
 
 def _lm_take():
     global _LM_PENDING
     with _LINE_MERGE_LOCK:
-    p = _LM_PENDING
-    _LM_PENDING = None
-    if p:
-        return p["text"], p["start_ms"], p["end_ms"]
-    return "", 0, 0
+        p = _LM_PENDING
+        _LM_PENDING = None
+        if p:
+            return p["text"], p["start_ms"], p["end_ms"]
+        return "", 0, 0
 
 
 def _lm_strip(text: str) -> str:
@@ -941,32 +942,31 @@ def _lm_strip(text: str) -> str:
 
 
 def _apply_line_merge(result: dict, lang: str, req_end_ms: int,
-                  cfg: dict, want_partial: bool) -> int:
+                      cfg: dict, want_partial: bool) -> int:
     """返回本请求扣住的行数（0/1）。合并/放行就地写回 result。
 
     判据：当前行去标点日文 < target_len → 扣住；下一块来了就合并（间隙 ≤gap_ms），
     合并后仍不足则继续扣；真停顿（间隙超限）或无后续超 max_hold_ms → 原样放行。
+    锁纪律：本函数体不整体持锁——_lm_take/_lm_store 各自持锁（Lock 不可重入，
+    整体包裹会自锁死请求线程，两次实测 600s 超时都是这个）。
     """
-    global _LM_PENDING
     if want_partial or not (lang or "").startswith("ja"):
-    return 0
+        return 0
     target = max(4, int(cfg.get("target_len", 14)))
     gap_max = max(500, int(cfg.get("gap_ms", 3000)))
     max_hold = max(1500, int(cfg.get("max_hold_ms", 5000)))
-    with _LINE_MERGE_LOCK:
     held_text, held_s, held_e = _lm_take()
     segs = result.get("segments") or []
     held_now = 0
     if held_text:
-        gap = (segs[0].get("start_ms") or req_end_ms) - held_e if segs                 else (req_end_ms - held_e)
+        gap = (segs[0].get("start_ms") or req_end_ms) - held_e if segs else (req_end_ms - held_e)
         if segs and gap <= gap_max:
             s0 = segs[0]
             s0["text"] = held_text + (s0.get("text") or "")
             s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
         elif gap > gap_max or (req_end_ms - held_e) > max_hold:
             # 真停顿/超时：按原样放行成独立行（翻译在本请求内照做）
-            segs.insert(0, {"text": held_text, "start_ms": held_s,
-                            "end_ms": held_e})
+            segs.insert(0, {"text": held_text, "start_ms": held_s, "end_ms": held_e})
         else:
             _lm_store({"text": held_text, "start_ms": held_s, "end_ms": held_e})
             return 1   # 行还不足长、也没超时：继续扣，本响应不给段
