@@ -860,6 +860,55 @@ async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0
             _INFLIGHT -= 1
 
 
+# 短叹词重复抑制状态（R101，学 svad 门控思路；配置 asr.hallucination_gate，默认关）：
+# ASR 在低语音段会循环吐同一短叹词（实测 もっと 数十秒内三连，矩阵幻觉率 21.7%）。
+# 保守规则：归一化后 ≤max_len 字的段，若窗口内出现过相同文本 → 保留首次、丢弃后续。
+# 首次永远保留（228s 的もっと 对应金标准"再露点"是真命中），只杀后续循环。
+_HALLU_LOCK = threading.Lock()
+_HALLU_STATE = {"last_end": -1, "recent": []}   # recent: [(end_ms, 归一化文本)]
+_HALLU_DROPPED = 0
+
+
+def _apply_hallucination_gate(result: dict) -> int:
+    """短叹词重复抑制。返回本请求丢弃数。
+
+    配置 asr.hallucination_gate：enabled=true 开启；window_s 重复判定窗口（默认 45s）；
+    max_len 归一化后长度上限（默认 4）。默认关——评测 A/B 由 run_combo_eval --set 注入。
+    """
+    hg = (CFG.get("asr") or {}).get("hallucination_gate") or {}
+    if not hg.get("enabled"):
+        return 0
+    import re
+    win_ms = int(float(hg.get("window_s", 45)) * 1000)
+    max_len = int(hg.get("max_len", 4))
+    global _HALLU_DROPPED
+    with _HALLU_LOCK:
+        segs = result.get("segments") or []
+        ends = [s.get("end_ms") or s.get("start_ms") or 0 for s in segs]
+        cur_end = max(ends) if ends else 0
+        if cur_end < _HALLU_STATE["last_end"] - 60000:   # 回退/换片：清空历史
+            _HALLU_STATE["recent"].clear()
+        kept, dropped = [], 0
+        for s in segs:
+            pos = s.get("end_ms") or s.get("start_ms") or 0
+            norm = re.sub(r"[、。！？\s　．，,\.!\?…「」『』（）・]", "", s.get("text") or "")
+            dup = 0 < len(norm) <= max_len and any(
+                t2 <= pos and pos - t2 < win_ms and n2 == norm
+                for t2, n2 in _HALLU_STATE["recent"])
+            if dup:
+                dropped += 1
+                continue
+            if 0 < len(norm) <= max_len:
+                _HALLU_STATE["recent"].append((pos, norm))
+            kept.append(s)
+        _HALLU_STATE["recent"] = [(t2, n2) for t2, n2 in _HALLU_STATE["recent"]
+                                  if cur_end - t2 < win_ms * 3]
+        _HALLU_STATE["last_end"] = max(cur_end, _HALLU_STATE["last_end"])
+        result["segments"] = kept
+        _HALLU_DROPPED += dropped
+        return dropped
+
+
 async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
                            keep_from_ms: int, translate: bool,
                            want_partial: bool = False) -> dict:
@@ -915,6 +964,7 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
                 _LAST_CTX.update({"lang": lang,
                                   "src": (last.get("text") or "")[:80],
                                   "zh": (last.get("translation") or "")[:80]})
+    dropped_h = 0
     if result["segments"]:
         # 后处理与流式桥同一套显示策略（判据在 text_filters / stream_bridge，勿重复实现）。
         # 无论走不走翻译都要做：此前清洗挂在 translate 分支里，translate=false 时
@@ -945,14 +995,17 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
                     continue
                 kept.append(s)
             result["segments"] = sorted(kept, key=lambda x: x.get("start_ms") or 0)
+        dropped_h = _apply_hallucination_gate(result)
         for s in result["segments"]:
             s["translation"] = _display_zh(s)
     result["mt_ms"] = mt_ms
+    result["hallu_drop"] = dropped_h
     result["total_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     preview = " | ".join((s.get("translation") or s["text"])[:18] for s in result["segments"][:3])
     print(f"[transcribe] lang={lang} start={video_start_ms}ms bytes={len(body)} "
           f"skip={result['skipped']} segs={len(result['segments'])} "
           f"asr={result['asr_ms']}ms mt={mt_ms}ms total={result['total_ms']}ms"
+          + (f" hallu_drop={dropped_h}" if dropped_h else "")
           + (f"\n             {preview}" if preview else ""), flush=True)
     return result
 

@@ -69,7 +69,8 @@ def deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
-def seed_user_dir(iso: Path, asr_model: str, mt_model: str) -> Path:
+def seed_user_dir(iso: Path, asr_model: str, mt_model: str,
+                  extra: dict | None = None) -> Path:
     """以 vendor/subtitle/config.json 为模板深合并出评测配置，写入隔离目录。
 
     为什么必须预置：user_paths 首次运行会按「新方案优先」迁移历史位置——
@@ -93,6 +94,8 @@ def seed_user_dir(iso: Path, asr_model: str, mt_model: str) -> Path:
         },
         "server": {"idle_release_min": 0},
     }
+    if extra:
+        override = deep_merge(override, extra)
     cfg = deep_merge(template, override)
     p = iso / "subtitle_config.json"
     p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -355,6 +358,8 @@ def main() -> int:
                     help="结束时保留 :18081 上健康的 audiocpp 实例（beam_size 等实验预注入用）；"
                          "起服务前也不杀健康实例")
     ap.add_argument("--keep-service", action="store_true", help="结束时保留 :8759 字幕服务")
+    ap.add_argument("--set", action="append", default=[],
+                    help="额外配置覆盖（点路径=值，可多次）：如 --set asr.hallucination_gate.enabled=true")
     args = ap.parse_args()
 
     pcm_src = PCM if args.video == "sivr001" else PCM2
@@ -365,7 +370,23 @@ def main() -> int:
     # 用户数据隔离（与 run_eval 同一理由：可复现 + 不动真实 key 的迁移顺序）
     iso = Path(tempfile.mkdtemp(prefix="nexus-combo-"))
     os.environ["NEXUS_USER_DIR"] = str(iso)
-    seeded = seed_user_dir(iso, args.asr_model, args.mt_model)
+    extra_cfg: dict = {}
+    for kv in (args.set or []):
+        k, _, v = kv.partition("=")
+        node = extra_cfg
+        parts = [x for x in k.split(".") if x]
+        if not parts:
+            raise SystemExit(f"--set 无效键：{kv!r}")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        if v.lower() in ("true", "false"):
+            node[parts[-1]] = v.lower() == "true"
+        else:
+            try:
+                node[parts[-1]] = int(v) if v.lstrip("-").isdigit() else float(v)
+            except ValueError:
+                node[parts[-1]] = v
+    seeded = seed_user_dir(iso, args.asr_model, args.mt_model, extra_cfg)
     print(f"[combo] 用户数据隔离目录：{iso}")
     print(f"[combo] 预置配置：{seeded}")
     _chk = json.loads(seeded.read_text(encoding="utf-8"))
