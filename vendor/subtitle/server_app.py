@@ -909,80 +909,75 @@ def _apply_hallucination_gate(result: dict) -> int:
         return dropped
 
 
-# 句完整性门控状态（R102，学 classifier_utterance 思路；配置 asr.completeness_gate，默认关）：
-# 混合切句的固定静音尾会把长句在换气处腰斩（长句只等 0.4s！），前半句单独翻译
-# 语义残缺（实测金标准"再靠近点"→译文"更多"）。文本特征判定：以接续形结尾
-# （て/で/が/けど…）= 半句 → 扣住不翻，与下一块识别文本合并成整句再翻。
-# 铅笔/钢笔：半句是铅笔（不显示），整句才上钢笔。超时兜底：时间轴推进超过
-# max_hold_ms 仍无后续 → 扣住的半句按原样放行，绝不无限扣。
-_COMPLETENESS_LOCK = threading.Lock()
-_PENDING_HOLD = None   # {"text":…, "start_ms":…, "end_ms":…} 或 None
-_INCOMPLETE_TAIL = None
+# 行长合并门控状态（R102，学 Live Captions 的连续出字观感；配置 asr.line_merge，默认关）：
+# 混合切句在每个微停顿都切、ASR 又给每段补句号，生产上平均一行只有 5.5 个汉字——
+# 这就是"没等一句话说完就断句"观感的直接来源。合并规则：当前行不足 target_len
+# （去标点日文字数）就扣住不翻，与下一块合并；间隙超 gap_ms（真停顿）或超时则放行。
+# 半句/整句在这里无法区分（ASR 会给半句也打句号），所以判据直接用行长。
+_LINE_MERGE_LOCK = threading.Lock()
+_LM_PENDING = None   # {"text":…, "start_ms":…, "end_ms":…} 或 None
 
 
-def _completeness_store(seg: dict) -> None:
-    global _PENDING_HOLD
-    with _COMPLETENESS_LOCK:
-        _PENDING_HOLD = {"text": seg.get("text") or "",
-                         "start_ms": seg.get("start_ms") or 0,
-                         "end_ms": seg.get("end_ms") or seg.get("start_ms") or 0}
+def _lm_store(seg: dict) -> None:
+    global _LM_PENDING
+    with _LINE_MERGE_LOCK:
+        _LM_PENDING = {"text": seg.get("text") or "",
+                       "start_ms": seg.get("start_ms") or 0,
+                       "end_ms": seg.get("end_ms") or seg.get("start_ms") or 0}
 
 
-def _completeness_take_pending():
-    """取回扣住的半句（不管超不超时——超时判断由调用方按当前时间轴做）。"""
-    global _PENDING_HOLD
-    with _COMPLETENESS_LOCK:
-        p = _PENDING_HOLD
-        _PENDING_HOLD = None
+def _lm_take():
+    global _LM_PENDING
+    with _LINE_MERGE_LOCK:
+        p = _LM_PENDING
+        _LM_PENDING = None
         if p:
             return p["text"], p["start_ms"], p["end_ms"]
         return "", 0, 0
 
 
-def _apply_completeness_gate(result: dict, lang: str, req_end_ms: int,
-                             max_hold_ms: int, want_partial: bool) -> int:
-    """返回本请求扣住的段数（0 或 1）。合并/放行结果就地写回 result。
+def _lm_strip(text: str) -> str:
+    import re
+    return re.sub(r"[。．！？!?…、，,\s　「」『』（）\-]", "", text or "")
 
-    判定用两个特征（classifier_utterance 的思路，特征我们拿得到的那部分）：
-    ① 文本形态：末尾是接续形（て/で/が/けど…）= 半句；② 音频间隙：扣住的半句
-    与下一段的间隔 ≤1.2s = 换气停顿（合并），>1.2s = 真停顿（半句立刻放行成
-    独立句，宁可显示半句也不无限扣）。max_hold_ms 保留为无后续硬顶。
+
+def _apply_line_merge(result: dict, lang: str, req_end_ms: int,
+                      cfg: dict, want_partial: bool) -> int:
+    """返回本请求扣住的行数（0/1）。合并/放行就地写回 result。
+
+    判据：当前行去标点日文 < target_len → 扣住；下一块来了就合并（间隙 ≤gap_ms），
+    合并后仍不足则继续扣；真停顿（间隙超限）或无后续超 max_hold_ms → 原样放行。
     """
-    global _PENDING_HOLD
+    global _LM_PENDING
     if want_partial or not (lang or "").startswith("ja"):
         return 0
-    import re
-    global _INCOMPLETE_TAIL
-    if _INCOMPLETE_TAIL is None:
-        _INCOMPLETE_TAIL = re.compile(
-            r"(?:て|で|ば|けど|けどう|が|し|から|って|のに|より|ながら|つつ|"
-            r"という|ようで|そうで|なくて|なく|ず|ぬ|わりで)$")
-    GAP_MS = 1200
-    # 锁纪律：本函数体**不能**整体包 _COMPLETENESS_LOCK——它内部调用的
-    # _completeness_take_pending/store 各自持锁，threading.Lock 不可重入，
-    # 整体包裹会自锁死请求线程（实测 600s 超时就是这么来的）。
-    held_text, held_s, held_e = _completeness_take_pending()
-    segs = result.get("segments") or []
-    held_now = 0
-    if held_text:
-        gap = (segs[0].get("start_ms") or req_end_ms) - held_e if segs \
-            else (req_end_ms - held_e)
-        if segs and gap <= GAP_MS:
-            s0 = segs[0]
-            s0["text"] = held_text + (s0.get("text") or "")
-            s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
-        else:
-            # 真停顿或超时：半句按原样放行成独立句（翻译在本请求内照做）
-            segs.insert(0, {"text": held_text, "start_ms": held_s,
-                            "end_ms": held_e})
-    if segs and not any(s.get("partial") for s in segs):
-        last = segs[-1]
-        tail = re.sub(r"[。．！？!?…\s]+$", "", last.get("text") or "")
-        if _INCOMPLETE_TAIL.search(tail):
-            _completeness_store(segs.pop())
-            held_now = 1
-    result["segments"] = segs
-    return held_now
+    target = max(4, int(cfg.get("target_len", 14)))
+    gap_max = max(500, int(cfg.get("gap_ms", 3000)))
+    max_hold = max(1500, int(cfg.get("max_hold_ms", 5000)))
+    with _LINE_MERGE_LOCK:
+        held_text, held_s, held_e = _lm_take()
+        segs = result.get("segments") or []
+        held_now = 0
+        if held_text:
+            gap = (segs[0].get("start_ms") or req_end_ms) - held_e if segs                 else (req_end_ms - held_e)
+            if segs and gap <= gap_max:
+                s0 = segs[0]
+                s0["text"] = held_text + (s0.get("text") or "")
+                s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
+            elif gap > gap_max or (req_end_ms - held_e) > max_hold:
+                # 真停顿/超时：按原样放行成独立行（翻译在本请求内照做）
+                segs.insert(0, {"text": held_text, "start_ms": held_s,
+                                "end_ms": held_e})
+            else:
+                _lm_store({"text": held_text, "start_ms": held_s, "end_ms": held_e})
+                return 1   # 行还不足长、也没超时：继续扣，本响应不给段
+        if segs and not any(s.get("partial") for s in segs):
+            last = segs[-1]
+            if len(_lm_strip(last.get("text") or "")) < target:
+                _lm_store(segs.pop())
+                held_now = 1
+        result["segments"] = segs
+        return held_now
 
 
 async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
@@ -1012,13 +1007,12 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
             CFG.get("vad", {}), CFG.get("segment", {}), asr_extra,
         )
 
-    # 句完整性门控（R102）：半句扣住与下一块合并，超时放行（配置 asr.completeness_gate）。
-    cg = (CFG.get("asr") or {}).get("completeness_gate") or {}
+    # 行长合并门控（R102）：不足 target_len 的行扣住合并，见 _apply_line_merge 注释。
+    lmcfg = (CFG.get("asr") or {}).get("line_merge") or {}
     held_count = 0
-    if cg.get("enabled"):
+    if lmcfg.get("enabled"):
         req_end = video_start_ms + int(len(pcm) / 16.0)   # 16k → 16 样本/ms
-        held_count = _apply_completeness_gate(
-            result, lang, req_end, int(float(cg.get("max_hold_ms", 8000))), want_partial)
+        held_count = _apply_line_merge(result, lang, req_end, lmcfg, want_partial)
 
     mt_ms = 0.0
     # 源语言 == 目标语言时跳过翻译。头显的语言枚举里含"中文"（LangCodes=ja/en/ko/zh），
