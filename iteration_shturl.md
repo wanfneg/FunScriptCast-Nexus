@@ -3666,3 +3666,11 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 - 模型文件= 明文许可声明头 + 未加密 ONNX protobuf（张力名 cache_frames/inp_cache_k 等可见）。**但声明明确**：不得绕过技术限制、不得逆向反汇编、不得作为独立方案提供给他人使用、除书面协议外不得分发（ref 2774316）。→ 剥头喂 sherpa-onnx（支持同构 encoder/decoder/joint）技术上可行但违反内嵌许可，**项目刚开源 MIT 更不可为**。结论：提取调用路线封死，写明原因。
 
 **可行替代路线**：① UI Automation 读 LiveCaptions 窗口文本（不碰模型，纯无障碍接口，合规）：Live Captions 吃系统音频=宿主播放的视频，宿主轮询取词、按播放位置对齐、接 Sakura 翻译下发——零模型成本可实验；缺点无原生时间戳。② Azure Speech SDK 官方路线（同款模型，云端计费/嵌入式需 MS 书面授权）。③ 维持 Qwen3-ASR（全片 0.78 召回/1.25s 翻译延迟）。
+
+## R101（2026-09-25）：Live Captions 方法层还原（不用其模型，学其方法）
+
+语言包外围全件可读：①`sr.ini` 全推理参数（80 维特征/40ms 帧/beam7/recombine/score-norm/biasing-weight=1.1）；②`model_onnx_quant.config`：TransformerEncoderMaxChunks=4（流式 encoder 状态缓存上限，张量名 cache_frames/inp_cache_k 证实 KV-cache 跨块续算）；③`classifier_word`=6 特征→2 输出的两层线性权重表（词稳定性门控——决定词"定稿显示 vs 可修正 partial"，词级流式的核心机制）；④`classifier_utterance`=5 特征→2 输出线性表（句末判定，替代固定静音尾）；⑤`ja-jp_explicitPuncRules.txt` 三段规则：[Explicit]剥模型标点/[Dedup]标点去重/[Rules]口述符号→符号映射（かっこ→（、はてなマーク→？、⨝ 阻空格、\n 指令）；⑥`svad.quantized.onnx` 流式 VAD 门控（我们幻觉 21.7% 的对症思路）；⑦`prongen/`=发音词典 G2P（biasing 用，自定义词偏置）；⑧tokens 尾部 <EOS>/<blank>。
+
+**不知道的**：特征提取器实现细节（80 维具体是何种 fbank 需逆向引擎 DLL=禁止）、classifier 的特征向量含义（权重可读、语义靠推断）、profanity 明细（.enc 加密）。
+
+**可采纳映射（实验排序）**：A. 1s 块实验（逼近词级粒度，run_combo_eval 一条命令）；B. svad 式 VAD 门控+短叹词重复抑制（攻 21.7% 幻觉率）；C. 线性句末/词稳门控思路替换固定 0.7s 静音尾与 partial 语义；D. 标点规则外置形态（低优先级，译文侧已有标点）。
