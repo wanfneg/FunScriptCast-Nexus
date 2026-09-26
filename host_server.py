@@ -1270,6 +1270,20 @@ def scrub_paths(text) -> str:
     return _ABS_PATH_RE.sub("<路径>", text)
 
 
+def _configured_recommended_chunk() -> int:
+    """config.asr.recommended_chunk_sec（本地后端的分块档位建议，默认 3）。
+
+    R101 实验：2s 块在 1.7B 组合上延迟 p50 1.38→1.13s、p90 2.20→1.83s，召回/精度
+    不降——档位从写死改成配置驱动，生产按实测结果调。范围钳 [1,25]。
+    """
+    try:
+        cfg = json.loads(subtitle_cfg_path().read_text(encoding="utf-8"))
+        v = int(float((cfg.get("asr") or {}).get("recommended_chunk_sec") or 3))
+        return max(1, min(25, v))
+    except Exception:
+        return 3
+
+
 def headset_status() -> dict:
     """头显轮询用：模型起来没有。
 
@@ -1304,7 +1318,7 @@ def headset_status() -> dict:
         "dev_copy": app_version().get("dev_copy"),
         # ↓ 版本可追溯 + 档位联动（头显侧据此记录"哪个 APK 配哪个服务端版本"）
         "translate_backend": backend or None,
-        "recommended_chunk_sec": 25 if cloud else 3,
+        "recommended_chunk_sec": 25 if cloud else _configured_recommended_chunk(),
         "code_sig": (h or {}).get("code_sig"),
         "host_sig": _HOST_CODE_SIG,
     }

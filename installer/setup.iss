@@ -111,8 +111,10 @@ Source: "..\dist-app\ui\*"; DestDir: "{app}\ui"; \
 ;   llama\* 排除（R69）：本地翻译运行时（约 1.1GB）走界面下载条目，不进安装包——
 ;   构建机会把 vendor\llama 留在 dist-app 供日常调试，打包时必须显式排除。
 ;   audiocpp（ASR CPU 运行时，~27MB）相反**必须打进包**：全新安装的识别零下载依赖。
+;   audiocpp\gpu 排除（R101）：GPU 运行时 2.2GB 走界面下载条目（audiocpp-cuda），
+;   开发机 vendor 里的 gpu\ 调试副本绝不能被卷进安装包（1.0.44 首编曾膨胀到 666MB）。
 Source: "..\dist-app\vendor\*"; DestDir: "{app}\vendor"; \
-    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp,llama\*"; \
+    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp,llama\*,audiocpp\gpu\*"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 ; 出厂种子：**只在新装时铺**（onlyifdoesntexist）。装了就不再动它——用户的 key、
 ; 以及界面上调过的参数都在这份文件里。配置在 data\ 里叫 subtitle_config.json。
