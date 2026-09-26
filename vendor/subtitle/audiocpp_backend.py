@@ -48,7 +48,7 @@ AUDIOCPP_DIR = Path(os.environ.get("AUDIOCPP_DIR")
 # `/transcribe?lang=en` 在本路径下会被静默按日语解码。
 # 语言收窄（R65，用户拍板）：AI 字幕源语言只保留日语和英语可选（ko/zh/yue 移除；
 # 翻译目标语言固定中文，不受影响）。
-AUDIOCPP_LANG = {"ja": "Japanese", "en": "English"}
+AUDIOCPP_LANG = {"ja": "Japanese", "en": "English", "zh": "Chinese"}
 
 # 流式模型的 id：头显的实时字幕按这个 id 请求，必须与 stream_bridge.ASR_MODEL 一致。
 STREAM_MODEL_ID = "qwen3-asr-stream"

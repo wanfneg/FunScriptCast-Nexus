@@ -218,6 +218,7 @@ def quality_pass(args, pcm_src: Path) -> "tuple[int, float, Path]":
     r = subprocess.run(
         [str(PY), str(ROOT / "tests" / "offline_to_json.py"), str(pcm_slice), str(out),
          "--url", f"http://127.0.0.1:{PORT}",
+         "--lang", args.lang,
          "--start-ms", str(args.start * 1000),
          "--chunk-sec", str(args.chunk_sec),
          "--overlap-sec", str(args.overlap_sec)],
@@ -267,7 +268,7 @@ def lag_pass(args, pcm_src: Path) -> "tuple[int, dict]":
         delay = due - time.time()
         if delay > 0:
             time.sleep(delay)
-        url = (f"http://127.0.0.1:{PORT}/transcribe?lang={LANG}"
+        url = (f"http://127.0.0.1:{PORT}/transcribe?lang={args.lang}"
                f"&video_start_ms={vstart}&keep_from_ms={vstart + keep_off_ms}"
                f"&translate=true")
         try:
@@ -343,7 +344,10 @@ def lag_pass(args, pcm_src: Path) -> "tuple[int, dict]":
 # ---------------------------------------------------------------- 主流程
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--video", choices=["sivr001", "sivr002"], default="sivr002")
+    ap.add_argument("--video", choices=["sivr001", "sivr002", "custom"], default="sivr002")
+    ap.add_argument("--pcm", help="custom 模式：PCM 源（16k mono s16le）")
+    ap.add_argument("--srt", help="custom 模式：金标准 SRT（compare/score 用）")
+    ap.add_argument("--lang", default="ja", help="识别语言键（ja/en/zh），进推流请求")
     ap.add_argument("--start", type=int, required=True, help="切片起点（秒）")
     ap.add_argument("--sec", type=int, required=True, help="质量推流时长（秒）")
     ap.add_argument("--lag-sec", type=int, required=True, help="延迟推流时长（秒，同起点）")
@@ -362,7 +366,14 @@ def main() -> int:
                     help="额外配置覆盖（点路径=值，可多次）：如 --set asr.hallucination_gate.enabled=true")
     args = ap.parse_args()
 
-    pcm_src = PCM if args.video == "sivr001" else PCM2
+    if args.video == "custom":
+        if not (args.pcm and args.srt):
+            print("custom 模式需要 --pcm 与 --srt", file=sys.stderr)
+            return 2
+        pcm_src, srt_src = Path(args.pcm), Path(args.srt)
+    else:
+        pcm_src = PCM if args.video == "sivr001" else PCM2
+        srt_src = SRT if args.video == "sivr001" else SRT2
     if not pcm_src.exists():
         print(f"[combo] 找不到源音频 {pcm_src}", file=sys.stderr)
         return 4
