@@ -952,7 +952,7 @@ def _apply_line_merge(result: dict, lang: str, req_end_ms: int,
     混装——门控只操作 **final 段**（扣行/合并），partial 临时稿原样放行（显示用）；
     长时间无 final 且超 max_hold → 扣住的行在本请求内放行补翻，绝不无限扣。
     """
-    if (lang or "").split("-")[0] not in ("ja", "zh"):
+    if (lang or "").split("-")[0] not in ("ja", "zh", "en"):
         return 0
     target = max(4, int(cfg.get("target_len", 12)))
     gap_max = max(500, int(cfg.get("gap_ms", 3000)))
