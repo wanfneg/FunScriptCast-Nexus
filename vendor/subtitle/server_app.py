@@ -909,6 +909,71 @@ def _apply_hallucination_gate(result: dict) -> int:
         return dropped
 
 
+# 句完整性门控状态（R102，学 classifier_utterance 思路；配置 asr.completeness_gate，默认关）：
+# 混合切句的固定静音尾会把长句在换气处腰斩（长句只等 0.4s！），前半句单独翻译
+# 语义残缺（实测金标准"再靠近点"→译文"更多"）。文本特征判定：以接续形结尾
+# （て/で/が/けど…）= 半句 → 扣住不翻，与下一块识别文本合并成整句再翻。
+# 铅笔/钢笔：半句是铅笔（不显示），整句才上钢笔。超时兜底：时间轴推进超过
+# max_hold_ms 仍无后续 → 扣住的半句按原样放行，绝不无限扣。
+_COMPLETENESS_LOCK = threading.Lock()
+_PENDING_HOLD = None   # {"text":…, "start_ms":…, "end_ms":…} 或 None
+_INCOMPLETE_TAIL = None
+
+
+def _completeness_store(seg: dict) -> None:
+    global _PENDING_HOLD
+    with _COMPLETENESS_LOCK:
+        _PENDING_HOLD = {"text": seg.get("text") or "",
+                         "start_ms": seg.get("start_ms") or 0,
+                         "end_ms": seg.get("end_ms") or seg.get("start_ms") or 0}
+
+
+def _completeness_take_pending():
+    """取回扣住的半句（不管超不超时——超时判断由调用方按当前时间轴做）。"""
+    global _PENDING_HOLD
+    with _COMPLETENESS_LOCK:
+        p = _PENDING_HOLD
+        _PENDING_HOLD = None
+        if p:
+            return p["text"], p["start_ms"], p["end_ms"]
+        return "", 0, 0
+
+
+def _apply_completeness_gate(result: dict, lang: str, req_end_ms: int,
+                             max_hold_ms: int, want_partial: bool) -> int:
+    """返回本请求扣住的段数（0 或 1）。合并/放行结果就地写回 result。"""
+    global _PENDING_HOLD
+    if want_partial or not (lang or "").startswith("ja"):
+        return 0
+    import re
+    global _INCOMPLETE_TAIL
+    if _INCOMPLETE_TAIL is None:
+        _INCOMPLETE_TAIL = re.compile(
+            r"(?:て|で|ば|けど|けどう|が|し|から|って|のに|より|ながら|つつ|"
+            r"という|ようで|そうで|なくて|なく|ず|ぬ|わりで)$")
+    with _COMPLETENESS_LOCK:
+        held_text, held_s, held_e = _completeness_take_pending()
+        segs = result.get("segments") or []
+        if held_text and segs:
+            s0 = segs[0]
+            s0["text"] = held_text + (s0.get("text") or "")
+            s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
+        elif held_text and (req_end_ms - held_e) > max_hold_ms:
+            # 超时仍无后续：半句按原样放行（宁可显示半句也不无限扣）
+            segs = [{"text": held_text, "start_ms": held_s, "end_ms": held_e}]
+            result["segments"] = segs
+        held_now = 0
+        if segs and not any(s.get("partial") for s in segs):
+            last = segs[-1]
+            tail = re.sub(r"[。．！？!?…\s]+$", "", last.get("text") or "")
+            if not (held_text and (req_end_ms - held_e) > max_hold_ms) and \
+                    _INCOMPLETE_TAIL.search(tail):
+                _completeness_store(segs.pop())
+                held_now = 1
+        result["segments"] = segs
+        return held_now
+
+
 async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
                            keep_from_ms: int, translate: bool,
                            want_partial: bool = False) -> dict:
@@ -935,6 +1000,14 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
             state["asr"].transcribe, pcm, lang, video_start_ms, keep_from_ms,
             CFG.get("vad", {}), CFG.get("segment", {}), asr_extra,
         )
+
+    # 句完整性门控（R102）：半句扣住与下一块合并，超时放行（配置 asr.completeness_gate）。
+    cg = (CFG.get("asr") or {}).get("completeness_gate") or {}
+    held_count = 0
+    if cg.get("enabled"):
+        req_end = video_start_ms + int(len(pcm) / 16.0)   # 16k → 16 样本/ms
+        held_count = _apply_completeness_gate(
+            result, lang, req_end, int(float(cg.get("max_hold_ms", 8000))), want_partial)
 
     mt_ms = 0.0
     # 源语言 == 目标语言时跳过翻译。头显的语言枚举里含"中文"（LangCodes=ja/en/ko/zh），
@@ -1006,6 +1079,7 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
           f"skip={result['skipped']} segs={len(result['segments'])} "
           f"asr={result['asr_ms']}ms mt={mt_ms}ms total={result['total_ms']}ms"
           + (f" hallu_drop={dropped_h}" if dropped_h else "")
+          + (f" held={held_count}" if held_count else "")
           + (f"\n             {preview}" if preview else ""), flush=True)
     return result
 
