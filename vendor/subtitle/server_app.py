@@ -347,7 +347,12 @@ async def lifespan(_app):
     state["asr"] = _make_asr(CFG.get("asr", {}))
     print(f"[server] 管线代码签名 code_sig={CODE_SIG}（陈旧实例排障用）", flush=True)
     if (CFG.get("translate") or {}).get("backend") == "local":
-        _warm.join(timeout=12.0)
+        # R104 热启动：预热等待从写死 12s 改为配置 server.translate_warm_timeout_sec
+        # （默认 60s）。12s 兜底是"字幕冷启动"的元凶——llama 冷加载普遍 15-40s，
+        # 提前放行 = 手机恢复播放时翻译模型还在半路（用户实测抱怨）。
+        # llama 起不来时 join 也会在预热线程自行退出后返回，绝不卡死服务。
+        _warm_want = float((CFG.get("server") or {}).get("translate_warm_timeout_sec", 60))
+        _warm.join(timeout=max(5.0, _warm_want))
     _reaper = asyncio.create_task(_idle_reaper())
     print(f"[server] 空闲回收：{_idle_release_min():g} 分钟无识别请求后释放模型"
           if _idle_release_min() > 0 else "[server] 空闲回收：已关闭（idle_release_min=0）")

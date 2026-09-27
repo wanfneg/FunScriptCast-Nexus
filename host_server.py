@@ -1305,10 +1305,13 @@ def headset_status() -> dict:
     # 7B 单块 1.0–1.9s，3 秒档没问题。把建议由 PC 明确给出，头显据此切「分块 25s」，
     # 不必靠人去记"切云端要手动改档位"这条隐规则。
     cloud = backend in ("openai", "cloud")
+    # R104 热启动：本地翻译时放行还需翻译预热完成（/health 的 mt_warm）——
+    # 此前只看 asr_ready，手机在 llama 冷加载途中就恢复播放，首句撞上冷启动。
+    mt_ok = (backend != "local") or bool(h.get("mt_warm"))
     return {
         "ok": True,
         # 模型没下载时服务虽在但识别不可用：不能给头显报 ready（否则它白推音频）
-        "ready": status == "ready" and h.get("asr_ready") is not False,
+        "ready": status == "ready" and h.get("asr_ready") is not False and mt_ok,
         "status": status,
         # 脱敏（评审 F19）：error 是 sub_error 原文（异常全文/子进程输出，含绝对路径）
         "error": scrub_paths(st.get("error")),
