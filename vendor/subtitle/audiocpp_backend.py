@@ -107,6 +107,7 @@ class AudioCppBackend:
         # gpu\ 运行时缺失时**立刻报错**而不是悄悄降级 CPU——静默回退会让 VAD CLI
         # 一起消失、字幕块块 skipped 且界面毫无征兆（R96 的教训反面）。在此 fail-fast，
         # 服务起不来 → /health error → 手机端明确提示去模型列表下载。
+        self.lazy_load = bool(cfg.get("lazy_load", True))   # R104：False=启动即装载权重（真热启动）
         self.backend = "cuda"
         if not (self.dir / "gpu" / "audiocpp_server.exe").is_file():
             raise AudioCppError(
@@ -273,8 +274,10 @@ class AudioCppBackend:
                 # llama-server 挤到 CPU 上：流式中位 0.29s→2.34s、整段 wall
                 # 37.7s→238.8s；改用 --max-loaded-models 1 又变成两模式反复装卸
                 # （离线 3s 音频要 17.6s、出现 33 次 503）。单注册两个问题都没有。
-                # lazy_load 与 _ref\audiocpp-asr-stream.json 一致：按需加载。
-                "lazy_load": True,
+                # lazy_load：True=第一批音频到达才装载权重（省显存，首句晚几秒）；
+                # False=服务启动即装载（真·热启动，显存常驻到空闲回收）。
+                # R104：配置 asr.audiocpp.lazy_load 控制，生产设 false 实现全热启动。
+                "lazy_load": bool(self.lazy_load),
                 "models": [
                     {"id": STREAM_MODEL_ID, "family": "qwen3_asr",
                      "path": self.model, "task": "asr", "mode": "streaming"},
