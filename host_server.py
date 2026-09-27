@@ -306,6 +306,7 @@ DEFAULT_SETTINGS = {
     "dlna_auto_start": True,
     "start_minimized": False,
     "close_to_tray": True,
+    "launch_on_boot": False,
     "theme": "dark",
     "motion": "full",
     "subtitle_url": f"http://127.0.0.1:{SUBTITLE_PORT}",
@@ -318,6 +319,44 @@ DEFAULT_SETTINGS = {
     "sync_force_full": False,
     "sync_delete_extra": False,
 }
+
+
+_AUTOSTART_RUN_NAME = "FunScriptCast-Nexus"
+
+
+def _autostart_enabled() -> bool:
+    """开机自启是否生效：以 HKCU Run 键的**实际状态**为准（Windows 设置侧改了也算数）。
+
+    值存在但指向的 exe 与当前安装路径不同（挪过盘）视为失效——UI 显示关，
+    用户重新打开开关时会用新路径重写。
+    """
+    if not getattr(sys, "frozen", False):
+        return False                 # 源码运行没有可注册的 exe
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                            winreg.KEY_READ) as k:
+            v, _ = winreg.QueryValueEx(k, _AUTOSTART_RUN_NAME)
+        return bool(str(v).strip('" ')) and             str(v).strip('" ') == str(sys.executable)
+    except OSError:
+        return False
+
+
+def _set_autostart(on: bool) -> None:
+    if not getattr(sys, "frozen", False):
+        return                       # 源码运行：注册表不写
+    import winreg
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                          r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
+        if on:
+            winreg.SetValueEx(k, _AUTOSTART_RUN_NAME, 0, winreg.REG_SZ,
+                              f'"{sys.executable}"')
+        else:
+            try:
+                winreg.DeleteValue(k, _AUTOSTART_RUN_NAME)
+            except FileNotFoundError:
+                pass
 
 
 def load_settings() -> dict:
@@ -337,6 +376,7 @@ def load_settings() -> dict:
     if key is not None and cache_data is not None and cache_key == key:
         s = dict(cache_data)
         s["dlna_roots"] = list(s.get("dlna_roots") or [])
+        s["launch_on_boot"] = _autostart_enabled()
         return s
     s = dict(DEFAULT_SETTINGS)
     _SETTINGS_READ_ERROR = ""
@@ -474,6 +514,19 @@ def save_settings(patch: dict) -> dict:
             log.warning("%s", msg)
             RT.add_log(msg, "err")
             return {"ok": False, "error": msg}
+        if "launch_on_boot" in patch:
+            # 开机自启的存储是 HKCU Run 键而非设置文件：Windows 设置侧的改动
+            # 也要生效，所以这里即时写注册表，load_settings 再回读真实状态。
+            try:
+                _set_autostart(bool(patch["launch_on_boot"]))
+            except Exception as e:
+                msg = f"开机自启设置失败：{type(e).__name__}: {e}"
+                log.warning(msg)
+                RT.add_log(msg, "err")
+                return {"ok": False, "error": msg}
+            RT.add_log("开机自动启动：" + ("已开启" if patch["launch_on_boot"] else "已关闭"),
+                       "ok")
+            patch = {k: v for k, v in patch.items() if k != "launch_on_boot"}
         for k, v in patch.items():
             if k not in DEFAULT_SETTINGS:
                 continue

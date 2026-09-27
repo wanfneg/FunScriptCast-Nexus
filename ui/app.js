@@ -533,6 +533,7 @@
     if (!busyEditing($("#setSubAuto"))) $("#setSubAuto").checked = !!s.subtitle_auto_start;
     if (!busyEditing($("#setCloseTray"))) $("#setCloseTray").checked = !!s.close_to_tray;
     if (!busyEditing($("#setStartMin"))) $("#setStartMin").checked = !!s.start_minimized;
+    if (!busyEditing($("#setAutoStart"))) $("#setAutoStart").checked = !!s.launch_on_boot;
     // 注意：这里**不能**碰 #mtModel —— 它的值只归 loadSubtitleConfig 填。
     // 旧代码每秒轮询都把输入框清空，用户点保存（mousedown 已失焦）时读到的
     // 就是空串，把配置里已保存的模型名覆盖成 ""。
@@ -1101,6 +1102,9 @@
       markDirty(this);
       saveSetting("setStartMin", "start_minimized", this.checked);
       toast(this.checked ? "下次启动将直接隐藏到托盘" : "下次启动将显示主窗口");
+    });
+    $("#setAutoStart").addEventListener("change", function () {
+      saveSetting("setAutoStart", "launch_on_boot", this.checked);
     });
     $("#copyIp").addEventListener("click", function () {
       var ip = $("#aboutIp").textContent;
