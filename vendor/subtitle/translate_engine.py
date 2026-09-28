@@ -1060,9 +1060,13 @@ class Translator:
             if self._lang_cand_n < self.lang_switch_after:
                 return                                  # 滞回：先不切，等下一块确认
         try:
-            _local_backend(local).use_model(target)
-            self._lang_model_ref = target
-            self._lang_cand, self._lang_cand_n = "", 0
+            ok = _local_backend(local).use_model(target)
+            # R103 复核：仅当 use_model 明确返回 False（文件缺失拒切）才不标记——
+            # 下一块同语言内容会再次重试；此前无条件置 ref 把失败固化成整会话
+            # 不再重试。None/真值一律当成功（兼容旧 mock/子类的无返回值实现）。
+            if ok is not False:
+                self._lang_model_ref = target
+                self._lang_cand, self._lang_cand_n = "", 0
         except Exception as e:
             print(f"[mt] 按语言切换模型失败（沿用当前模型）：{type(e).__name__}: {e}",
                   flush=True)

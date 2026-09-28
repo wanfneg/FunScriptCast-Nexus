@@ -487,7 +487,14 @@ def _recommended_chunk_sec() -> int:
     t = state.get("translator")
     if t is not None and getattr(t, "backend", ""):
         backend = t.backend            # 归一后的实际后端（cloud/dashscope → openai）
-    return 25 if backend in ("openai", "cloud") else 3
+    if backend in ("openai", "cloud"):
+        return 25
+    # R103 复核修正：与宿主 headset_status() 同读 asr.recommended_chunk_sec——
+    # 此前这里写死 3，宿主配置 2s 档后两个接口下发矛盾值（契约 B 双源）。
+    try:
+        return max(1, min(25, int(float((CFG.get("asr") or {}).get("recommended_chunk_sec") or 3))))
+    except Exception:
+        return 3
 
 
 def _gpu_used_gb() -> float:
@@ -871,7 +878,6 @@ async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0
 # 首次永远保留（228s 的もっと 对应金标准"再露点"是真命中），只杀后续循环。
 _HALLU_LOCK = threading.Lock()
 _HALLU_STATE = {"last_end": -1, "recent": []}   # recent: [(end_ms, 归一化文本)]
-_HALLU_DROPPED = 0
 
 
 def _apply_hallucination_gate(result: dict) -> int:
@@ -886,9 +892,10 @@ def _apply_hallucination_gate(result: dict) -> int:
     import re
     win_ms = int(float(hg.get("window_s", 45)) * 1000)
     max_len = int(hg.get("max_len", 4))
-    global _HALLU_DROPPED
     with _HALLU_LOCK:
-        segs = result.get("segments") or []
+        # R102 复核修正：partial 临时稿不进窗口、不参与判重——否则 partial「はい」
+        # 先入窗口后，窗口内同文本的真定稿会被当循环幻觉吞掉（客户端卡在临时稿）。
+        segs = [x for x in (result.get("segments") or []) if not x.get("partial")]
         ends = [s.get("end_ms") or s.get("start_ms") or 0 for s in segs]
         cur_end = max(ends) if ends else 0
         if cur_end < _HALLU_STATE["last_end"] - 60000:   # 回退/换片：清空历史
@@ -906,11 +913,11 @@ def _apply_hallucination_gate(result: dict) -> int:
             if 0 < len(norm) <= max_len:
                 _HALLU_STATE["recent"].append((pos, norm))
             kept.append(s)
+        dropped += len(result.get("segments") or []) - len(segs)
         _HALLU_STATE["recent"] = [(t2, n2) for t2, n2 in _HALLU_STATE["recent"]
                                   if cur_end - t2 < win_ms * 3]
         _HALLU_STATE["last_end"] = max(cur_end, _HALLU_STATE["last_end"])
         result["segments"] = kept
-        _HALLU_DROPPED += dropped
         return dropped
 
 
@@ -926,19 +933,31 @@ _LM_PENDING = None   # {"text":…, "start_ms":…, "end_ms":…} 或 None
 def _lm_store(seg: dict) -> None:
     global _LM_PENDING
     with _LINE_MERGE_LOCK:
-        _LM_PENDING = {"text": seg.get("text") or "",
-                       "start_ms": seg.get("start_ms") or 0,
-                       "end_ms": seg.get("end_ms") or seg.get("start_ms") or 0}
+        _lm_store_locked(seg)
 
 
 def _lm_take():
     global _LM_PENDING
     with _LINE_MERGE_LOCK:
-        p = _LM_PENDING
-        _LM_PENDING = None
-        if p:
-            return p["text"], p["start_ms"], p["end_ms"]
-        return "", 0, 0
+        return _lm_take_locked()
+
+
+def _lm_store_locked(seg: dict) -> None:
+    # 仅在已持有 _LINE_MERGE_LOCK 的上下文里调用（_apply_line_merge 原子段用）
+    global _LM_PENDING
+    _LM_PENDING = {"text": seg.get("text") or "",
+                   "start_ms": seg.get("start_ms") or 0,
+                   "end_ms": seg.get("end_ms") or seg.get("start_ms") or 0}
+
+
+def _lm_take_locked():
+    # 同上：锁内版。返回后 pending 已清空。
+    global _LM_PENDING
+    p = _LM_PENDING
+    _LM_PENDING = None
+    if p:
+        return p["text"], p["start_ms"], p["end_ms"]
+    return "", 0, 0
 
 
 def _lm_strip(text: str) -> str:
@@ -947,15 +966,16 @@ def _lm_strip(text: str) -> str:
 
 
 def _apply_line_merge(result: dict, lang: str, req_end_ms: int,
-                      cfg: dict, want_partial: bool) -> int:
+                      cfg: dict) -> int:
     """返回本请求扣住的行数（0/1）。合并/放行就地写回 result。
 
     判据：当前行去标点日文 < target_len → 扣住；下一块来了就合并（间隙 ≤gap_ms），
-    合并后仍不足则继续扣；真停顿（间隙超限）或无后续超 max_hold_ms → 原样放行。
-    锁纪律：本函数体不整体持锁——_lm_take/_lm_store 各自持锁（Lock 不可重入）。
-    partial 感知（R102）：手机请求全带 partial=1，响应里 final 段与 partial 临时稿
-    混装——门控只操作 **final 段**（扣行/合并），partial 临时稿原样放行（显示用）；
-    长时间无 final 且超 max_hold → 扣住的行在本请求内放行补翻，绝不无限扣。
+    真停顿（间隙超 gap_max）或总跨度/无后续超时 → 原样放行。
+    锁纪律（R102 复核修正）：take→store 全程**一次持锁**（用 _lm_take_locked/
+    _lm_store_locked 锁内版）——此前两段式在并发请求下会互相覆盖 pending，
+    扣住的行静默蒸发。partial 感知：只操作 final 段，partial 临时稿原样放行。
+    真停顿判定与 docstring 对齐：间隙超 gap_max 即放行（原 (gap_ms, max_hold]
+    死区已修）。
     """
     if (lang or "").split("-")[0] not in ("ja", "zh", "en"):
         return 0
@@ -963,36 +983,35 @@ def _apply_line_merge(result: dict, lang: str, req_end_ms: int,
     gap_max = max(500, int(cfg.get("gap_ms", 3000)))
     max_hold = max(1500, int(cfg.get("max_hold_ms", 5000)))
     max_span = max(max_hold, int(cfg.get("max_span_ms", 10000)))
-    held_text, held_s, held_e = _lm_take()
     segs = result.get("segments") or []
     finals = [s for s in segs if not s.get("partial")]
     held_now = 0
-    if held_text:
-        if finals:
-            gap = (finals[0].get("start_ms") or req_end_ms) - held_e
-            if gap <= gap_max:
-                s0 = finals[0]
-                s0["text"] = held_text + (s0.get("text") or "")
-                s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
-            elif (req_end_ms - held_s) > max_span or gap > max_hold:
+    with _LINE_MERGE_LOCK:
+        held_text, held_s, held_e = _lm_take_locked()
+        if held_text:
+            if finals:
+                gap = (finals[0].get("start_ms") or req_end_ms) - held_e
+                if gap <= gap_max:
+                    s0 = finals[0]
+                    s0["text"] = join_tokens([held_text, s0.get("text") or ""])
+                    s0["start_ms"] = min(held_s, s0.get("start_ms") or held_s)
+                else:
+                    # 真停顿/超跨度：半句按原样放行成独立行（翻译在本请求内照做）
+                    segs.insert(0, {"text": held_text, "start_ms": held_s, "end_ms": held_e})
+            elif (req_end_ms - held_e) > max_hold or (req_end_ms - held_s) > max_span:
                 segs.insert(0, {"text": held_text, "start_ms": held_s, "end_ms": held_e})
             else:
-                _lm_store({"text": held_text, "start_ms": held_s, "end_ms": held_e})
-                return 1   # 等 final 段（间隙可接受、也没到顶）：继续扣
-        elif (req_end_ms - held_e) > max_hold or (req_end_ms - held_s) > max_span:
-            # 本请求无 final 段且已超时/超跨度：扣住的行放行补翻，别让它消失
-            segs.insert(0, {"text": held_text, "start_ms": held_s, "end_ms": held_e})
-        else:
-            _lm_store({"text": held_text, "start_ms": held_s, "end_ms": held_e})
-            return 1   # 无 final 段、未超时：继续扣
-    if finals:
-        last = finals[-1]
-        if len(_lm_strip(last.get("text") or "")) < target and                 (req_end_ms - (last.get("start_ms") or req_end_ms)) <= max_span:
-            segs.remove(last)
-            _lm_store(last)
-            held_now = 1
-    result["segments"] = segs
-    return held_now
+                _lm_store_locked({"text": held_text, "start_ms": held_s, "end_ms": held_e})
+                held_now = 1   # 行还不足长、也没超时：继续扣，本响应不给 final
+        if finals:
+            last = finals[-1]
+            if len(_lm_strip(last.get("text") or "")) < target and (
+                    req_end_ms - (last.get("start_ms") or req_end_ms)) <= max_span:
+                segs.remove(last)
+                _lm_store_locked(last)
+                held_now = 1
+        result["segments"] = segs
+        return held_now
 
 
 async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
@@ -1027,7 +1046,7 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
     held_count = 0
     if lmcfg.get("enabled"):
         req_end = video_start_ms + int(len(pcm) / 16.0)   # 16k → 16 样本/ms
-        held_count = _apply_line_merge(result, lang, req_end, lmcfg, want_partial)
+        held_count = _apply_line_merge(result, lang, req_end, lmcfg)
 
     mt_ms = 0.0
     # 源语言 == 目标语言时跳过翻译。头显的语言枚举里含"中文"（LangCodes=ja/en/ko/zh），
@@ -1070,6 +1089,7 @@ async def _transcribe_impl(body: bytes, lang: str, video_start_ms: int,
         #    汉字判据（实测开头第一句天天上屏日文）
         from stream_bridge import _display_zh
         from text_filters import strip_wrap_quotes
+        from text_filters import join_tokens
         segs = result["segments"]
         for s in segs:
             s["text"] = strip_wrap_quotes(s.get("text") or "")
@@ -1115,14 +1135,16 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
     with _INFLIGHT_LOCK:
         _INFLIGHT += 1
     try:
-        # 单客户端独占（评审 F11）：与 /transcribe 同一口径
+        # 单客户端独占（评审 F11）。注意：拒绝应答与 /transcribe 的 200+error dict
+        # **不同**（这里回 503）——头显旧 APK 对流式入口的非 200 有既定处理，
+        # 改同口径前须先核实客户端行为（R103 复核发现注释谎称同口径，已如实化）。
         deny = _claim_session(request)
         if deny:
             return JSONResponse({"error": deny,
                                  "recommended_chunk_sec": _recommended_chunk_sec()},
                                 status_code=503)
         from stream_bridge import transcribe_stream as _impl   # 同目录，复用已验证实现
-        return await _impl(request, lang, translate, video_start_ms)
+        return await _impl(request, lang, translate, video_start_ms, MAX_BODY_BYTES)
     finally:
         # 与 /transcribe 同口径：先刷时钟再减计数（评审 F10）
         _touch_request_clock()

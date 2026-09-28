@@ -93,9 +93,7 @@ class HybridBuffer:
         self._lang = ""
         self._pub = None
 
-    def state(self) -> dict:
-        return {"buffered_ms": int(len(self._pcm) / SR * 1000),
-                "start_ms": self._start_ms, "lang": self._lang}
+    # （R103 清理：state() 死方法已删——全仓无调用方，疑似未接线的诊断接口。）
 
     def snapshot(self, min_sec: float = 1.5):
         """partial 用：当前缓冲的快照（拷贝 + 绝对起点）。不足 min_sec 回 None。

@@ -21,7 +21,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from video_sync import (
-    AdbClient,
     AdbException,
     VideoSyncConfig,
     VideoSyncController,

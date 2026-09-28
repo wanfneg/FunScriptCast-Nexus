@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import csv
 import ctypes
 import hashlib
 import json
@@ -130,7 +129,6 @@ class Runtime:
         # 照样把它留下来（DLNA 与字幕子进程同一套机制）。
         self.dlna_gen = 0
         self.dlna_error = ""
-        self.dlna_requests = 0
         self.sub_proc: subprocess.Popen | None = None
         self.sub_starting = False
         self.sub_gen = 0
@@ -309,7 +307,6 @@ DEFAULT_SETTINGS = {
     "launch_on_boot": False,
     "theme": "dark",
     "motion": "full",
-    "subtitle_url": f"http://127.0.0.1:{SUBTITLE_PORT}",
     "subtitle_auto_start": False,
     "script_folder": "",
     "video_folder": "",
@@ -410,6 +407,10 @@ def load_settings() -> dict:
             s[k] = norm_path(s[k])
     if isinstance(s.get("dlna_roots"), list):
         s["dlna_roots"] = [norm_path(x) for x in s["dlna_roots"] if norm_path(x)]
+    # R103 复核修正：launch_on_boot 以注册表为准——文件里的值可能是陈旧的
+    # （用户在任务管理器/Windows 设置侧关了自启，或文件根本不存在走默认值），
+    # 此前只有缓存命中路径回读真值，其余路径显示与实际相反。
+    s["launch_on_boot"] = _autostart_enabled()
     if key is not None:
         # key 与 data 一起换（评审 F02）：见上面命中判定的注释。
         # 若本线程比另一个保存者更晚写回，最坏只是缓存里放了一份**与文件不符的旧对**
@@ -1194,11 +1195,16 @@ def sub_state() -> dict:
         starting = RT.sub_starting
         err = RT.sub_error
     alive = bool(proc and proc.poll() is None)
-    # 端口探测缓存 2s，避免每次轮询都建连接
+    # 端口探测缓存 2s，避免每次轮询都建连接。
+    # R103 复核修正：探测带代次戳——旧写法在 sub_stop/sub_reclaim 刚把
+    # sub_ready=False 复位后，另一线程在飞的旧探测（杀残留前的端口态）会把
+    # True 写回去，stale ready 存活到下个 2s 周期。
     now = time.time()
-    if now - RT.sub_last_probe > 2.0:
+    gen = RT.sub_gen
+    if now - RT.sub_last_probe > 2.0 or getattr(RT, "sub_probe_gen", None) != gen:
+        RT.sub_probe_gen = gen
         RT.sub_last_probe = now
-        RT.sub_ready = sub_port_open()
+        RT.sub_ready = sub_port_open() and gen == RT.sub_gen
     health = sub_health() if RT.sub_ready else None
     # 端口开着 ≠ 我们的服务在跑。区分三种情况，否则会给出一个会骗人的 ready：
     #   · 服务是别人在跑，但能正常应答 /health → 服务确实可用，算 ready，
@@ -1704,8 +1710,12 @@ def _model_dl_worker(e: dict) -> None:
             zpaths = []
             for i, f in enumerate(e["files"]):
                 tmp = tmpdir / (id_ + "--" + f["rel"])
+                # R103 复核修正：已存在的完整包直接复用（跳过下载）——旧写法先
+                # append 再无条件重下，GB 级 zip 重试时整包重下 + extractall 两次。
+                # 完整性由 zip 校验兜底（坏包在 ZipFile 处抛错重走）。
                 if tmp.is_file() and tmp.stat().st_size > 0:
-                    zpaths.append(tmp)       # 上次中断留下的完整/半截包交给续传判断
+                    zpaths.append(tmp)
+                    continue
                 def prog(done, total, _i=i):
                     frac = (_i + (done / total if total else 0.0)) / n
                     with _DL_LOCK:
@@ -2142,8 +2152,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/settings":
                 self._json({"ok": True, "settings": load_settings()})
             elif path == "/api/logs":
+                # R103 复核修正：锁内只拷贝、锁外序列化写网络——旧写法把
+                # wfile.write 也放进 RT.lock，慢/停滞客户端会跨 IO 占住全局锁
+                # （add_log/sub_stop/state_payload 同锁全部被卡，与 8791 卡死同族）。
                 with RT.lock:
-                    self._json({"ok": True, "logs": RT.logs[-300:]})
+                    logs_snap = list(RT.logs[-300:])
+                self._json({"ok": True, "logs": logs_snap})
             elif path == "/api/sync":
                 self._json({"ok": True, "sync": SYNC.public()})
             elif path == "/api/subtitle/config":
@@ -2305,10 +2319,15 @@ _SETUP_RE = re.compile(r"^FunScriptCast-Nexus-Setup-(\d+\.\d+\.\d+)\.exe$")
 
 
 def _ver_tuple(v: str) -> tuple:
-    try:
-        return tuple(int(x) for x in str(v).strip().lstrip("vV").split("."))
-    except Exception:
-        return (0,)
+    # R103 复核修正：剥掉"（开发副本）"等非数字尾巴——开发副本的 version name
+    # 带后缀，旧实现 int() 失败回退 (0,)，对任何远端版本都恒判"有更新"。
+    parts = []
+    for x in str(v).strip().lstrip("vV").split("."):
+        m = re.match(r"(\d+)", x.strip())
+        if not m:
+            break
+        parts.append(int(m.group(1)))
+    return tuple(parts) or (0,)
 
 
 def _update_status() -> dict:

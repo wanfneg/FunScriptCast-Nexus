@@ -151,39 +151,8 @@ def legacy_hf_hub() -> Path:
     return Path(os.environ.get("USERPROFILE") or Path.home()) / ".cache" / "huggingface" / "hub"
 
 
-def adopt_legacy_hf_model(repo_dirname: str) -> bool:
-    """把**指定的那一个** HF 模型仓从旧缓存（C 盘）搬进安装目录，成功返回 True。
-
-    为什么只搬一个：旧缓存是**全局共享**的。实测本机 `.cache\\huggingface` 有 1.8GB，
-    其中 374MB 是 CLIP 与 WD-tagger —— 那是别的项目在用的，整目录搬走等于砸别人的东西。
-    所以只搬本项目自己要的那个仓（`models--kotoba-tech--kotoba-whisper-v2.0-faster`）。
-
-    先 copytree 到临时目录、成功了再改名就位：copytree 中途失败（断电/磁盘满/用户手滑）
-    只会在原地留一个 `.adopting` 临时目录，**目标路径始终不出现**——否则下次运行看到
-    "目标已存在"就跳过搬迁，whisper 会去读一份残模型（比搬不动更糟）。
-    搬完删源，C 盘真正腾出来。调用方还要有"读旧位置"的兜底（见 whisper_backend），
-    这里失败也不能让识别挂掉。
-    """
-    dst_root = Path(os.environ.get("HF_HOME") or hf_cache_dir()) / "hub"
-    dst, src = dst_root / repo_dirname, legacy_hf_hub() / repo_dirname
-    tmp = dst_root / (repo_dirname + ".adopting")
-    try:
-        if dst.exists() or not src.is_dir():
-            return dst.exists()
-        dst_root.mkdir(parents=True, exist_ok=True)
-        shutil.rmtree(tmp, ignore_errors=True)   # 清掉上次中断留下的半成品
-        print(f"[paths] 正在把模型缓存搬进安装目录（约 1.4GB，只此一次）：{src} → {dst}",
-              flush=True)
-        shutil.copytree(src, tmp)
-        os.replace(tmp, dst)
-        shutil.rmtree(src, ignore_errors=True)
-        print(f"[paths] 模型缓存已搬入安装目录，C 盘那份已释放：{dst}", flush=True)
-        return True
-    except Exception as e:
-        shutil.rmtree(tmp, ignore_errors=True)
-        print(f"[paths] 模型缓存搬迁失败（忽略，将回退读旧位置）：{type(e).__name__}: {e}",
-              flush=True)
-        return False
+# （R103 清理：adopt_legacy_hf_model 死函数已删——whisper 方案 R66 起整体剔除，
+# 其文档引用的 whisper_backend 调用方模块已不存在，整条搬迁路径无消费方。）
 
 
 def _ensure_dir() -> Path:

@@ -207,12 +207,7 @@
   }
 
   /* ---------------------------------------------------------- 渲染 */
-  function fmtUptime(sec) {
-    if (!sec) return "0";
-    var m = Math.floor(sec / 60);
-    if (m < 60) return String(m);
-    return Math.floor(m / 60) + "h" + (m % 60);
-  }
+  // （R103 清理：fmtUptime 死函数已删——全仓无调用方。）
   function setBadge(el, kind, text) {
     if (!el) return;
     el.className = "badge " + (kind || "");
@@ -323,7 +318,10 @@
     $("#dlnaStatusSub").textContent = d.running ? ("运行中 · " + (d.url || "")) : (d.error || "未启动");
     // 显示**已保存设置**里的端口，而不是运行时状态（未启动时 d.port 恒为默认值，
     // 会把用户改过的端口刷回 8899，点「启动」就把错值写回设置了）
-    if (document.activeElement !== $("#dlnaPort")) $("#dlnaPort").value = (S.settings && S.settings.dlna_port) || d.port || 8899;
+    // R103 复核：聚焦中**或 dirty** 都不回填——旧判据只挡聚焦态，用户改完失焦
+    // 去（比如）添加媒体根，≤1s 后输入被静默刷回（违背文件头回填不变式）。
+    if (!(document.activeElement === $("#dlnaPort") || DIRTY["dlnaPort"]))
+      $("#dlnaPort").value = (S.settings && S.settings.dlna_port) || d.port || 8899;
     $("#dlnaUrl").value = d.url || "—";
     setBadge($("#rootsBadge"), "", (d.roots || []).length + " 个");
     renderRoots(d.roots || []);
@@ -593,10 +591,12 @@
       var st = S.lastState;
       updateVramEstimate(st);
     }
-    if (S.localModels) { paint(S.localModels); return; }
+    if (S.localModels && S.localModels.length) { paint(S.localModels); return; }
     api("/api/subtitle/models").then(function (r) {
-      S.localModels = (r && r.ok) ? (r.models || []) : [];
-      paint(S.localModels);
+      // R103 复核：失败不得写缓存（空数组为真值会把下拉毒化整个会话，只剩
+      // "（当前）"兜底项且永不重试）——失败置 null，下次调用重新拉取。
+      S.localModels = (r && r.ok) ? (r.models || []) : null;
+      paint(S.localModels || []);
     });
   }
 
@@ -631,9 +631,17 @@
     "hymt2-1.8b": "翻译模型 · Hy-MT2-1.8B（英语，显存约 1.2GB，低显存推荐）"
   };
   var modelPollTimer = 0;
+  var modelPollFails = 0;
   function loadModels() {
     api("/api/models/catalog").then(function (r) {
-      if (!r || !r.ok) return;
+      // R103 复核：失败不再直接 return（那会跳过末尾的重排 setTimeout，轮询链
+      // 一次失败即永久停摆、下载进度冻结）——连续失败限速重试，成功即恢复。
+      if (!r || !r.ok) {
+        modelPollFails += 1;
+        if (modelPollFails <= 20) modelPollTimer = setTimeout(loadModels, 5000);
+        return;
+      }
+      modelPollFails = 0;
       var box = $("#modelDl");
       if (!box) return;
       box.innerHTML = "";
@@ -791,11 +799,15 @@
     });
     /* 添加媒体根：走 /api/dlna/roots —— 它会顺手校验路径是否存在。
        不校验的话，路径写错只表现为"头显里那个文件夹是空的"，猜不到原因。 */
+    var rootsOpChain = Promise.resolve();   // R103 复核：addRoots/删根串行化——
+    /* 两者都是 GET→改→POST 读改写，并发时后写覆盖先写（F09 只修了串行背靠背），
+       双击"添加"或添加后立刻删除会静默丢一次操作。链式排队把窗口关掉。 */
     function addRoots(list) {
       /* F09：先取**服务端当前值**再改，不拿本地缓存（S.settings）当基底全量回写。
          本地缓存只靠 1s 轮询刷新，背靠背两次操作会丢更新：删 A → 轮询带回仍含 A 的旧
          列表 → 添加 B 时把 A 一起 POST 回去（刚删的目录复活，而 toast 已经说过"已移除"）。 */
-      api("/api/settings").then(function (cur) {
+      rootsOpChain = rootsOpChain.then(function () {
+      return api("/api/settings").then(function (cur) {
         var roots = (((cur || {}).settings || {}).dlna_roots || []).slice();
         var added = 0, dup = 0;
         (list || []).forEach(function (p) {
@@ -826,6 +838,8 @@
         poll(true);
         });
       });
+      });
+      return rootsOpChain;   // 链上排队：并发调用共享同一条串行链
     }
     $("#addRoot").addEventListener("click", function () { addRoots([$("#newRoot").value]); });
     /* 系统「选择文件夹」：主入口。手打路径容易带进引号/全角字符，
@@ -847,16 +861,25 @@
       // 列表一旦在两次轮询之间变化，就会删错条目。
       var p = b.getAttribute("data-del-root");
       /* F09：同样先取服务端当前值再删。基于本地缓存全量回写时，"删 A、加 B"这类
-         背靠背操作会让 A 复活（轮询带回的旧列表把 A 又写回去）。 */
-      api("/api/settings").then(function (cur) {
+         背靠背操作会让 A 复活（轮询带回的旧列表把 A 又写回去）。
+         R103 复核：走同一条 rootsOpChain 串行链，与 addRoots 互斥。 */
+      rootsOpChain = rootsOpChain.then(function () {
+      return api("/api/settings").then(function (cur) {
         var roots = (((cur || {}).settings || {}).dlna_roots || []).slice();
         var i = roots.indexOf(p);
         if (i < 0) { toast("该目录已不在列表中", p || "", "warn"); poll(true); return; }
         var removed = roots.splice(i, 1);
-        api("/api/settings", "POST", { dlna_roots: roots }).then(function () {
+        api("/api/settings", "POST", { dlna_roots: roots }).then(function (r) {
+          // R103 复核：与 addRoots/saveSetting 同口径判 ok——失败不得提示"已移除"
+          if (!r || r.ok === false) {
+            toast("移除失败", (r && r.error) || "", "err");
+            poll(true);
+            return;
+          }
           toast("已移除", removed[0] || "");
           poll(true);
         });
+      });
       });
     });
     $("#dlnaCopy").addEventListener("click", function () {
@@ -1104,6 +1127,7 @@
       toast(this.checked ? "下次启动将直接隐藏到托盘" : "下次启动将显示主窗口");
     });
     $("#setAutoStart").addEventListener("change", function () {
+      markDirty(this);   // R103 复核：5 个开关里唯一漏了 dirty 护栏的（在途轮询会把开关弹回旧值）
       saveSetting("setAutoStart", "launch_on_boot", this.checked);
     });
     $("#copyIp").addEventListener("click", function () {
@@ -1187,11 +1211,24 @@
 
   function startDlna() {
     var port = parseInt($("#dlnaPort").value, 10) || 8899;
-    if (!(S.settings.dlna_roots || []).length) { toast("请先添加媒体根目录", "", "warn"); return; }
-    api("/api/settings", "POST", { dlna_port: port }).then(function () {
-      api("/api/dlna/start", "POST", { port: port }).then(function (r) {
-        toast(r.ok ? "DLNA 正在启动" : "启动失败", r.error || "", r.ok ? "ok" : "err");
-        poll(true);
+    // R103 复核：改用服务端实时配置判空（S.settings 是 1s 轮询快照，刚加完根
+    // 就点启动会被旧快照误拦）；服务端 /api/dlna/start 本来就读最新设置。
+    api("/api/settings").then(function (cur) {
+      if (!((((cur || {}).settings || {}).dlna_roots) || []).length) {
+        toast("请先添加媒体根目录", "", "warn");
+        return;
+      }
+      api("/api/settings", "POST", { dlna_port: port }).then(function (r) {
+        // R103 复核：判 ok——端口保存失败仍启动的话，端口只在本运行生效、
+        // 未落盘，下次 auto_start 会回退旧端口
+        if (!r || r.ok === false) {
+          toast("端口保存失败", (r && r.error) || "", "err");
+          return;
+        }
+        api("/api/dlna/start", "POST", { port: port }).then(function (r) {
+          toast(r.ok ? "DLNA 正在启动" : "启动失败", r.error || "", r.ok ? "ok" : "err");
+          poll(true);
+        });
       });
     });
   }

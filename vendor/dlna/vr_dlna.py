@@ -568,7 +568,10 @@ class MediaLibrary:
         # point，字符串看着仍在 root 里、真实落点却已经在 root 外（root=C:\Users 时
         # 系统自带的 "All Users" → C:\ProgramData 就是这种），旧实现只检查最后一段
         # 因此完全放行。这里改为逐段检查 root 之下的每个组件。
-        if not self._reparse_free_below(matched_root.path, p):
+        # R103 复核修正：单根分支同样要过这道检查——此前只有多根分支能落到这里
+        # （单根所有成功路径都提前 return），媒体根内的联接目录可经直连 URL 读根外。
+        effective_root = matched_root if matched_root is not None else self.roots[0]
+        if not self._reparse_free_below(effective_root.path, p):
             log.warning("拒绝 reparse point（符号链接/联接）路径: %s", p)
             return None
         return p
@@ -693,70 +696,8 @@ class MediaLibrary:
                             })
         return scripts
 
-    def root_container_xml(self, parent_id: str) -> str:
-        """根级容器（多根时各根一个容器；单根时直接列根内容）。"""
-        if len(self.roots) == 1:
-            return self._dir_items(self.roots[0].path, "0", "")
-        items = []
-        for root in self.roots:
-            items.append(
-                f'<container id="{html.escape(root.label)}" parentID="0" restricted="1">'
-                f"<dc:title>{html.escape(root.label)}</dc:title>"
-                f"<upnp:class>object.container.storageFolder</upnp:class>"
-                f"</container>"
-            )
-        return "".join(items)
-
-    def _dir_items(self, dir_path: Path, parent_id: str, prefix_key: str) -> str:
-        """列目录：只 scandir，不探测任何视频参数 → 秒开。云盘卷异常自动重试。"""
-        items: list[str] = []
-        try:
-            # 排序只用文件名（is_dir 在受保护循环里探测；sort key 里探测一个坏条目会毁掉整个目录）
-            entries = _os_retry(
-                lambda: sorted(os.scandir(dir_path), key=lambda e: e.name.casefold()),
-                what=f"scandir {dir_path}",
-            )
-        except (FileNotFoundError, NotADirectoryError) as e:
-            # 路径根本不存在 = 配置写错了，不是"云盘卷抖动"。
-            # **绝不能塞进坏目录黑名单**：那是给临时故障用的 24h 退避，把配置错误
-            # 也记进去的话，用户即使补建了目录也会被继续隐藏一整天。
-            # 大声报出来即可——这里只影响脚本枚举，目录浏览见 _dir_items。
-            log.error("目录不存在，已跳过：%s（%s）", dir_path, e)
-            return ""
-        except OSError:
-            # 云盘卷暂时不可访问或坏条目：记录黑名单，返回空目录（DeoVR 显示空文件夹而非报错）
-            self._mark_broken(dir_path)
-            log.warning("目录 %s 无法枚举，已加入黑名单（24h 后重试）", dir_path)
-            return ""
-        sibling_names = {e.name for e in entries}
-        for entry in entries:
-            name = entry.name
-            if name.startswith(HIDDEN_PREFIXES):
-                continue
-            try:
-                is_dir = entry.is_dir()
-            except OSError:
-                continue
-            entry_path = Path(entry.path)
-            if is_dir and self._is_broken(entry_path):
-                log.info("跳过坏目录（黑名单）: %s", entry_path)
-                continue
-            try:
-                key = self.path_to_key(entry_path) if prefix_key == "" else f"{prefix_key}/{name}"
-            except (OSError, ValueError):
-                continue
-            if is_dir:
-                items.append(
-                    f'<container id="{html.escape("F:" + key)}" parentID="{html.escape(parent_id)}" restricted="1">'
-                    f"<dc:title>{html.escape(name)}</dc:title>"
-                    f"<upnp:class>object.container.storageFolder</upnp:class>"
-                    f"</container>"
-                )
-            elif is_video(name) or is_strm(name):
-                items.append(self._video_item(entry_path, key, parent_id, sibling_names))
-            elif is_audio(name):
-                items.append(self._audio_item(entry_path, key, parent_id))
-        return "".join(items)
+    # （R103 清理：root_container_xml 与其唯一调用链 _dir_items 均为死代码——
+    # 活的根容器浏览走 browse() 的 _dir_item_list 分支。）
 
     def _video_item(self, path: Path, key: str, parent_id: str, sibling_names: set[str] | None = None) -> str:
         title = html.escape(display_title(path))
@@ -1843,11 +1784,12 @@ class DlnaApp:
             log.warning("目录 %s 无法枚举，已加入黑名单（24h 后重试）", dir_path)
             return []
         sibling_names = {e.name for e in entries}
-        # 本层条目的上级就是本层容器；`prefix_key` 为空时是单根模式的根目录，归 "0"。
-        # 旧实现把传进来的 `parent_id`（= 正在浏览的容器自己的 ObjectID）直接转发给
-        # `_video_item/_audio_item`，产出的文件条目 parentID 等于**文件自身**，
-        # 与"容器的 BrowseMetadata 返回子项列表"是同一个根因的两处表现。
-        entry_parent_id = ("F:" + prefix_key) if prefix_key else "0"
+        # 本层条目的上级就是**当前正在浏览的容器自己**（调用方传入的 obj_id）。
+        # R103 复核修正：旧实现拼 "F:"+prefix_key，在多根根容器场景下（obj_id=裸
+        # label，prefix_key=key=label）产出 "F:label"——那不是任何存在的容器 id
+        # （根容器的真实 id 是裸 label），按 parentID 返回上一级即死链。单根与
+        # 子目录两个调用点恰好 obj_id==prefix_key 掩盖了错误。
+        entry_parent_id = parent_id
         parts: list[str] = []
         for entry in entries:
             name = entry.name
@@ -1885,39 +1827,9 @@ class DlnaApp:
                 parts.append(self.library._audio_item(entry_path, key, entry_parent_id))
         return parts
 
-    def child_count(self, obj_id: str) -> int:
-        key = obj_id[2:] if obj_id.startswith(("F:", "V:")) else obj_id
-        if key == "" or obj_id == "0":
-            if len(self.library.roots) > 1:
-                return len(self.library.roots)
-            return self._count_dir(self.library.roots[0].path)
-        p = self.library.key_to_path(key)
-        if p is None:
-            # 多根: ObjectID 可能是根容器 label
-            root = next((r for r in self.library.roots if r.label.casefold() == key.casefold()), None)
-            return self._count_dir(root.path) if root is not None else 0
-        try:
-            is_dir = _os_retry(p.is_dir, what=f"is_dir {p}")
-        except OSError:
-            return 0
-        return self._count_dir(p) if is_dir else 1
+    # （R103 清理：child_count/_count_dir 死方法已删——全仓无调用方。）
 
-    @staticmethod
-    def _count_dir(p: Path) -> int:
-        n = 0
-        try:
-            entries = _os_retry(lambda: list(os.scandir(p)), what=f"scandir {p}")
-        except OSError:
-            return n
-        for entry in entries:
-            if entry.name.startswith(HIDDEN_PREFIXES):
-                continue
-            try:
-                if entry.is_dir() or is_video(entry.name) or is_audio(entry.name) or is_strm(entry.name):
-                    n += 1
-            except OSError:
-                pass
-        return n
+
 
 
 class DlnaHTTPServer(ThreadingHTTPServer):

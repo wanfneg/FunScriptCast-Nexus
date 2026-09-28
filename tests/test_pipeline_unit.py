@@ -1296,7 +1296,7 @@ def t_stream_disconnect_closes_upstream():
     orig_conn_cls = _http_client.HTTPConnection
     orig_body = sb.read_capped_body
 
-    async def _fake_body(request):
+    async def _fake_body(request, *a):
         return b"\x00\x01" * 4000                   # 过 3200 字节门槛
 
     class FakeReq:
@@ -1373,7 +1373,7 @@ def t_stream_passes_language_upstream():
     orig_conn_cls = _http_client.HTTPConnection
     orig_body = sb.read_capped_body
 
-    async def _fake_body(request):
+    async def _fake_body(request, *a):
         return b"\x00\x01" * 4000                   # 过 3200 字节门槛
 
     class FakeReq:
@@ -1466,7 +1466,7 @@ def t_stream_language_field_rejected_fallback():
     orig_conn_cls = _http_client.HTTPConnection
     orig_body = sb.read_capped_body
 
-    async def _fake_body(request):
+    async def _fake_body(request, *a):
         return b"\x00\x01" * 4000
 
     class FakeReq:

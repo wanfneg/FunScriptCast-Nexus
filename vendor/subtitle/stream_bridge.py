@@ -242,11 +242,8 @@ def _multipart(pcm: bytes, model: str, language: str = "") -> tuple[bytes, str]:
     return bytes(out), boundary
 
 
-# 请求体上限：25s 块约 800KB，正常请求远远够用。与 server_app.MAX_BODY_BYTES 同值，
-# 两个入口（/transcribe 与 /transcribe/stream）必须同一口径——此前只有 /transcribe
-# 设了上限，而 /transcribe/stream 是**对局域网开放**的（头显流式模式直连它），
-# 于是 `await request.body()` 成了无上限读入：一个不带 Content-Length 的分块请求
-# 就能把服务进程读到 OOM。
+# 请求体上限：缺省值仅供独立调试；生产由 server_app 按配置（server.max_body_mb）
+# 穿参对齐（R103 复核修正：server_app 降到 8MB 后这里没跟上，两口径并存过）。
 MAX_BODY_BYTES = 100 * 1024 * 1024
 
 
@@ -276,11 +273,12 @@ def health():
 
 
 @app.post("/transcribe/stream")
-async def transcribe_stream(request: Request, lang: str = "ja", translate: bool = True, video_start_ms: int = 0):
-    pcm = await read_capped_body(request)
+async def transcribe_stream(request: Request, lang: str = "ja", translate: bool = True, video_start_ms: int = 0,
+                            limit: int = MAX_BODY_BYTES):
+    pcm = await read_capped_body(request, limit)
     if pcm is None:
         return JSONResponse(
-            {"error": f"请求体超过上限 {MAX_BODY_BYTES // (1024 * 1024)}MB"},
+            {"error": f"请求体超过上限 {limit // (1024 * 1024)}MB"},
             status_code=413)
     if len(pcm) % 2:
         pcm = pcm[:-1]
@@ -498,8 +496,10 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
                     elif etype == "error":
                         for out in await _flush_lines():
                             yield out
+                        _err = ev.get("error")
+                        _msg = _err.get("message", "unknown") if isinstance(_err, dict) else (_err or "unknown")
                         yield "data: " + json.dumps(
-                            {"type": "error", "error": (ev.get("error") or {}).get("message", "unknown")},
+                            {"type": "error", "error": _msg},
                             ensure_ascii=False) + "\n\n"
             conn.close()
             # 上游没发 [DONE] 就直接断开：把攒着的尾巴翻完再收尾

@@ -21,7 +21,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from funscript_sync import (
-    AdbClient,
     AdbException,
     FunscriptSyncConfig,
     FunscriptSyncController,

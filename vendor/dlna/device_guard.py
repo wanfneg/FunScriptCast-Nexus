@@ -47,9 +47,14 @@ UNSAFE_PREFIX = (
 
 
 def normalize(device_folder: str) -> str:
-    """设备端 POSIX 路径归一化（折叠 `..`、`//`、尾部斜杠）。"""
-    p = posixpath.normpath(str(device_folder or "").replace("\\", "/"))
-    return ("/" + p.lstrip("/")).rstrip("/") or "/"
+    """设备端 POSIX 路径归一化（折叠 `..`、`//`、尾部斜杠）。
+
+    R103 复核修正：先补前导 `/` 再 normpath——posixpath 对**相对**输入不折叠
+    前导 `..`，`../foo` 会归一成 `/../foo` 恰好绕过"专用子目录"检查
+    （设备端等价 /foo，rm 越界）。
+    """
+    p = posixpath.normpath("/" + str(device_folder or "").replace("\\", "/").lstrip("/"))
+    return p.rstrip("/") or "/"
 
 
 def normalize_and_check(device_folder: str) -> "tuple[str, str]":

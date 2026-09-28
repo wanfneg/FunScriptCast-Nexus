@@ -51,9 +51,8 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0")
 
 
-class _Retryable(Exception):
-    pass
-
+# （R103 清理：_Retryable 死类已删——全仓无任何按类型捕获点，"可重试"语义
+# 从未被消费，重试实际由 _is_rate_limited + attempt 循环实现。）
 
 # 免费端点的全局并发上限。免费接口对突发高频访问会 429/封 IP：多批并行兜底时
 # 每批各开 6 线程，4 批就是 24 并发，必须用模块级信号量把总并发压住。
@@ -155,7 +154,7 @@ class BingTranslator:
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             self._token = r.read().decode("utf-8").strip()
         if not self._token:
-            raise _Retryable("Bing auth 返回空 token")
+            raise RuntimeError("Bing auth 返回空 token")
 
     def translate(self, texts: list, target: str = "zh") -> list:
         if not texts:

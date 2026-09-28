@@ -542,10 +542,9 @@ class AudioCppBackend:
         print(f"[asr] 热词回显，改用无热词重试：{text[:40]!r}", flush=True)
         with self._lock:
             self.echo_retries += 1
-        try:
-            r2 = self.transcribe_wav(wav, "", lang_key, timeout=timeout)
-        except Exception:
-            return ""
+        # R103 复核：二次请求失败不再吞成空串——空串会让调用侧当"无文本"静默
+        # 跳过，绕过 failed_spans 的整块失败上报（评审 F12 的静默丢字同类）。
+        r2 = self.transcribe_wav(wav, "", lang_key, timeout=timeout)
         return (r2.get("text") or "").strip()
 
     def transcribe_wav(self, wav: Path, context: str = "", lang_key: str = "",

@@ -113,12 +113,14 @@ class LlamaBackend:
         """
         with self._lock:
             m = _resolve(model_path or "")
-            if not m or m == self.model:
-                return
+            if not m:
+                return False
+            if m == self.model:
+                return True          # 幂等：目标已是当前模型（对调用方算切换成功）
             if not m.exists():
                 print(f"[llama] ⚠️ 拒绝切换翻译模型：文件不存在 {m}"
                       f"（沿用当前模型 {self.model.name}）", flush=True)
-                return
+                return False         # R103：返回 False，调用方不要标记"已切换"
             self._prev_model = (self.model, self.alias)   # 回滚点：新模型起不来时用
             self.stop_server()          # 换模型必须重启 llama-server（权重随进程走）
             self.model = m
@@ -126,6 +128,7 @@ class LlamaBackend:
             if alias:
                 self.alias = str(alias)
             print(f"[llama] 切换翻译模型 → {m.name}", flush=True)
+            return True
 
     def probe(self, timeout: float = 2.0) -> bool:
         """llama-server 的 /health：加载中返回 503，就绪后 {"status":"ok"}。"""
