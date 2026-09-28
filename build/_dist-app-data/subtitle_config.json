@@ -1,0 +1,95 @@
+{
+  "asr": {
+    "backend": "audiocpp",
+    "segmentation": "hybrid",
+    "hybrid": {
+      "silence_threshold": 0.01,
+      "silence_tail_sec": 0.7,
+      "long_silence_tail_sec": 0.4,
+      "long_phrase_sec": 4.0,
+      "min_phrase_sec": 2.0,
+      "max_phrase_sec": 5.0
+    },
+    "whisper": {
+      "beam_size": 1
+    },
+    "audiocpp": {
+      "dir": "E:/audiocpp-portable",
+      "backend": "cuda",
+      "threads": 1,
+      "port": 8081,
+      "language": "Japanese",
+      "min_speech_ms": 250,
+      "merge_gap_sec": 0.5,
+      "pad_sec": 0.25,
+      "model": "../../models/Qwen3-ASR-0.6B"
+    }
+  },
+  "vad": {
+    "enabled": true,
+    "threshold": 0.5
+  },
+  "segment": {
+    "max_sec": 8.0,
+    "max_chars": 50,
+    "pause_sec": 0.8,
+    "min_sec": 1.2,
+    "min_chars": 4
+  },
+  "translate": {
+    "backend": "local",
+    "ollama": {
+      "base_url": "http://127.0.0.1:11435",
+      "model": ""
+    },
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "",
+      "api_key": "",
+      "temperature": 0.2,
+      "max_tokens": 8192
+    },
+    "batch_size": 10,
+    "max_steps": 3,
+    "thread_num": 4,
+    "target_lang": "zh",
+    "fallback": {
+      "enabled": false,
+      "backend": "auto",
+      "after_fail_batches": 3
+    },
+    "mt_system": "你是专业的实时字幕翻译器。把用户输入翻译成简体中文，只输出译文本身。",
+    "mt_user_prefix": "将下面的日文文本翻译成中文：",
+    "local": {
+      "dir": "../../vendor/llama",
+      "exe": "llama-server.exe",
+      "model": "../../models/Sakura-7B-Qwen2.5-v1.0/sakura-7b-qwen2.5-v1.0-iq4xs.gguf",
+      "alias": "sakura-7b",
+      "base_url": "http://127.0.0.1:8082",
+      "host": "127.0.0.1",
+      "port": 8082,
+      "ctx": 2048,
+      "ngl": 99,
+      "threads": 4,
+      "temperature": 0.2,
+      "top_p": 0.3,
+      "max_tokens": 2048,
+      "start_timeout_sec": 180,
+      "model_by_lang": {
+        "en": "../../models/Hy-MT2-7B-Q4_K_M.gguf"
+      }
+    },
+    "mode": "auto",
+    "mt_user_prefix_by_lang": {
+      "ja": "将下面的日文文本翻译成中文：",
+      "en": "将下面的英语文本翻译成中文："
+    }
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8756,
+    "idle_release_min": 5,
+    "auth_token": ""
+  }
+}
