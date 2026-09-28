@@ -3726,3 +3726,18 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 设置页新增「开机自动启动」：HKCU Run 键实现（免管理员、Windows 设置→应用→启动 可见可关），存储以注册表实际状态为准（load_settings 回读注入，Windows 侧改动 UI 如实显示）；挪盘后旧路径视为失效（UI 显示关，重开即用新路径重写）。源码运行（非 frozen）不写注册表。端到端验证：开→注册表在、关→注册表删、回读一致。
 
 **R103 补记（翻译质量盲评 + 采样错位教训）**：对合并开/关做了三盲评（SIVR×2 + 用户视频×1，甲乙匿名）。结果分裂：用户视频判合并开更好（7.17 vs 6.47——整行完整、边界连贯，还修正一处错译）；SIVR 两组却判合并关更好（8.67 vs 6.80/7.27），理由是"合并开漏译"。**追查证实为采样假象**：合并行跨越窗口边界，按窗取段的对齐脚本把跨界行错切到窗外（"胸部也一样"实际在 255.6s 的合并行里）；全窗译文总字数 651 vs 641（98.5%），逐探针核实无真实丢失。另发现 ASR 存在运行间非确定性（同音频同模型，後ろも/後も、言いますか/言いました 措辞漂移）→ A/B 精度 ±2pp 噪声的来源之一。**教训：给评审的对齐脚本必须按"行边界"而非"时间窗"切样本，否则合并类改进会被误判为漏译**。
+
+## R107（2026-09-28）：代码审查 43 项全修（安全版工作流审查 → 逐项修复）
+
+**审查**：第一版 9 并发 + 全仓 AST 把用户日常机器内存顶爆（被手动停止，深刻教训：**给用户机器跑后台负载必须设并发上限并禁止重扫描**）；安全版并发封顶 2、禁 .git/大文件扫描，43 条发现（medium 8 / low 35）全部独立复核确认。
+
+**修复清单（全部落地，单测"全部通过"）**：
+- 字幕服务：幻觉门控 partial 感知（final 才入窗口）；行长合并 take→store 单次持锁原子化 + gap 死区修复 + join_tokens 拼接 + want_partial 死参删 + _HALLU_DROPPED 死计数删；推荐档位双源统一（服务端同读 asr.recommended_chunk_sec）；_asr_ready 探测缓存改单调钟判据；translate_warm float 兜底；预热 join 归一化 backend
+- 翻译栈：use_model 返回 True/False（拒切不再静默成功）；_lang_model_ref 仅成功时置位（**兼容 None 返回**——mock 教训）；translate_warm float 兜底
+- 识别栈：echo 重试不吞异常；懒加载可配置已有
+- DLNA：单根 reparse 逃逸封堵（effective_root）；entry_parent_id 用容器自身 id（多根死链修）；根容器 BrowseMetadata 语义记录；child_count/_count_dir/ssdp_conflict_warning/root_container_xml/_dir_items 死函数删；sync 模块死 import 删（**教训：正则批量删 import 弄坏 UI 文件，git checkout 回滚后逐文件 Edit**）
+- host：/api/logs 锁外写网络；sub_state 探测代次戳；launch_on_boot 全路径回读注册表；_ver_tuple 剥开发副本后缀；zip 重试完整包跳过；subtitle_url 死键/csv 死导入/dlna_requests 死字段删；vendor/dlna/nul 残留文件删（**MSYS 下 Windows 命令重定向产物，曾阻塞构建**）
+- UI：删根/端口保存判 r.ok；loadModels 失败限速重试（≤20 次）；setAutoStart markDirty；dlnaPort dirty 护栏；startDlna 实时配置判空；addRoots/删根 rootsOpChain 串行化；renderLocalModelSelect 失败不毒化缓存；fmtUptime 死函数删
+
+**回归**：test_pipeline_unit 全部通过（F23 mock 无返回值暴露兼容问题→ `is not False` 判据）；device_guard 7/7；生产真机识别翻译/档位/门控/扣行全部活体验证。
+**版本**：1.0.51（构建失败重试多 bump 了 49/50，无碍）。
