@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import hashlib
 import json
 import logging
@@ -2193,6 +2194,49 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "actions": acts})
                 except Exception as e:
                     self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            elif path == "/api/library/browse":
+                from urllib.parse import parse_qs, urlparse as _up3
+                q = parse_qs(_up3(self.path).query)
+                bp = (q.get("path") or [""])[0]
+                lib = _get_library()
+                roots = [r for r in (load_settings().get("library_roots") or []) if r]
+                dirs, vids = [], []
+                if not bp:
+                    dirs = [{"name": Path(r).name or r, "path": r} for r in roots if Path(r).is_dir()]
+                else:
+                    bp_norm = str(Path(bp))
+                    if not any(str(Path(r)) == bp_norm or bp_norm.startswith(str(Path(r)) + os.sep)
+                               for r in roots):
+                        self._json({"ok": False, "error": "路径不在媒体库目录内"}, 403)
+                        return
+                    try:
+                        for e2 in os.scandir(bp_norm):
+                            if e2.name.startswith((".", "$")):
+                                continue
+                            try:
+                                if e2.is_dir():
+                                    dirs.append({"name": e2.name, "path": e2.path})
+                                elif Path(e2.name).suffix.lower() in (".mp4", ".mkv", ".wmv", ".avi",
+                                                                      ".mov", ".webm", ".m2ts", ".ts"):
+                                    fs = e2.path.rsplit(".", 1)[0] + ".funscript"
+                                    with lib.lock:
+                                        card = next((c for c in lib.cards()
+                                                     if e2.path in c.get("paths", [])), None)
+                                    vids.append({
+                                        "name": e2.name, "path": e2.path,
+                                        "has_funscript": Path(fs).is_file(),
+                                        "dur": (card["duration"] if card else 0.0),
+                                        "thumb": lib.thumb_name_for(e2.path) or "",
+                                        "pos": (card["progress"]["pos"] if card and card.get("progress") else 0.0),
+                                    })
+                            except OSError:
+                                continue
+                    except OSError as e2:
+                        self._json({"ok": False, "error": str(e2)}, 400)
+                        return
+                    dirs.sort(key=lambda x: x["name"].lower())
+                    vids.sort(key=lambda x: x["name"].lower())
+                self._json({"ok": True, "path": bp, "dirs": dirs, "videos": vids})
             elif path == "/api/library/items":
                 lib = _get_library()
                 with lib.lock:
@@ -3347,6 +3391,27 @@ class NexusApi:
         try:
             self._win.minimize()
             return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def win_maximize(self) -> dict:
+        """最大化/还原切换（标题栏最大化按钮）。
+
+        pywebview 6.x 没有公开 toggle_maximize，走 Win32：按窗口标题定位主窗
+        句柄，GetWindowPlacement 读 showCmd（2=最大化）后 ShowWindow 切换。
+        """
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = user32.FindWindowW(None, "FunScriptCast-Nexus")
+            if not hwnd:
+                return {"ok": False, "error": "window not found"}
+            placement = ctypes.wintypes.WINDOWPLACEMENT()
+            placement.length = ctypes.sizeof(ctypes.wintypes.WINDOWPLACEMENT)
+            user32.GetWindowPlacement(hwnd, ctypes.byref(placement))
+            maximized = placement.showCmd == 2   # SW_SHOWMAXIMIZED
+            user32.ShowWindow(hwnd, 1 if maximized else 3)   # SW_RESTORE / SW_MAXIMIZE
+            return {"ok": True, "maximized": not maximized}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 

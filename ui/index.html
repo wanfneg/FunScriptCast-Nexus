@@ -23,6 +23,7 @@
   <symbol id="i-smartphone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="20" x="5" y="2" rx="2" ry="2" /><path d="M12 18h.01" /></symbol>
   <symbol id="i-book-a" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20" /><path d="m8 13 4-7 4 7" /><path d="M9.1 11h5.7" /></symbol>
   <symbol id="i-layout-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></symbol>
+  <symbol id="i-maximize" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /><circle cx="12" cy="12" r="3" /></symbol>
   <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" /></symbol>
   <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2" /><path d="M12 2v2" /><path d="M17 20v2" /><path d="M17 2v2" /><path d="M2 12h2" /><path d="M2 17h2" /><path d="M2 7h2" /><path d="M20 12h2" /><path d="M20 17h2" /><path d="M20 7h2" /><path d="M7 20v2" /><path d="M7 2v2" /><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="8" y="8" width="8" height="8" rx="1" /></symbol>
@@ -140,6 +141,11 @@
       <span class="brand-sub" id="brandSub">集成版</span>
     </div>
 
+    <button class="dev-connect" id="devBtn" title="连接设备">
+      <span class="dev-spinner" id="devSpinner" hidden></span>
+      <span class="dev-label" id="devLabel">连接设备</span>
+    </button>
+
     <div class="pills">
       <span class="pill" id="pillDlna"><i class="dot"></i>DLNA</span>
       <span class="pill" id="pillSub"><i class="dot"></i>字幕服务</span>
@@ -151,6 +157,7 @@
     </button>
 
     <div class="win-ctrl" id="winCtrl">
+      <button id="winMax" title="最大化/还原" aria-label="最大化/还原"><svg class="ic"><use href="#i-maximize"/></svg></button>
       <button id="winMin" title="最小化" aria-label="最小化"><svg class="ic"><use href="#i-minus"/></svg></button>
       <button class="close" id="winClose" title="关闭" aria-label="关闭"><svg class="ic"><use href="#i-x"/></svg></button>
     </div>
@@ -377,30 +384,33 @@
 
       <!-- ---------------------------- AI 字幕 ---------------------------- -->
       <section class="page" id="page-library">
-        <header class="page-head">
-          <div class="eyebrow">Video Link</div>
-          <h1>视频联动</h1>
-          <p class="page-sub">媒体库 · 播放联动 · 预设</p>
-        </header>
-
-        <!-- 顶部：媒体库 / 播放窗口区 -->
+        <!-- 大框框：媒体库浏览 ⇄ 播放窗口（双模） -->
         <div class="panel card vl-stage">
-          <div id="libPlaying" class="vl-playing" style="display:none">
-            <span class="dot ok"></span>
-            <span id="libPlayTitle">—</span>
-            <span class="sub" id="libPlayPos">0:00</span>
-            <button class="btn ghost" id="libToggle">暂停</button>
-            <button class="btn ghost" id="libStop">关闭播放器</button>
-          </div>
-          <div class="row flush" style="align-items:center">
-            <div class="grow">
-              <div class="name">媒体库</div>
-              <div class="sub" id="libStatus">未扫描</div>
+          <!-- 浏览模式 -->
+          <div id="vlBrowse">
+            <div class="vl-browse-head">
+              <button class="btn ghost" id="vlBack" style="display:none">← 返回上一级</button>
+              <div class="name" id="vlBrowseTitle">媒体库</div>
             </div>
-            <button class="btn ghost" id="libRescan">重新扫描</button>
+            <div id="vlBrowseBody" class="vl-browse-body"></div>
           </div>
-          <div class="lib-grid" id="libGrid"></div>
-          <div id="libEmpty" class="empty">库是空的——去「设置 → 媒体库目录」添加文件夹，然后点「重新扫描」</div>
+          <!-- 播放模式 -->
+          <div id="vlPlayView" style="display:none">
+            <div class="row flush" style="align-items:center;margin-bottom:8px">
+              <div class="name">视频播放</div>
+              <div class="grow"></div>
+              <div class="sub" id="vlPlayPath">—</div>
+            </div>
+            <div class="vl-screen" id="vlScreen">
+              <img id="vlScreenImg" alt="" style="display:none">
+              <div class="vl-screen-title" id="vlScreenTitle">—</div>
+            </div>
+            <div class="vl-playbtns">
+              <button class="steel-capsule filled" id="vlResumeLast">继续上次</button>
+              <button class="steel-capsule filled" id="vlBrowseBack2">返回媒体库</button>
+              <button class="steel-capsule filled" id="vlClosePlayer">关闭当前</button>
+            </div>
+          </div>
         </div>
 
         <!-- 时间轴：当前进度 | 脚本热力图 | 总时长 -->
@@ -410,32 +420,33 @@
           <span class="vl-time" id="vlDur">0:00</span>
         </div>
 
-        <!-- 按钮行：左三页签 + ⏸ + 右三动作 -->
+        <!-- 按钮行：左三页签（胶囊） + 预设速度 | 右三圆钮（胶囊化） -->
         <div class="vl-btnrow">
           <div class="vl-tabs">
             <button data-vl-tab="stroke" aria-selected="true">设备行程与速度</button>
             <button data-vl-tab="idle">待机缓动设置</button>
             <button data-vl-tab="burst">一键爆发设置</button>
           </div>
-          <button class="vl-round" id="vlPause" title="播放/暂停">⏸</button>
           <div class="vl-actions">
-            <button id="vlRandom">RANDOM</button>
-            <button id="vlPresetToggle">播放/暂停预设</button>
-            <button id="vlBoost">BOOST</button>
+            <button class="vl-capsule" id="vlBoost">BOOST</button>
+            <button class="vl-capsule" id="vlPresetToggle">播放/暂停预设</button>
+            <button class="vl-capsule" id="vlRandom">RANDOM</button>
           </div>
         </div>
 
-        <!-- 下部三列：左页签卡片 | 中快捷钮列 | 右预设卡片 2x2 -->
+        <!-- 下部三列：左页签卡（严格手机三卡） | 中快捷动作卡 | 右预设网格（固定 4，不滚动） -->
         <div class="vl-lower">
-          <div class="panel card vl-tabcard" id="vlTabCard"></div>
-          <div class="vl-quick">
-            <button id="vqIdle">待机缓动</button>
-            <button id="vqBurst">一键爆发</button>
-            <button id="vqStop" class="danger">一键急停</button>
+          <div class="vl-tabstack" id="vlTabCard"></div>
+          <div class="steel-card">
+            <div class="vl-quickrow">
+              <button class="steel-capsule" id="vqIdle">待机缓动</button>
+              <button class="steel-capsule" id="vqStop">一键急停</button>
+              <button class="steel-capsule" id="vqBurst">一键爆发</button>
+            </div>
           </div>
-          <div class="panel card vl-presets">
+          <div class="steel-card">
+            <div class="vl-phead">预设</div>
             <div class="vl-pgrid" id="vlPGrid"></div>
-            <div class="sub" style="text-align:center">设备通道接入后可用（接入前点击仅预览波形）</div>
           </div>
         </div>
       </section>

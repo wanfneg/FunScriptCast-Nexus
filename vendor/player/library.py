@@ -81,6 +81,11 @@ class Library:
         with self.lock:
             return list(self._cards)
 
+    def thumb_name_for(self, path: str) -> str:
+        """索引里该视频的缩略图文件名（无则空串）。浏览列表轻量查询用。"""
+        e = self._load_index().get("files", {}).get(path) or {}
+        return e.get("thumb", "")
+
     def set_progress(self, path: str, pos: float, dur: float, played_at: float) -> None:
         """播放进度落索引（host 的 player 回调调用），并同步到内存卡片。"""
         with self.lock:
