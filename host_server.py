@@ -2188,8 +2188,13 @@ class Handler(BaseHTTPRequestHandler):
                         self._json({"ok": False, "error": "no script"})
                         return
                     data = json.loads(fs.read_text(encoding="utf-8"))
-                    acts = data.get("actions") or []
-                    acts = [[int(a[0]), int(a[1])] for a in acts if len(a) >= 2]
+                    acts = []
+                    for a in (data.get("actions") or []):
+                        # 两种历史格式都收：数组 [ms, pos] 与字典 {"at","pos"}
+                        if isinstance(a, dict):
+                            acts.append([int(a.get("at") or 0), int(a.get("pos") or 0)])
+                        elif isinstance(a, (list, tuple)) and len(a) >= 2:
+                            acts.append([int(a[0]), int(a[1])])
                     acts.sort(key=lambda a: a[0])
                     self._json({"ok": True, "actions": acts})
                 except Exception as e:

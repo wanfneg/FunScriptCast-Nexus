@@ -881,7 +881,7 @@
           if (!added) { toast("这些目录已经在列表里了", "", "warn"); return; }
           return api("/api/settings", "POST", { library_roots: roots }).then(function (r) {
             if (!r || r.ok === false) { toast("保存失败", (r && r.error) || "", "err"); return; }
-            toast("已添加 " + added + " 个媒体库目录", "点击「重新扫描」生成海报墙", "ok");
+            toast("已添加 " + added + " 个媒体库目录", "正在自动扫描生成海报墙", "ok");
             libRootSig = "";   // 强制重渲染
             api("/api/library/rescan", "POST", {}).then(function () { loadLibrary(); });
           });
@@ -1479,29 +1479,6 @@
       }
     });
   }
-  $("#vlBrowseBack2").addEventListener("click", function () {
-    api("/api/player/stop", "POST", {}).then(function () { browse(""); });
-  });
-  $("#vlClosePlayer").addEventListener("click", function () {
-    api("/api/player/stop", "POST", {}).then(function () { loadLibrary(); });
-  });
-  $("#vlResumeLast").addEventListener("click", function () {
-    // 找最近播过的视频（items 已按 last_played 排序）
-    api("/api/library/items").then(function (r) {
-      var hit = null;
-      ((r && r.items) || []).forEach(function (c) {
-        (c.parts || []).forEach(function (pt) {
-          if (!hit || (c.last_played || 0) > (hit.lp || 0)) {
-            hit = { path: pt.path, lp: c.last_played || 0, pos: (c.progress && c.progress.pos) || 0 };
-          }
-        });
-      });
-      if (!hit) { toast("还没有播放记录", "", "warn"); return; }
-      api("/api/player/open", "POST", { path: hit.path, pos: hit.pos }).then(function (r) {
-        if (r && r.ok) showPlayView(hit.path);
-      });
-    });
-  });
 
   /* --- 播放状态轮询（驱动播放视图/时间轴） --- */
   function renderPlayState(p) {
@@ -1954,6 +1931,25 @@
   renderQuick();
   renderCapsules();
   renderPresetCards();
+  // hash 深链（自检截图用）：#library / #library/browse=<路径> / #library/play=<路径>
+  window.addEventListener("hashchange", function () { vlApplyHash(); });
+  vlApplyHash();
+  function vlApplyHash() {
+    var h = decodeURIComponent(location.hash || "");
+    if (h.indexOf("#library") !== 0) return;
+    if (h.indexOf("#library/browse=") === 0) {
+      showPage("library");
+      browse(h.slice("#library/browse=".length));
+    } else if (h.indexOf("#library/play=") === 0) {
+      showPage("library");
+      var vp = h.slice("#library/play=".length);
+      api("/api/player/open", "POST", { path: vp }).then(function (r) {
+        if (r && r.ok) showPlayView(vp);
+      });
+    } else if (h === "#library") {
+      showPage("library");
+    }
+  }
 
   /* ---------------------------------------------------------- 启动 */
   /* ================================================================
