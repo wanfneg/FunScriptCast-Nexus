@@ -302,3 +302,32 @@ key 规则（vendor/dlna/vr_dlna.py `path_to_key`）：单根=相对路径；多
 
 → 前端所有路都堵死，**只能改宿主**（源码已修好并单独验证：sizeof(WINDOWPLACEMENT)=44、GetWindowPlacement 成功）。
 按用户要求，按钮不再做"假装在动"的全屏兜底，改为**如实提示**"最大化暂不可用 · 装 1.0.56 后恢复"。
+
+---
+
+# 六、1.0.56 打包与安装（已完成）
+
+```
+构建  build\build_installer.ps1 → build_exe（PyInstaller + dist-app）→ make_runtime → ISCC
+产物  dist-installer\FunScriptCast-Nexus-Setup-1.0.56.exe   195.1 MB   FileVersion 1.0.56
+版本  version.json 1.0.55(56) → 1.0.56(57)
+清场  宿主 exe ×2 + 字幕服务 python（避免锁 vendor 文件）
+安装  /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=D:\FunScriptCast-Nexus → Installation process succeeded
+数据  theme=light / motion=off / dlna_roots(3) / library_roots 全部保留
+```
+
+## 装后逐项复验（真机 8790 + WebView2 CDP）
+
+| 项 | 结果 |
+|---|---|
+| **最大化按钮** | 点击后窗口 1212x769 → 1720x1080，IsZoomed=True；宿主返回 ok:true；无报错提示 ✅ |
+| **字幕徽标** | SIVR-001.mkv / SIVR-002.mkv 显示「字幕」徽标（has_srt 生效）✅ |
+| 内置播放器 | 示例.mp4 在大框框内播放 62.1s / 1280x720 / 进度推进 ✅ |
+| DLNA / 字幕服务 | 运行中 / 就绪 ✅ |
+| 运行时异常 | 0 ✅ |
+
+## 遗留（诚实记录）
+
+/api/library/stream **没有实现**：此前只在前端预留了「优先用宿主流接口」的分支，宿主路由本身没写
+→ 这版内置播放仍走 DLNA /media/（实测该路由 404）。影响：DLNA 服务停止时内置播放会失败
+（有明确提示 + 「用外部播放器」兜底）。彻底解耦需要补一个支持 Range 的路由并重打包。
