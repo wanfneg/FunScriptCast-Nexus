@@ -847,6 +847,13 @@ html[data-theme="light"] .lib-thumb{ background:linear-gradient(135deg, rgba(10,
   transition:opacity var(--dur-base) var(--ease-out); }
 .vl-vwrap.idle .vl-vchrome{ opacity:0; pointer-events:none; }
 .vl-vwrap.idle{ cursor:none; }
+/* 全屏用**文档根**做全屏元素（不是 #vlVWrap）：这样任何子容器被 display:none
+   （返回媒体库 / 切页）都不会让"全屏元素没有布局盒" —— 实测那样会让 Chromium
+   合成器自旋、GPU 打满、窗口假死。画面靠这条规则自己铺满屏幕。 */
+html:fullscreen{ background:#000; }
+html:fullscreen .vl-vwrap{ position:fixed; inset:0; z-index:80; border-radius:0; }
+html:fullscreen .vl-vchrome{ padding-bottom:16px; }
+html:fullscreen .vl-screen-path{ display:none; }
 .vl-cbtn{ width:30px; height:30px; flex:none; display:grid; place-items:center; border:0; border-radius:50%;
   background:rgba(255,255,255,.12); color:#fff; cursor:pointer; transition:background var(--dur-fast); }
 .vl-cbtn:hover{ background:rgba(255,255,255,.24); }

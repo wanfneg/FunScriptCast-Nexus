@@ -331,3 +331,42 @@ key 规则（vendor/dlna/vr_dlna.py `path_to_key`）：单根=相对路径；多
 /api/library/stream **没有实现**：此前只在前端预留了「优先用宿主流接口」的分支，宿主路由本身没写
 → 这版内置播放仍走 DLNA /media/（实测该路由 404）。影响：DLNA 服务停止时内置播放会失败
 （有明确提示 + 「用外部播放器」兜底）。彻底解耦需要补一个支持 Range 的路由并重打包。
+
+---
+
+# 七、全屏后点返回卡死（R113 热修，ui-only）
+
+## 现场
+
+用户：全屏播放后点「返回媒体库」→ 整个窗口卡死。
+实测现场：宿主进程 Responding=True、API/HTTP 正常、页面 JS 线程也活着（`performance.now()` 800ms 正常递增），
+但 **WebView2 GPU 进程烧了 562 秒 CPU** —— 是合成器在自旋，不是 JS 死循环。
+DOM 快照：`fullscreenElement = vlVWrap`，而它的祖先 `#vlPlayView` 已经是 `display:none`。
+
+## 根因
+
+全屏元素是 `#vlVWrap`；返回时我把它的祖先 `#vlPlayView` 设成 `display:none` →
+**一个仍在 fullscreen 状态下、却没有布局盒的元素** → Chromium 合成器反复尝试解析它的几何 → GPU 打满 → 窗口假死。
+
+## 修法
+
+1. 全屏元素改成 **`document.documentElement`**（文档根）：这样隐藏任何子容器都不会让全屏元素失去布局盒；
+   画面靠 CSS 自己铺满屏：`html:fullscreen .vl-vwrap{ position:fixed; inset:0; z-index:80; border-radius:0 }`。
+2. 返回时**先 `exitFullscreen()` 再动 DOM**（双保险），并接住它的 promise（否则控制台冒 `Permissions check failed`）。
+3. 验证时又发现两个连带 bug 一并修掉：
+   - 返回只用缓存的 videos 重画 → **子目录卡丢失**（多目录时返回后是空视图、还进不去子目录）→ 改成重新拉当前目录；
+   - 每秒轮询看到「mpv 播放器没了」就把视图踢回根目录 → 从 `E:\testvideo` 返回会变成「媒体库」→ 改成只在**人正停在播放视图**时才回根。
+
+## 复验（真机 1.0.56 + 可信鼠标事件，全屏带用户激活）
+
+```
+① 进 E:\testvideo        标题=testvideo  夹 1 张  视频 6 张
+② 播 K1cztm.mp4          播放中 1920x1080
+③ 点全屏                 fullscreenElement = HTML（文档根）
+④ 全屏中点「返回媒体库」  全屏已退 ｜ 视图=浏览 ｜ 标题=testvideo ｜ 夹 1 张 ｜ 视频 6 张 ｜ 计数「1 个目录 · 6 个视频」
+   GPU 增量 2 秒（卡死那版是几百秒自旋）
+⑤ 再播一次               正常
+   运行时异常 0
+```
+
+> 本次全是 `ui/*` 改动 → **热替换即可生效**，不用重打包。

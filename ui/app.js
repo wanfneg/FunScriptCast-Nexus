@@ -1600,10 +1600,14 @@
     $("#vlPrev").addEventListener("click", function () { vlStep(-1); });
     $("#vlNext").addEventListener("click", function () { vlStep(1); });
     $("#vlMute").addEventListener("click", function () { v.muted = !v.muted; vlSyncVlUi(); });
+    /* 全屏作用在**文档根**：隐藏任何子容器都安全（见 styles.css 里那段注释）。
+       副作用是 html 全屏后整页都在，所以靠 CSS 把 .vl-vwrap 提成铺满屏的浮层。 */
     $("#vlFull").addEventListener("click", function () {
-      var w = $("#vlVWrap");
-      if (document.fullscreenElement) document.exitFullscreen();
-      else if (w.requestFullscreen) w.requestFullscreen();
+      var root = document.documentElement;
+      try {
+        var pr = document.fullscreenElement ? document.exitFullscreen() : (root.requestFullscreen ? root.requestFullscreen() : null);
+        if (pr && pr.catch) pr.catch(function () { toast("全屏切换失败", "浏览器拒绝了这次全屏请求", "warn"); });
+      } catch (e) { toast("全屏切换失败", String(e.message || e), "warn"); }
     });
     $("#vlPip").addEventListener("click", function () {
       try {
@@ -1612,14 +1616,25 @@
       } catch (e) { toast("画中画不可用", "", "warn"); }
     });
     $("#vlVBack").addEventListener("click", function () {
-      /* 回到媒体库（暂停并释放流，时间轴交回 mpv 轮询口径） */
+      /* 回到媒体库（暂停并释放流，时间轴交回 mpv 轮询口径） */
+      /* 先退全屏再动 DOM：虽然现在全屏元素是文档根、隐藏子容器已经安全，
+         但退出动作放前面更稳（这里就是"全屏后点返回直接卡死"的现场）。 */
+      try {
+        if (document.fullscreenElement) {
+          var ex = document.exitFullscreen();
+          if (ex && ex.catch) ex.catch(function () { /* 浏览器已自行退出，忽略 */ });
+        }
+      } catch (e) {}
       try { v.pause(); } catch (e) {}
       v.removeAttribute("src"); v.load();
       vlMed.path = ""; vlMed.failed = false;
+      vlCurPath = "";   // 离开播放态，免得轮询再走"回根"分支
       $("#vlPlayView").style.display = "none";
       $("#vlBrowse").style.display = "";
       vlHeatScript = null; vlHeatKey = ""; drawHeat();
-      renderBrowse({ dirs: [], videos: vlLastBrowse.videos });   // 回到当前目录（已缓存的列表）
+      /* 回当前目录要**重新拉列表**：只拿缓存的 videos 会把子目录卡丢掉
+         （多目录时返回后看到的是"0 张卡"，还没法再进子目录）。 */
+      browse(vlBrowsePath || "");
       if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
     });
     $("#vlUseMpv").addEventListener("click", function () {
@@ -1671,7 +1686,13 @@
       $("#vlDur").textContent = fmtTime(p.dur);
       if (!libSeekDrag && p.dur > 0) drawHeat(p.pos, p.dur);
     } else {
-      if (vlCurPath) { vlCurPath = ""; browse(""); }
+      /* 只有"人正停在播放视图、而 mpv 播放器没了"才自动回根。
+         否则每秒轮询会在内置播放器返回媒体库的空档里把视图踢回根目录
+         （实测：从 E:\testvideo 返回后标题变成"媒体库"、视频卡 0 张）。 */
+      if (vlCurPath && $("#vlPlayView") && $("#vlPlayView").style.display !== "none") {
+        vlCurPath = "";
+        browse("");
+      }
       drawHeat();
     }
   }
