@@ -122,6 +122,7 @@
       }
     }
     next.classList.add("active");
+    if (name === "library") requestAnimationFrame(function () { layoutVl(); });   /* 页面可见后再量尺寸 */
     if (!motionOff()) {
       next.classList.remove("enter");
       void next.offsetWidth;      // 强制重排，让动画能重新触发
@@ -1385,6 +1386,7 @@
   /* ---------- 视频联动（浏览⇄播放双模 + 手机端对齐卡片/热力图/预设） ---------- */
   var libPollTimer = 0, libSeekDrag = false;
   var vlBrowsePath = "";        // ""=根（roots 卡片）
+  var vlLastBrowse = { videos: [] };   // 当前目录的视频列表（内置播放器的上一个/下一个）
   var VL_PRESETS = null, vlTab = "stroke", vlHeatScript = null, vlHeatKey = "";
   var vlSelPreset = null, vlPlayingPreset = false, vlRandomMode = false, vlBoostMode = false;
   var vlDevState = "disconnected";   // disconnected | connecting | connected
@@ -1399,30 +1401,39 @@
 
   /* --- 大框框：浏览模式 --- */
   function renderBrowse(data) {
+
     $("#vlBrowse").style.display = "";
     $("#vlPlayView").style.display = "none";
     $("#vlBack").style.display = vlBrowsePath ? "" : "none";
     $("#vlBrowseTitle").textContent = vlBrowsePath
       ? (vlBrowsePath.split(/[\\/]/).filter(Boolean).pop() || "浏览")
       : "媒体库";
-    var body = $("#vlBrowseBody");
+    var dirs = data.dirs || [], vids = data.videos || [];
+    var cnt = $("#vlCount");
+    if (cnt) cnt.textContent = (dirs.length ? dirs.length + " 个目录 · " : "") + vids.length + " 个视频";
     var html = "";
-    (data.dirs || []).forEach(function (d) {
+    dirs.forEach(function (d) {
       html += '<div class="vl-folder" data-path="' + encodeURIComponent(d.path) + '">' +
-        '<svg class="ic"><use href="#i-folder"/></svg><div class="name">' + d.name + '</div></div>';
+        '<svg class="ic"><use href="#i-vk-folder"/></svg><div class="name">' + d.name + '</div></div>';
     });
-    (data.videos || []).forEach(function (v) {
+    vids.forEach(function (v) {
       var thumb = v.thumb
         ? '<img loading="lazy" src="/api/library/thumb?name=' + encodeURIComponent(v.thumb) + '">'
-        : '<div class="lib-nothumb">⋮</div>';
-      var badge = v.has_funscript ? '<span class="lib-badge ok">⟳</span>' : '';
-      var prog = v.pos > 5 ? '<div class="lib-prog"><i style="width:' + Math.min(95, v.pos) + '%"></i></div>' : '';
+        : '<svg class="ic lib-fileic"><use href="#i-vk-video"/></svg>';
+      var badges = "";
+      if (v.has_funscript) badges += '<span class="lib-badge"><svg class="ic"><use href="#i-vk-script"/></svg>脚本</span>';
+      if (v.has_srt) badges += '<span class="lib-badge sub"><svg class="ic"><use href="#i-vk-sub"/></svg>字幕</span>';
+      var dur = (v.dur > 0) ? '<span class="lib-dur">' + fmtTime(v.dur) + '</span>' : "";
+      var prog = v.pos > 5 ? '<div class="lib-prog"><i style="width:' + Math.min(95, v.pos) + '%"></i></div>' : "";
       html += '<div class="lib-card" data-vpath="' + encodeURIComponent(v.path) + '">' +
-        '<div class="lib-thumb">' + thumb + badge + prog + '</div>' +
+        '<div class="lib-thumb">' + thumb +
+        (badges ? '<span class="lib-badges">' + badges + '</span>' : "") + dur + prog + '</div>' +
         '<div class="lib-title">' + v.name + '</div></div>';
     });
     if (!html) html = '<div class="empty">这里没有视频</div>';
-    body.innerHTML = html;
+    $("#vlBrowseBody").innerHTML = html;
+    vlLastBrowse = { videos: vids };   // 内置播放器"上一个/下一个"用
+    if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
   }
   function browse(path) {
     vlBrowsePath = path || "";
@@ -1435,26 +1446,208 @@
     var f = e.target.closest(".vl-folder");
     if (f) { browse(decodeURIComponent(f.getAttribute("data-path"))); return; }
     var card = e.target.closest(".lib-card");
-    if (card && card.getAttribute("data-vpath")) {
-      var vp = decodeURIComponent(card.getAttribute("data-vpath"));
-      api("/api/player/open", "POST", { path: vp }).then(function (r) {
-        if (r && r.ok) showPlayView(vp);
-        else toast("启动失败", (r && r.error) || "", "err");
-      });
-    }
+    if (!card || !card.getAttribute("data-vpath")) return;
+    var vp = decodeURIComponent(card.getAttribute("data-vpath"));
+    /* 内置播放：直接在大框框里放，不再拉起外挂 mpv（外挂仍保留为兜底按钮） */
+    var list = (vlLastBrowse.videos || []).map(function (v) { return { path: v.path, name: v.name }; });
+    var idx = 0;
+    list.forEach(function (it, i) { if (it.path === vp) idx = i; });
+    openVideo(vp, list[idx] ? list[idx].name : vp.split(/[\\/]/).pop(), list, idx);
   });
+  /* 返回上一级：严格的上一级。旧实现把"父级 == 某个根"当成"该回根列表"，
+     于是在根目录里点返回会去 browse("E:") → 后端报"路径不在媒体库目录内"；
+     在子目录里点返回又会跳过根目录直接跳回媒体库。 */
   $("#vlBack").addEventListener("click", function () {
-    if (!vlBrowsePath) return;
-    var up = vlBrowsePath.replace(/[\\/]+$/, "").split(/[\\/]/);
+    var p = (vlBrowsePath || "").replace(/[\\/]+$/, "");
+    if (!p) return;
+    var roots = ((S.settings && S.settings.library_roots) || []).map(function (r) {
+      return String(r).replace(/[\\/]+$/, "").toLowerCase();
+    });
+    if (roots.indexOf(p.toLowerCase()) >= 0) { browse(""); return; }   // 就在某个根里 → 上一层是媒体库
+    var up = p.split(/[\\/]/);
     up.pop();
     var parent = up.join("\\");
-    // 父级是某个根目录本身时回根视图
-    api("/api/library/state").then(function (st) {
-      var roots = (st && st.roots) || [];
-      var isRoot = roots.some(function (r) { return r.toLowerCase() === parent.toLowerCase(); });
-      browse(isRoot ? "" : parent);
-    });
+    if (!parent || parent.length <= 2) { browse(""); return; }         // 盘符根 → 媒体库
+    browse(parent);                                                    // 其余老老实实上一层
   });
+
+  /* =====================================================================
+     内置播放器：HTML5 <video> 直接在大框框里播（用户明确要求，不再外挂 mpv）
+     流地址优先级：① 宿主 /api/library/stream（1.0.56+）② DLNA /media/<key>
+     （DLNA 服务器已支持 Range 206，1.0.55 就能用；外挂 mpv 只作兜底）
+     ===================================================================== */
+  var VL_STREAM = { api: null };          // null=未探测 / true=宿主有流接口 / false=走 DLNA
+  var vlMed = { list: [], idx: -1, path: "", name: "", failed: false };
+  var vlVidEl = null, vlChromeTimer = 0;
+  function vlVid() { return vlVidEl || (vlVidEl = document.getElementById("vlVideo")); }
+  function vlPlaying() { var v = vlVid(); return !!(v && vlMed.path && !v.paused && !v.ended); }
+
+  /* DLNA key 规则（vendor/dlna/vr_dlna.py path_to_key）：单根=相对路径，多根=label/相对路径，
+     label = 根目录 basename（host_server 里 MediaRoot(label=Path(p).name or "Videos")） */
+  function vlDlnaUrl(absPath) {
+    var st = S.settings || {};
+    var roots = st.dlna_roots || [];
+    var port = st.dlna_port || 8899;
+    var p = String(absPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    for (var i = 0; i < roots.length; i++) {
+      var root = String(roots[i]).replace(/\\/g, "/").replace(/\/+$/, "");
+      if (!root || p.toLowerCase().indexOf(root.toLowerCase() + "/") !== 0) continue;
+      var rel = p.slice(root.length + 1);
+      var label = root.split("/").filter(Boolean).pop() || "Videos";
+      var key = (roots.length === 1) ? rel : (label + "/" + rel);
+      return "http://127.0.0.1:" + port + "/media/" + key.split("/").map(encodeURIComponent).join("/");
+    }
+    return null;
+  }
+  function vlStreamUrl(absPath, cb) {
+    var api = "/api/library/stream?path=" + encodeURIComponent(absPath);
+    if (VL_STREAM.api === true) { cb(api); return; }
+    if (VL_STREAM.api === false) { cb(vlDlnaUrl(absPath)); return; }
+    fetch(api, { headers: { Range: "bytes=0-0" } }).then(function (r) {
+      VL_STREAM.api = (r.status === 200 || r.status === 206);
+      cb(VL_STREAM.api ? api : vlDlnaUrl(absPath));
+    }).catch(function () { VL_STREAM.api = false; cb(vlDlnaUrl(absPath)); });
+  }
+
+  function vlShowChrome(on) {
+    var w = $("#vlVWrap"); if (!w) return;
+    w.classList.toggle("idle", !on);
+  }
+  function vlTouch() {
+    vlShowChrome(true);
+    clearTimeout(vlChromeTimer);
+    vlChromeTimer = setTimeout(function () { if (vlPlaying()) vlShowChrome(false); }, 4000);
+  }
+  function vlSetPlayIcon() {
+    var v = vlVid(), u = $("#vlPlay") && $("#vlPlay").querySelector("use");
+    if (u) u.setAttribute("href", (v && !v.paused && !v.ended) ? "#i-pause" : "#i-play");
+    var u2 = $("#vlPause") && $("#vlPause").querySelector("use");   // 页面上的 ⏸ 同步
+    if (u2) u2.setAttribute("href", (v && !v.paused && !v.ended) ? "#i-pause" : "#i-play");
+  }
+  function vlVideoFail(msg) {
+    vlMed.failed = true;
+    var off = $("#vlVOff"), v = vlVid();
+    if (v) { try { v.pause(); } catch (e) {} v.removeAttribute("src"); v.load(); }
+    if (off) { off.hidden = false; if (msg) $("#vlVOffD").textContent = msg; }
+    vlSetPlayIcon();
+  }
+  function openVideo(path, name, list, idx) {
+    vlMed.path = path || "";
+    vlMed.name = name || String(path || "").split(/[\\/]/).pop();
+    vlMed.failed = false;
+    if (list && list.length) { vlMed.list = list; vlMed.idx = idx || 0; }
+    showPlayView(vlMed.path);
+    $("#vlPlayName").textContent = vlMed.name;
+    $("#vlPlayPath").textContent = vlMed.path;
+    $("#vlVOff").hidden = true;
+    var v = vlVid();
+    v.style.display = "";
+    vlStreamUrl(vlMed.path, function (url) {
+      if (!url) { vlVideoFail("这个文件不在 DLNA 共享目录里，无法内置播放；可点下面的按钮用外部播放器。"); return; }
+      v.src = url;
+      v.load();
+      var pr = v.play();
+      if (pr && pr.catch) pr.catch(function () { /* 自动播放被拦或解码失败，等 error 事件 */ });
+    });
+    vlTouch();
+    vlSyncVlUi();
+  }
+  function vlSyncVlUi() {
+    var v = vlVid(); if (!v) return;
+    var cur = v.currentTime || 0, dur = isFinite(v.duration) ? v.duration : 0;
+    $("#vlVPos").textContent = fmtTime(cur);
+    $("#vlVDur").textContent = dur ? fmtTime(dur) : "0:00";
+    $("#vlPos").textContent = fmtTime(cur);
+    $("#vlDur").textContent = dur ? fmtTime(dur) : "0:00";
+    var seek = $("#vlVSeek");
+    if (seek) seek.style.setProperty("--a", 0), seek.style.setProperty("--b", dur ? Math.min(1, cur / dur) : 0);
+    var vol = $("#vlVVol");
+    if (vol) { vol.style.setProperty("--a", 0); vol.style.setProperty("--b", v.muted ? 0 : (v.volume || 0)); }
+    var mu = $("#vlMute") && $("#vlMute").querySelector("use");
+    if (mu) mu.setAttribute("href", (v.muted || !v.volume) ? "#i-volume-x" : "#i-volume");
+    drawHeat(cur, dur);
+    vlSetPlayIcon();
+  }
+  function vlSeekTo(sec) {
+    var v = vlVid(); if (!v) return;
+    var dur = isFinite(v.duration) ? v.duration : 0;
+    v.currentTime = Math.max(0, Math.min(dur || sec, sec));
+    vlSyncVlUi();
+  }
+  function vlStep(delta) {
+    if (!vlMed.list.length) return;
+    var n = vlMed.list.length;
+    var i = (vlMed.idx + delta + n) % n;
+    var it = vlMed.list[i];
+    if (it) openVideo(it.path, it.name, vlMed.list, i);
+  }
+  function vlInitPlayer() {
+    var v = vlVid(); if (!v || v.__wired) return;
+    v.__wired = true;
+    ["timeupdate", "durationchange", "progress", "play", "pause", "ended", "volumechange", "seeked"]
+      .forEach(function (ev) {
+        v.addEventListener(ev, function () {
+          vlSyncVlUi();
+          if (ev === "pause" || ev === "ended") vlShowChrome(true);   // 暂停时常显
+          if (ev === "play" || ev === "pause") vlTouch();
+        });
+      });
+    v.addEventListener("error", function () {
+      vlVideoFail("这个文件内置播放器打不开（常见原因：HEVC/10bit 等编码不受支持，或 DLNA 服务没在跑）。");
+    });
+    v.addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
+    $("#vlPlay").addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
+    $("#vlPrev").addEventListener("click", function () { vlStep(-1); });
+    $("#vlNext").addEventListener("click", function () { vlStep(1); });
+    $("#vlMute").addEventListener("click", function () { v.muted = !v.muted; vlSyncVlUi(); });
+    $("#vlFull").addEventListener("click", function () {
+      var w = $("#vlVWrap");
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (w.requestFullscreen) w.requestFullscreen();
+    });
+    $("#vlPip").addEventListener("click", function () {
+      try {
+        if (document.pictureInPictureElement) document.exitPictureInPicture();
+        else if (v.requestPictureInPicture) v.requestPictureInPicture();
+      } catch (e) { toast("画中画不可用", "", "warn"); }
+    });
+    $("#vlVBack").addEventListener("click", function () {
+      /* 回到媒体库（暂停并释放流，时间轴交回 mpv 轮询口径） */
+      try { v.pause(); } catch (e) {}
+      v.removeAttribute("src"); v.load();
+      vlMed.path = ""; vlMed.failed = false;
+      $("#vlPlayView").style.display = "none";
+      $("#vlBrowse").style.display = "";
+      vlHeatScript = null; vlHeatKey = ""; drawHeat();
+      renderBrowse({ dirs: [], videos: vlLastBrowse.videos });   // 回到当前目录（已缓存的列表）
+      if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
+    });
+    $("#vlUseMpv").addEventListener("click", function () {
+      if (!vlMed.path) return;
+      api("/api/player/open", "POST", { path: vlMed.path }).then(function (r) {
+        if (r && r.ok) toast("已交给外部播放器", "mpv 独立窗口", "ok");
+        else toast("外部播放器启动失败", (r && r.error) || "", "err");
+      });
+    });
+    /* 进度/音量滑轨：复用页面的自研滑轨（--a/--b 驱动，几何一致） */
+    initSlider("vlVSeek", false, function (lo, hi) {
+      var d = isFinite(v.duration) ? v.duration : 0;
+      if (d > 0) v.currentTime = Math.max(0, Math.min(d, hi * d));
+      vlTouch();
+    });
+    initSlider("vlVVol", false, function (lo, hi) {
+      v.volume = Math.max(0, Math.min(1, hi / 100));
+      v.muted = hi <= 0;
+      vlSyncVlUi();
+    });
+    /* 鼠标不动 3s 收控制条；一动就出来 */
+    var wrap = $("#vlVWrap");
+    ["pointermove", "pointerdown", "wheel"].forEach(function (ev) { wrap.addEventListener(ev, vlTouch); });
+    document.addEventListener("fullscreenchange", function () {
+      var u = $("#vlFull") && $("#vlFull").querySelector("use");
+      if (u) u.setAttribute("href", document.fullscreenElement ? "#i-minimize" : "#i-maximize");
+    });
+  }
 
   /* --- 大框框：播放模式（外挂 mpv 的页内镜像） --- */
   var vlCurPath = "";
@@ -1463,32 +1656,19 @@
     $("#vlBrowse").style.display = "none";
     $("#vlPlayView").style.display = "";
     $("#vlPlayPath").textContent = vlCurPath;
-    $("#vlScreenTitle").textContent = vlCurPath.split(/[\\/]/).pop();
-    // 背景图：索引缩略图（有则显示）
-    api("/api/library/items").then(function (r) {
-      var hit = null;
-      ((r && r.items) || []).forEach(function (c) {
-        (c.parts || []).forEach(function (pt) { if (pt.path === vlCurPath) hit = c; });
-      });
-      var img = $("#vlScreenImg");
-      if (hit && hit.thumb) {
-        img.src = "/api/library/thumb?name=" + encodeURIComponent(hit.thumb);
-        img.style.display = "";
-      } else {
-        img.style.display = "none";
-      }
-    });
+    if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
   }
 
   /* --- 播放状态轮询（驱动播放视图/时间轴） --- */
+  var vlPlayerOpen = false;
   function renderPlayState(p) {
+    vlPlayerOpen = !!(p && p.open);
+    if (vlMed.path && !vlMed.failed) return;   // 内置播放器在放，别被 mpv 状态抢画面
     var el = $("#libPlaying");
     if (p && p.open) {
       $("#vlPlayPath").textContent = p.path || "—";
       $("#vlPos").textContent = fmtTime(p.pos);
       $("#vlDur").textContent = fmtTime(p.dur);
-      $("#vlScreenTitle").textContent = (p.path || "").split(/[\\/]/).pop();
-      $("#vlPresetToggle").textContent = "";
       if (!libSeekDrag && p.dur > 0) drawHeat(p.pos, p.dur);
     } else {
       if (vlCurPath) { vlCurPath = ""; browse(""); }
@@ -1509,11 +1689,25 @@
     });
   }
 
-  /* --- 脚本热力图（手机端算法同构：7 档色带/速度窗 50/位置分位窗 15/间隙 5s 重置） --- */
+  /* --- 脚本热力图（手机 ScriptHeatmap.kt 同构：7 档色带/速度窗 50/位置分位窗 15/间隙 5s 重置） --- */
   var HEAT_STOPS = [[0, 0, 0], [30, 144, 255], [34, 139, 34], [255, 215, 0], [220, 20, 60], [147, 112, 219], [37, 22, 122]];
+  /* 底色随主题：**整条同一个色**（此前是"类白→淡紫"的横向渐变，用户要求不要渐变）
+     亮色 #ece9f5（类白偏淡紫）／暗色 #1c1728（类黑偏深紫），都不用纯白纯黑 */
+  var HEAT_BG = { dark: "#1c1728", light: "#ece9f5" };
+  var HEAT_INK = { dark: "#ffffff", light: "#1b1b1f" };   // 播放头
+  function heatTheme() { return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark"; }
+  function heatBg() { return HEAT_BG[heatTheme()]; }
+  function heatPaint(ctx, w, h) {                 // 平铺同色，不做渐变
+    ctx.fillStyle = heatBg();
+    ctx.fillRect(0, 0, w, h);
+  }
+  function heatZero() {                           // 最低色档的插值起点 = 底色本身
+    var c = heatBg();
+    return [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)];
+  }
   function heatColor(speed) {
     var n = 120.0;
-    if (speed <= 0) return HEAT_STOPS[0];
+    if (speed <= 0) return heatZero();
     if (speed > 5 * n) return HEAT_STOPS[6];
     var t = speed + n / 2;
     var i = Math.min(Math.floor(t / n), HEAT_STOPS.length - 2);
@@ -1521,12 +1715,11 @@
     var a = HEAT_STOPS[i], b = HEAT_STOPS[i + 1];
     return [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac, a[2] + (b[2] - a[2]) * frac];
   }
+  /* w/h 为设备像素（画布 backing store），调用方按 dpr 放大后传入 */
   function renderHeatBitmap(cv, script, timelineEnd, w, h) {
-    // 手机端 renderHeatmapBitmap 同构：速度窗 50 均值着色 + 位置窗 15 上下分位定条带
     var ctx = cv.getContext("2d");
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = "#101418";
-    ctx.fillRect(0, 0, w, h);
+    heatPaint(ctx, w, h);
     var acts = script && script.actions;
     if (!acts || acts.length < 2 || timelineEnd <= 0) return;
     var d = w / (timelineEnd * 1000);
@@ -1536,7 +1729,10 @@
       var atPrev = acts[b - 1][0], atCur = acts[b][0];
       var x = d * atCur;
       if (atCur - atPrev > GAP) { speedWin = []; posWin = []; xPrev = x; continue; }
-      var speed = Math.abs(acts[b][1] - acts[b - 1][1]) * 100.0 / Math.max(1e-10, acts[b][0] - acts[b - 1][0]);
+      /* 手机语义：|Δvalue(0..1)| × 100 ÷ Δt(秒) = %/秒。
+         旧实现除的是毫秒（pos 又是 0..100），速度只有手机的 1/10 ——
+         整条热力图永远落在最低那一档，看着"只有一种蓝"。 */
+      var speed = Math.abs(acts[b][1] - acts[b - 1][1]) / Math.max(1e-9, (atCur - atPrev) / 1000);
       speedWin.push(speed);
       if (speedWin.length > SPEED_WINDOW) speedWin.shift();
       posWin.push(acts[b][1]);
@@ -1544,56 +1740,88 @@
       var avg = speedWin.reduce(function (a, c) { return a + c; }, 0) / speedWin.length;
       var col = heatColor(avg);
       if (posWin.length >= 2) {
-        var sorted = posWin.slice().sort(function (x, y) { return x - y; });
+        var sorted = posWin.slice().sort(function (x2, y2) { return x2 - y2; });
         var mid = Math.floor(sorted.length / 2);
-        var lower = 0, upper = 0;
-        for (var i = 0; i < mid; i++) lower += sorted[i];
-        for (var j = mid; j < sorted.length; j++) upper += sorted[j];
+        var lower = 0, upper = 0, i2;
+        for (i2 = 0; i2 < mid; i2++) lower += sorted[i2];
+        for (i2 = mid; i2 < sorted.length; i2++) upper += sorted[i2];
         var lowerAvg = lower / mid, upperAvg = upper / (sorted.length - mid);
         var top = h - lowerAvg / 100 * h;
         var barH = (lowerAvg - upperAvg) / 100 * h;
         ctx.fillStyle = "rgb(" + col.map(Math.round).join(",") + ")";
-        ctx.fillRect(xPrev, top, x - xPrev, barH);
+        ctx.fillRect(xPrev, top, Math.max(1, x - xPrev), barH);
       }
       xPrev = x;
     }
   }
+  /* 热力条位图缓存（手机端 produceState 同构）：只在脚本/尺寸/主题变化时整幅重画 */
+  var heatOff = document.createElement("canvas"), heatOffKey = "";
   function drawHeat(pos, dur) {
     var cv = $("#vlHeat");
     if (!cv) return;
     var dpr = window.devicePixelRatio || 1;
     var w = cv.clientWidth, h = cv.clientHeight;
     if (!w || !h) return;
-    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    var pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+    if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
     var ctx = cv.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "#101418";
-    ctx.fillRect(0, 0, w, h);
-    // 统一时间基准：max(媒体时长, 脚本末帧)（手机端同款）
+    heatPaint(ctx, w, h);
+    /* 统一时间基准：max(媒体时长, 脚本末帧)（手机端同款） */
     var sc = vlHeatScript;
     var scriptEnd = 0;
     if (sc && sc.actions && sc.actions.length) scriptEnd = sc.actions[sc.actions.length - 1][0] / 1000;
     var timelineEnd = Math.max(dur || 0, scriptEnd);
-    if (sc) renderHeatBitmap(cv, sc, timelineEnd, Math.round(w), Math.round(h));
+    if (sc) {
+      var key = (vlHeatKey || "") + "|" + pw + "x" + ph + "|" + heatTheme();
+      if (heatOffKey !== key) {
+        heatOff.width = pw; heatOff.height = ph;
+        renderHeatBitmap(heatOff, sc, timelineEnd, pw, ph);
+        heatOffKey = key;
+      }
+      ctx.drawImage(heatOff, 0, 0, w, h);
+    }
     if (timelineEnd > 0 && pos > 0) {
       var x = Math.min(w, w * pos / timelineEnd);
-      ctx.fillStyle = "#ffffff";
+      ctx.fillStyle = HEAT_INK[heatTheme()];
       ctx.fillRect(x - 1, 0, 2, h);
     }
   }
   $("#vlHeat").addEventListener("click", function (e) {
     var rect = this.getBoundingClientRect();
     var frac = (e.clientX - rect.left) / rect.width;
+    var sc = vlHeatScript;
+    var scriptEnd = (sc && sc.actions && sc.actions.length) ? sc.actions[sc.actions.length - 1][0] / 1000 : 0;
+    /* 内置播放器在放 → 直接 seek 视频；否则走 mpv 接口 */
+    if (vlMed.path && !vlMed.failed) {
+      var v = vlVid();
+      var d = (v && isFinite(v.duration)) ? v.duration : 0;
+      var end = Math.max(d, scriptEnd);
+      if (end > 0) vlSeekTo(frac * end);
+      return;
+    }
     api("/api/player/state").then(function (p) {
       if (!(p && p.open)) return;
-      var sc = vlHeatScript;
-      var scriptEnd = (sc && sc.actions && sc.actions.length) ? sc.actions[sc.actions.length - 1][0] / 1000 : 0;
       var timelineEnd = Math.max(p.dur || 0, scriptEnd);
       if (timelineEnd > 0) api("/api/player/seek", "POST", { pos: frac * timelineEnd });
     });
   });
   function loadHeat() {
     if (!document.querySelector("#page-library.active")) return;
+    /* 内置播放器在放：时间轴跟视频走，不再轮询 mpv */
+    if (vlMed.path && !vlMed.failed) {
+      var v = vlVid();
+      if (vlHeatKey !== vlMed.path || !vlHeatScript) {
+        vlHeatKey = vlMed.path;
+        api("/api/library/script?path=" + encodeURIComponent(vlMed.path)).then(function (r) {
+          vlHeatScript = (r && r.ok) ? r : null;
+          vlSyncVlUi();
+        });
+      } else if (v) {
+        vlSyncVlUi();
+      }
+      return;
+    }
     api("/api/player/state").then(function (p) {
       if (!p || !p.open) { vlHeatScript = null; vlHeatKey = ""; drawHeat(); return; }
       var want = p.path;
@@ -1611,9 +1839,10 @@
   function sliderRowHtml(label, valueText, id, min, max, val, enabled) {
     return '<div class="steel-slider-row"><div class="steel-slider-head">' +
       '<span class="steel-label">' + label + '</span>' +
-      '<span class="steel-value">' + valueText + '</span></div>' +
-      '<input type="range" class="steel-range" id="' + id + '" min="' + min + '" max="' + max + '" value="' + val + '"' +
-      (enabled === false ? ' disabled' : '') + '></div>';
+      '<span class="steel-value" id="' + id + '_val">' + valueText + '</span></div>' +
+      '<div class="vl-slider" id="' + id + '" data-single="1" data-min="' + min + '" data-max="' + max +
+      '" data-val="' + val + '"' + (enabled === false ? ' data-disabled="1"' : '') + '>' +
+      '<div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div></div></div>';
   }
   function linkBoxHtml(id, checked, labelText) {
     return '<label class="steel-link"><input type="checkbox" id="' + id + '"' + (checked ? " checked" : "") + '> ' + (labelText || "关联输出") + '</label>';
@@ -1628,45 +1857,51 @@
     });
   }
   /* --- 双点行程滑轨（一条轨道两个把手，手机 SteelRangeSlider 同构） --- */
-  function dualSliderHtml(id, min, max, lo, hi, label, valueText) {
+  function dualSliderHtml(id, min, max, lo, hi, label, valueText, disabled) {
     return '<div class="steel-slider-row"><div class="steel-slider-head">' +
       '<span class="steel-label">' + label + '</span>' +
       '<span class="steel-value" id="' + id + '_val">' + valueText + '</span></div>' +
-      '<div class="vl-dual" id="' + id + '" data-min="' + min + '" data-max="' + max + '" data-lo="' + lo + '" data-hi="' + hi + '">' +
+      '<div class="vl-slider" id="' + id + '" data-min="' + min + '" data-max="' + max + '" data-lo="' + lo + '" data-hi="' + hi + '"' +
+      (disabled ? ' data-disabled="1"' : '') + '>' +
       '<div class="track"></div><div class="fill"></div>' +
       '<div class="thumb" data-side="lo"></div><div class="thumb" data-side="hi"></div></div></div>';
   }
-  function initDual(id, onChange) {
+  /* 单点/双点同一实现：把手位置写进 --a/--b，几何全在 CSS（保证两条滑轨端点严格对齐） */
+  function initSlider(id, dual, onChange) {
     var el = $("#" + id);
     if (!el) return;
     var min = Number(el.getAttribute("data-min")), max = Number(el.getAttribute("data-max"));
-    var lo = Number(el.getAttribute("data-lo")), hi = Number(el.getAttribute("data-hi"));
-    var track = el.querySelector(".track"), fill = el.querySelector(".fill");
-    var thumbs = { lo: el.querySelector('[data-side="lo"]'), hi: el.querySelector('[data-side="hi"]') };
-    function pct(v) { return (v - min) / (max - min) * 100; }
+    var span = (max - min) || 1;
+    var lo = el.hasAttribute("data-lo") ? Number(el.getAttribute("data-lo")) : min;
+    var hi = el.hasAttribute("data-hi") ? Number(el.getAttribute("data-hi")) : Number(el.getAttribute("data-val"));
+    var thumbs = { hi: el.querySelector('[data-side="hi"]') };
+    if (dual) thumbs.lo = el.querySelector('[data-side="lo"]');
     function paint() {
-      fill.style.left = pct(lo) + "%";
-      fill.style.width = (pct(hi) - pct(lo)) + "%";
-      thumbs.lo.style.left = pct(lo) + "%";
-      thumbs.hi.style.left = pct(hi) + "%";
+      el.style.setProperty("--a", (lo - min) / span);
+      el.style.setProperty("--b", (hi - min) / span);
     }
+    paint();
+    if (el.hasAttribute("data-disabled")) return;
     function set(which, v) {
       v = Math.round(Math.min(max, Math.max(min, v)));
-      if (which === "lo" && v > hi - 1) v = hi - 1;
-      if (which === "hi" && v < lo + 1) v = lo + 1;
+      if (dual) {
+        if (which === "lo" && v > hi - 1) v = hi - 1;
+        if (which === "hi" && v < lo + 1) v = lo + 1;
+      }
       if (which === "lo") lo = v; else hi = v;
       el.setAttribute("data-lo", lo); el.setAttribute("data-hi", hi);
       paint();
-      onChange(lo, hi);
+      onChange(lo, hi);                       // 实时回调：数值文本当场跟着走
     }
     Object.keys(thumbs).forEach(function (side) {
       var th = thumbs[side];
+      if (!th) return;
       th.addEventListener("pointerdown", function (e) {
         e.preventDefault();
-        th.setPointerCapture(e.pointerId);
+        try { th.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件无有效 pointerId */ }
         var move = function (ev) {
-          var rect = track.getBoundingClientRect();
-          set(side, min + (ev.clientX - rect.left) / rect.width * (max - min));
+          var r = el.getBoundingClientRect();
+          set(side, min + (ev.clientX - r.left) / r.width * (max - min));
         };
         var up = function () {
           th.removeEventListener("pointermove", move);
@@ -1677,55 +1912,101 @@
         th.addEventListener("pointerup", up);
       });
     });
-    paint();
+    /* 点轨道也能跳（手机滑轨同款手感） */
+    el.addEventListener("pointerdown", function (e) {
+      if (e.target.classList.contains("thumb")) return;
+      var r = el.getBoundingClientRect();
+      var v = min + (e.clientX - r.left) / r.width * (max - min);
+      set(dual ? (Math.abs(v - lo) <= Math.abs(v - hi) ? "lo" : "hi") : "hi", v);
+    });
+  }
+  /* 拖动期间数值实时更新，落盘防抖 300ms（旧版只在 pointerup 存一次，
+     数值要等切页签重画才变 —— 用户看到的就是"数字不动"） */
+  var vlSaveTimer = 0, vlSavePending = null;
+  function queueVl(patch) {
+    vlSavePending = Object.assign(vlSavePending || {}, patch);
+    clearTimeout(vlSaveTimer);
+    vlSaveTimer = setTimeout(function () {
+      var p = vlSavePending; vlSavePending = null;
+      if (p) saveVl(p);
+    }, 300);
   }
   function renderVlTabCard() {
     var box = $("#vlTabCard");
     if (!box) return;
     var cfg = vlCfg();
     var g = function (k, d) { return cfg[k] != null ? cfg[k] : d; };
+    var mainLo = g("range_min", 0), mainHi = g("range_max", 100), mainSpd = g("max_speed", 500);
     var html = "";
     if (vlTab === "stroke") {
-      html = '<div class="steel-card-title">设备行程与速度</div>' +
-        dualSliderHtml("vl_range", 0, 100, g("range_min", 0), g("range_max", 100),
-                       "限制输出范围", g("range_min", 0) + "% - " + g("range_max", 100) + "%") +
-        sliderRowHtml("设备速度上限", g("max_speed", 300) + " Units/s", "vl_max_speed", 0, VL_SPEED_MAX, g("max_speed", 300));
+      html = '<div class="steel-card-title">设备行程与速度</div><div class="steel-rows">' +
+        dualSliderHtml("vl_range", 0, 100, mainLo, mainHi, "限制输出范围", mainLo + "% - " + mainHi + "%") +
+        sliderRowHtml("设备速度上限", mainSpd + " Units/s", "vl_max_speed", 0, VL_SPEED_MAX, mainSpd) + '</div>';
     } else if (vlTab === "idle") {
-      html = '<div class="steel-card-title">待机缓动</div>' +
-        dualSliderHtml("vl_idle_range", 0, 100, g("idle_min", 10), g("idle_max", 60),
-                       "运动范围", g("idle_min", 10) + "% - " + g("idle_max", 60) + "%") +
-        linkBoxHtml("vl_idle_link", !!cfg.idle_link) +
-        sliderRowHtml("运动速度", g("idle_speed", 30) + " Units/s", "vl_idle_speed", 0, VL_SPEED_MAX, g("idle_speed", 30));
+      var iLink = !!cfg.idle_link;
+      var iLo = iLink ? mainLo : g("idle_min", 0), iHi = iLink ? mainHi : g("idle_max", 100);
+      var iTxt = iLink ? (iLo + "% - " + iHi + "%（关联主输出）") : (iLo + "% - " + iHi + "%");
+      html = '<div class="steel-card-title">待机缓动</div><div class="steel-rows">' +
+        dualSliderHtml("vl_idle_range", 0, 100, iLo, iHi, "运动范围", iTxt, iLink) +
+        linkBoxHtml("vl_idle_link", iLink) +
+        sliderRowHtml("运动速度", g("idle_speed", 100) + " Units/s", "vl_idle_speed", 0, VL_SPEED_MAX, g("idle_speed", 100)) + '</div>';
     } else {
-      html = '<div class="steel-card-title">一键爆发</div>' +
-        dualSliderHtml("vl_burst_range", 0, 100, g("burst_min", 30), g("burst_max", 100),
-                       "运动范围", g("burst_min", 30) + "% - " + g("burst_max", 100) + "%") +
-        linkBoxHtml("vl_burst_link", !!cfg.burst_link) +
-        sliderRowHtml("运动速度", g("burst_speed", 100) + " Units/s", "vl_burst_speed", 0, VL_SPEED_MAX, g("burst_speed", 100)) +
-        linkBoxHtml("vl_burst_speed_link", !!cfg.burst_speed_link, "关联上限");
+      var bLink = !!cfg.burst_link, bSpeedLink = !!cfg.burst_speed_link;
+      var bLo = bLink ? mainLo : g("burst_min", 0), bHi = bLink ? mainHi : g("burst_max", 100);
+      var bTxt = bLink ? (bLo + "% - " + bHi + "%（关联主输出）") : (bLo + "% - " + bHi + "%");
+      var bSpd = bSpeedLink ? mainSpd : g("burst_speed", 500);
+      var bSpdTxt = bSpeedLink ? (bSpd + " Units/s（关联主上限）") : (bSpd + " Units/s");
+      html = '<div class="steel-card-title">一键爆发</div><div class="steel-rows">' +
+        dualSliderHtml("vl_burst_range", 0, 100, bLo, bHi, "运动范围", bTxt, bLink) +
+        linkBoxHtml("vl_burst_link", bLink) +
+        sliderRowHtml("运动速度", bSpdTxt, "vl_burst_speed", 0, VL_SPEED_MAX, bSpd, !bSpeedLink) +
+        linkBoxHtml("vl_burst_speed_link", bSpeedLink, "关联上限") + '</div>';
     }
     box.innerHTML = html;
-    var bind = function (id, key) {
-      var el = $("#" + id);
-      if (!el) return;
-      el.addEventListener("change", function () {
-        var patch = {}; patch[key] = Number(this.value);
-        saveVl(patch);
+    if (vlTab === "stroke") {
+      initSlider("vl_range", true, function (lo, hi) {
+        $("#vl_range_val").textContent = lo + "% - " + hi + "%";
+        queueVl({ range_min: lo, range_max: hi });
       });
-    };
-    bind("vl_max_speed", "max_speed");
-    bind("vl_idle_speed", "idle_speed"); bind("vl_burst_speed", "burst_speed");
-    [["vl_idle_link", "idle_link"], ["vl_burst_link", "burst_link"], ["vl_burst_speed_link", "burst_speed_link"]]
-      .forEach(function (pair) {
-        var el = $("#" + pair[0]);
-        if (el) el.addEventListener("change", function () {
-          var patch = {}; patch[pair[1]] = this.checked;
-          saveVl(patch);
-        });
+      initSlider("vl_max_speed", false, function (lo, hi) {
+        $("#vl_max_speed_val").textContent = hi + " Units/s";
+        queueVl({ max_speed: hi });
       });
-    if (vlTab === "stroke") initDual("vl_range", function (lo, hi) { saveVl({ range_min: lo, range_max: hi }); });
-    if (vlTab === "idle") initDual("vl_idle_range", function (lo, hi) { saveVl({ idle_min: lo, idle_max: hi }); });
-    if (vlTab === "burst") initDual("vl_burst_range", function (lo, hi) { saveVl({ burst_min: lo, burst_max: hi }); });
+    } else if (vlTab === "idle") {
+      initSlider("vl_idle_range", true, function (lo, hi) {
+        $("#vl_idle_range_val").textContent = lo + "% - " + hi + "%";
+        queueVl({ idle_min: lo, idle_max: hi });
+      });
+      initSlider("vl_idle_speed", false, function (lo, hi) {
+        $("#vl_idle_speed_val").textContent = hi + " Units/s";
+        queueVl({ idle_speed: hi });
+      });
+      bindLink("vl_idle_link", "idle_link");
+    } else {
+      initSlider("vl_burst_range", true, function (lo, hi) {
+        $("#vl_burst_range_val").textContent = lo + "% - " + hi + "%";
+        queueVl({ burst_min: lo, burst_max: hi });
+      });
+      initSlider("vl_burst_speed", false, function (lo, hi) {
+        $("#vl_burst_speed_val").textContent = hi + " Units/s";
+        queueVl({ burst_speed: hi });
+      });
+      bindLink("vl_burst_link", "burst_link");
+      bindLink("vl_burst_speed_link", "burst_speed_link");
+    }
+  }
+  /* 关联勾选：存盘后立刻重画（滑轨要禁用、数值要跟着主范围走） */
+  function bindLink(id, key) {
+    var el = $("#" + id);
+    if (!el) return;
+    el.addEventListener("change", function () {
+      var patch = {}; patch[key] = this.checked;
+      if (S.settings) {
+        S.settings.video_link = Object.assign({}, vlCfg(), patch);   // 本地先认，重画才拿得到新值
+      }
+      saveVl(patch);
+      renderVlTabCard();
+    });
   }
   $$(".vl-tabs button").forEach(function (b) {
     b.addEventListener("click", function () {
@@ -1756,9 +2037,49 @@
     $("#vlBoost").classList.toggle("filled-red", vlBoostMode);
     $("#vlRandom").classList.toggle("filled-green", vlRandomMode);
     $("#vlPresetToggle").classList.toggle("filled-blue", vlPlayingPreset);
-    $("#vlPresetToggle").textContent = vlPlayingPreset ? "暂停预设" : "播放/暂停预设";
+    $("#vlPresetToggle").textContent = vlPlayingPreset ? "暂停预设" : "播放预设";
   }
   $("#vlBoost").addEventListener("click", function () { vlBoostMode = !vlBoostMode; renderCapsules(); });
+  /* ⏸（/api/player/toggle）：此前只画了按钮没接线，点了没反应 */
+  function setPauseIcon(paused) {
+    var b = $("#vlPause");
+    var u = b && b.querySelector("use");
+    if (u) u.setAttribute("href", paused ? "#i-play" : "#i-pause");
+  }
+  $("#vlPause").addEventListener("click", function () {
+    /* 内置播放器在放 → 直接切播放/暂停（同一窗口内） */
+    if (vlMed.path && !vlMed.failed) {
+      var v0 = vlVid();
+      if (v0) { if (v0.paused) v0.play(); else v0.pause(); vlTouch(); }
+      return;
+    }
+        /* 没有打开的视频时别调 toggle：host 的 _get_player() 会按需实例化播放器 */
+    if (!vlPlayerOpen) { toast("没有正在播放的视频", "先在媒体库里点一个视频", "warn"); return; }
+    api("/api/player/toggle", "POST", {}).then(function (r) {
+      if (r && r.ok) setPauseIcon(!!r.paused);
+    });
+  });
+  /* 布局自适应：⏸ 保持正圆且不超出按钮行；预设网格"可见 2 行"（草图） */
+  function layoutVl() {
+    var row = $(".vl-btnrow"), b = $("#vlPause");
+    if (row && b) {
+      var s = Math.max(26, Math.min(row.clientHeight, row.clientWidth * 40 / 770));
+      b.style.width = s + "px"; b.style.height = s + "px";
+    }
+    var g = $("#vlPGrid");
+    if (g) {
+      var h = g.clientHeight;
+      if (h > 0) g.style.gridAutoRows = Math.max(46, (h - 10) / 2) + "px";
+    /* 浏览网格同理：行高按"正好放 2 行"算，避免第二行被裁半截（窗口多小都成立） */
+    var bg = $("#vlBrowseBody");
+    if (bg) {
+      var bh = bg.clientHeight;
+      if (bh > 0) bg.style.gridAutoRows = Math.max(118, (bh - 10) / 2) + "px";
+    }
+    }
+    drawHeat();
+  }
+  window.addEventListener("resize", function () { heatOffKey = ""; layoutVl(); });
   $("#vlRandom").addEventListener("click", function () { vlRandomMode = !vlRandomMode; renderCapsules(); });
   $("#vlPresetToggle").addEventListener("click", function () { vlPlayingPreset = !vlPlayingPreset; renderCapsules(); });
 
@@ -1894,17 +2215,20 @@
   function setDevState(state) {
     vlDevState = state;
     var btn = $("#devBtn"), sp = $("#devSpinner"), lb = $("#devLabel");
-    btn.classList.remove("connecting", "connected");
+    btn.classList.remove("busy", "on");
     sp.hidden = true;
     if (state === "connecting") {
-      btn.classList.add("connecting");
+      btn.classList.add("busy");
+      btn.title = "正在扫描设备";
       sp.hidden = false;
       lb.textContent = "正在扫描";
     } else if (state === "connected") {
-      btn.classList.add("connected");
+      btn.classList.add("on");
+      btn.title = "已连接，点击断开";
       lb.textContent = "断开设备";
     } else {
-      lb.textContent = "连接设备";
+      btn.title = "扫描并连接设备";
+      lb.textContent = "扫描并连接";
     }
   }
   $("#devBtn").addEventListener("click", function () {
@@ -1915,17 +2239,41 @@
     setTimeout(function () {
       if (vlDevState === "connecting") {
         setDevState("disconnected");
-        toast("未发现设备", "设备通道将在 M2 接入", "warn");
+        toast("未发现设备", "BLE 设备通道将在 M2 接入", "warn");
       }
     }, 2000);
   });
 
   /* --- 标题栏最大化 --- */
+  /* 最大化/还原。
+     ⚠ 1.0.55 的 exe 里宿主 win_maximize 用的是 ctypes.wintypes.WINDOWPLACEMENT ——
+     那个结构体在 ctypes.wintypes 里不存在，调用必然抛错（实测返回 ok:false）。
+     窗口是全屏 API 也救不了：WebView2 里 requestFullscreen 只改 DOM 状态，
+     pywebview 不处理 ContainsFullScreenElementChanged，原生窗口一动不动
+     （实测点击前后窗口都是 960x806 at 360,103）。所以宿主修好之前，
+     这里就**如实报错**，不做"看起来在动其实没动"的假动作。
+     host_server.py 里的实现已重写并单独验证过，装 1.0.56 后自动生效。 */
   $("#winMax").addEventListener("click", function () {
-    window.pywebview.api.win_maximize();
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || !api.win_maximize) {
+      toast("最大化不可用", "宿主接口缺失", "warn");
+      return;
+    }
+    try {
+      var p = api.win_maximize();
+      if (p && p.then) {
+        p.then(function (r) {
+          if (r && r.ok) return;
+          toast("最大化暂不可用", "1.0.55 宿主该接口有 bug（源码已修），装 1.0.56 后恢复", "warn");
+        }, function () { toast("最大化暂不可用", "宿主调用失败", "warn"); });
+      }
+    } catch (e) {
+      toast("最大化暂不可用", "宿主调用失败", "warn");
+    }
   });
 
   // 进页面初始化
+  vlInitPlayer();
   browse("");
   renderVlTabCard();
   renderQuick();

@@ -306,7 +306,7 @@ DEFAULT_SETTINGS = {
     "start_minimized": False,
     "close_to_tray": True,
     "launch_on_boot": False,
-    "theme": "dark",
+    "theme": "light",
     "motion": "full",
     "subtitle_auto_start": False,
     "library_roots": [],
@@ -414,6 +414,12 @@ def load_settings() -> dict:
     # （用户在任务管理器/Windows 设置侧关了自启，或文件根本不存在走默认值），
     # 此前只有缓存命中路径回读真值，其余路径显示与实际相反。
     s["launch_on_boot"] = _autostart_enabled()
+    # R111：主题默认值从 dark 改为 light。老配置里存的是**旧默认值**（用户从没主动选过），
+    # 用一次性标记迁到 light；用户在界面上改过之后照常持久化，不会再被覆盖。
+    if not s.get("_theme_light_default"):
+        s["_theme_light_default"] = True
+        if s.get("theme") != "light":
+            s["theme"] = "light"
     if key is not None:
         # key 与 data 一起换（评审 F02）：见上面命中判定的注释。
         # 若本线程比另一个保存者更晚写回，最坏只是缓存里放了一份**与文件不符的旧对**
@@ -2230,6 +2236,7 @@ class Handler(BaseHTTPRequestHandler):
                                     vids.append({
                                         "name": e2.name, "path": e2.path,
                                         "has_funscript": Path(fs).is_file(),
+                                        "has_srt": Path(e2.path.rsplit(".", 1)[0] + ".srt").is_file(),
                                         "dur": (card["duration"] if card else 0.0),
                                         "thumb": lib.thumb_name_for(e2.path) or "",
                                         "pos": (card["progress"]["pos"] if card and card.get("progress") else 0.0),
@@ -3400,21 +3407,58 @@ class NexusApi:
             return {"ok": False, "error": str(e)}
 
     def win_maximize(self) -> dict:
-        """最大化/还原切换（标题栏最大化按钮）。
+        """最大化/还原切换（标题栏按钮）。
 
-        pywebview 6.x 没有公开 toggle_maximize，走 Win32：按窗口标题定位主窗
-        句柄，GetWindowPlacement 读 showCmd（2=最大化）后 ShowWindow 切换。
+        ⚠ 历史 bug：原实现用 ctypes.wintypes.WINDOWPLACEMENT —— 该结构体在
+        ctypes.wintypes 里**并不存在**（那里只有基础类型），调用必然抛
+        AttributeError，于是按钮点了完全没反应（前端还把返回值吞了）。
+        这里自己定义 POINT/RECT/WINDOWPLACEMENT；句柄也不再靠窗口标题，
+        改成枚举本进程的可见顶层窗（标题可能随页面变化）。
         """
         try:
             import ctypes
+            import os
+            from ctypes import wintypes
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+            class RECT(ctypes.Structure):
+                _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                            ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+
+            class WINDOWPLACEMENT(ctypes.Structure):
+                _fields_ = [("length", wintypes.UINT), ("flags", wintypes.UINT),
+                            ("showCmd", wintypes.UINT), ("ptMinPosition", POINT),
+                            ("ptMaxPosition", POINT), ("rcNormalPosition", RECT)]
+
             user32 = ctypes.windll.user32
-            hwnd = user32.FindWindowW(None, "FunScriptCast-Nexus")
+            hwnd = 0
+            my_pid = os.getpid()
+            found: list[int] = []
+            proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+            def _cb(h, _l):  # noqa: ANN001
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+                if pid.value == my_pid and user32.IsWindowVisible(h) and user32.GetWindowTextLengthW(h):
+                    found.append(h)
+                return True
+
+            user32.EnumWindows(proc(_cb), 0)
+            if found:
+                hwnd = found[0]
+            if not hwnd:
+                hwnd = user32.FindWindowW(None, "FunScriptCast-Nexus")
             if not hwnd:
                 return {"ok": False, "error": "window not found"}
-            placement = ctypes.wintypes.WINDOWPLACEMENT()
-            placement.length = ctypes.sizeof(ctypes.wintypes.WINDOWPLACEMENT)
-            user32.GetWindowPlacement(hwnd, ctypes.byref(placement))
-            maximized = placement.showCmd == 2   # SW_SHOWMAXIMIZED
+
+            placement = WINDOWPLACEMENT()
+            placement.length = ctypes.sizeof(WINDOWPLACEMENT)
+            if not user32.GetWindowPlacement(hwnd, ctypes.byref(placement)):
+                return {"ok": False, "error": "GetWindowPlacement failed"}
+            # showCmd: 1=SW_NORMAL 2=SW_SHOWMINIMIZED 3=SW_SHOWMAXIMIZED
+            maximized = placement.showCmd == 3
             user32.ShowWindow(hwnd, 1 if maximized else 3)   # SW_RESTORE / SW_MAXIMIZE
             return {"ok": True, "maximized": not maximized}
         except Exception as e:

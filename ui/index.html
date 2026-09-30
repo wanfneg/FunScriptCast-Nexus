@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark" data-motion="full">
+<html lang="zh-CN" data-theme="light" data-motion="full">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light">
+<meta name="color-scheme" content="light dark">
 <title>FunScriptCast-Nexus</title>
 <link rel="stylesheet" href="fonts.css">
 <link rel="stylesheet" href="styles.css">
@@ -33,7 +33,8 @@
   <symbol id="i-signal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h.01" /><path d="M7 20v-4" /><path d="M12 20v-8" /><path d="M17 20V8" /><path d="M22 4v16" /></symbol>
   <symbol id="i-waves" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12q2.5 2 5 0t5 0 5 0 5 0" /><path d="M2 19q2.5 2 5 0t5 0 5 0 5 0" /><path d="M2 5q2.5 2 5 0t5 0 5 0 5 0" /></symbol>
   <symbol id="i-thermometer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z" /></symbol>
-  <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></symbol>
   <symbol id="i-square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" /></symbol>
   <symbol id="i-refresh-cw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></symbol>
   <symbol id="i-refresh-ccw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" /><path d="M16 16h5v5" /></symbol>
@@ -105,7 +106,8 @@
   <symbol id="i-arrow-up-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10v10" /><path d="M7 17 17 7" /></symbol>
   <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></symbol>
   <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></symbol>
-  <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></symbol>
+<symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
   <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19h8" /><path d="m4 17 6-6-6-6" /></symbol>
   <symbol id="i-languages" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6" /><path d="m4 14 6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" /><path d="m22 22-5-10-5 10" /><path d="M14 18h6" /></symbol>
   <symbol id="i-hash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="9" y2="9" /><line x1="4" x2="20" y1="15" y2="15" /><line x1="10" x2="8" y1="3" y2="21" /><line x1="16" x2="14" y1="3" y2="21" /></symbol>
@@ -116,6 +118,16 @@
   <symbol id="i-grid-2x2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18" /><path d="M3 12h18" /><rect x="3" y="3" width="18" height="18" rx="2" /></symbol>
   <symbol id="i-maximize-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6" /><path d="m21 3-7 7" /><path d="m3 21 7-7" /><path d="M9 21H3v-6" /></symbol>
   <symbol id="i-minimize-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14 10 7-7" /><path d="M20 10h-6V4" /><path d="m3 21 7-7" /><path d="M4 14h6v6" /></symbol>
+<symbol id="i-vk-folder" viewBox="0 0 1024 1024" fill="currentColor"><path d="M912 208H427.872l-50.368-94.176A63.936 63.936 0 0 0 321.056 80H112c-35.296 0-64 28.704-64 64v736c0 35.296 28.704 64 64 64h800c35.296 0 64-28.704 64-64v-608c0-35.296-28.704-64-64-64z m-800-64h209.056l68.448 128H912v97.984c-0.416 0-0.8-0.128-1.216-0.128H113.248c-0.416 0-0.8 0.128-1.248 0.128V144z m0 736v-96l1.248-350.144 798.752 1.216V784h0.064v96H112z"/></symbol>
+<symbol id="i-vk-script" viewBox="0 0 1024 1024" fill="currentColor"><path d="M584.1 851.5l-145-592.7-111.8 441.9-75.2-209.5H64v-40h216.3l40.3 112.6L439.8 93.2l143.9 588.1L697 207.4l74.9 243.8h187.4v40H742.4l-40.6-132z"/><path d="M584.1 866.5c-6.9 0-12.9-4.7-14.6-11.4L438.9 320.9l-97.1 383.4c-1.6 6.4-7.2 11-13.8 11.3-6.6 0.3-12.6-3.7-14.8-9.9l-71.6-199.5H64c-8.3 0-15-6.7-15-15v-40c0-8.3 6.7-15 15-15h216.2c6.3 0 12 4 14.1 9.9l23.8 66.3 107.1-423c1.7-6.7 7.7-11.3 14.5-11.3h0.1c6.9 0 12.9 4.7 14.5 11.4l129.1 527.9 98.9-413.6c1.6-6.6 7.4-11.3 14.1-11.5 6.8-0.2 12.8 4.1 14.8 10.6L783 436.2h176.3c8.3 0 15 6.7 15 15v40c0 8.3-6.7 15-15 15H742.4c-6.6 0-12.4-4.3-14.3-10.6l-24.4-79.4-105 438.8c-1.6 6.7-7.6 11.5-14.6 11.5z m-145-622.7s0.1 0 0 0c7 0 12.9 4.7 14.6 11.4l130.2 532.4 103.3-431.9c1.6-6.6 7.4-11.3 14.1-11.5 6.8-0.2 12.8 4.1 14.8 10.6l37.3 121.4h190.9v-10H771.9c-6.6 0-12.4-4.3-14.3-10.6l-58.8-191.2-100.6 420.4c-1.6 6.7-7.6 11.5-14.6 11.5-6.9 0-12.9-4.7-14.6-11.4L439.6 155.3 335.2 567.5c-1.6 6.4-7.2 11-13.8 11.3-6.6 0.3-12.6-3.7-14.8-9.9l-36.8-102.7H79v10h173.1c6.3 0 12 4 14.1 9.9l58.5 163.2 99.8-394.2c1.8-6.7 7.8-11.3 14.6-11.3z"/></symbol>
+<symbol id="i-vk-video" viewBox="0 0 1024 1024" fill="currentColor"><path d="M932.571429 896h-841.142858A18.285714 18.285714 0 0 1 73.142857 877.714286V146.285714a18.285714 18.285714 0 0 1 18.285714-18.285714h841.142858a18.285714 18.285714 0 0 1 18.285714 18.285714v731.428572a18.285714 18.285714 0 0 1-18.285714 18.285714zM109.714286 859.428571h804.571428v-694.857142H109.714286z"/><path d="M402.285714 676.571429a19.382857 19.382857 0 0 1-8.777143-2.194286 18.651429 18.651429 0 0 1-9.508571-16.091429v-292.571428a18.285714 18.285714 0 0 1 28.525714-15.36l219.428572 146.285714a18.651429 18.651429 0 0 1 0 30.72l-219.428572 146.285714a20.845714 20.845714 0 0 1-10.24 2.925715z m18.285715-276.845715v224.548572L588.8 512z"/></symbol>
+<symbol id="i-vk-sub" viewBox="0 0 1024 1024" fill="currentColor"><path d="M740.693333 128l6.144 195.114667h-27.477333c-13.482667-61.312-30.549333-101.205333-51.328-119.722667-20.693333-18.474667-64.341333-27.733333-130.858667-27.733333h-63.914666v587.52c0 44.501333 6.912 72.021333 20.736 82.730666 13.824 10.624 44.074667 17.621333 90.837333 20.992v20.736H250.154667v-20.736c48.554667-3.754667 78.848-11.776 90.794666-24.106666 11.946667-12.373333 17.92-43.392 17.92-93.013334V175.616H295.04c-63.573333 0-106.837333 9.173333-129.792 27.477333-22.954667 18.304-40.277333 58.282667-51.882667 119.978667H85.333333L91.989333 128H740.693333z m194.346667 309.504l3.626667 115.626667h-16.213334c-8.021333-36.352-18.133333-59.989333-30.421333-70.954667-12.373333-10.965333-38.144-16.469333-77.568-16.469333H776.533333v348.202666c0 26.368 4.053333 42.666667 12.330667 48.981334 8.149333 6.314667 26.112 10.453333 53.76 12.458666v12.288h-198.314667v-12.330666c28.8-2.133333 46.72-6.912 53.76-14.250667 7.125333-7.296 10.666667-25.685333 10.666667-55.125333v-340.224h-37.845333c-37.674667 0-63.317333 5.461333-76.928 16.298666-13.610667 10.837333-23.893333 34.56-30.72 71.125334h-16.64l4.010666-115.626667h384.426667z"/></symbol>
+<symbol id="i-skip-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 20 9 12l10-8z"/><path d="M5 19V5"/></symbol>
+<symbol id="i-skip-fwd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4l10 8-10 8z"/><path d="M19 5v14"/></symbol>
+<symbol id="i-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></symbol>
+<symbol id="i-volume-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/></symbol>
+<symbol id="i-pip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 9V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4"/><rect width="10" height="7" x="12" y="13" rx="2"/></symbol>
+<symbol id="i-restore" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="13" height="13" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
 <!-- LUCIDE:END -->
 </svg>
 
@@ -141,11 +153,10 @@
       <span class="brand-sub" id="brandSub">集成版</span>
     </div>
 
-    <button class="dev-connect" id="devBtn" title="连接设备">
+    <button class="dev-connect" id="devBtn" title="扫描并连接设备">
       <span class="dev-spinner" id="devSpinner" hidden></span>
-      <span class="dev-label" id="devLabel">连接设备</span>
+      <span class="dev-label" id="devLabel">扫描并连接</span>
     </button>
-
     <div class="pills">
       <span class="pill" id="pillDlna"><i class="dot"></i>DLNA</span>
       <span class="pill" id="pillSub"><i class="dot"></i>字幕服务</span>
@@ -156,9 +167,10 @@
       <svg class="ic"><use href="#i-sun"/></svg><span id="themeLabel">亮色</span>
     </button>
 
+    <!-- 顺序按 Windows 惯例：最小化 / 最大化·还原 / 关闭 -->
     <div class="win-ctrl" id="winCtrl">
-      <button id="winMax" title="最大化/还原" aria-label="最大化/还原"><svg class="ic"><use href="#i-maximize"/></svg></button>
       <button id="winMin" title="最小化" aria-label="最小化"><svg class="ic"><use href="#i-minus"/></svg></button>
+      <button id="winMax" title="最大化/还原" aria-label="最大化/还原"><svg class="ic"><use href="#i-maximize"/></svg></button>
       <button class="close" id="winClose" title="关闭" aria-label="关闭"><svg class="ic"><use href="#i-x"/></svg></button>
     </div>
   </header>
@@ -383,67 +395,87 @@
       </section>
 
       <!-- ---------------------------- AI 字幕 ---------------------------- -->
+      <!-- ---------------------------- 视频联动 ----------------------------
+           几何 = 用户草图（drawio）逐坐标：行 320|10|40|5|40|5|150；列 340|25|40|25|340
+           与 340|8|75|7|340。整帧填满内容区，多余高度按比例给大框框（"填满整个区域"）。 -->
       <section class="page" id="page-library">
-        <!-- 大框框：媒体库浏览 ⇄ 播放窗口（双模） -->
-        <div class="panel card vl-stage">
-          <!-- 浏览模式 -->
-          <div id="vlBrowse">
-            <div class="vl-browse-head">
-              <button class="btn ghost" id="vlBack" style="display:none">← 返回上一级</button>
-              <div class="name" id="vlBrowseTitle">媒体库</div>
-            </div>
-            <div id="vlBrowseBody" class="vl-browse-body"></div>
-          </div>
-          <!-- 播放模式 -->
-          <div id="vlPlayView" style="display:none">
-            <div class="row flush" style="align-items:center;margin-bottom:8px">
-              <div class="name">视频播放</div>
-              <div class="grow"></div>
-              <div class="sub" id="vlPlayPath">—</div>
-            </div>
-            <div class="vl-screen" id="vlScreen">
-              <img id="vlScreenImg" alt="" style="display:none">
-              <div class="vl-screen-title" id="vlScreenTitle">—</div>
-            </div>
-          </div>
-        </div>
+        <div class="vl-frame">
 
-        <!-- 时间轴：当前进度 | 脚本热力图 | 总时长 -->
-        <div class="panel card vl-timeline">
-          <span class="vl-time" id="vlPos">0:00</span>
-          <canvas id="vlHeat" class="vl-heat"></canvas>
-          <span class="vl-time" id="vlDur">0:00</span>
-        </div>
-
-        <!-- 按钮行：左三页签（胶囊） + 预设速度 | 右三圆钮（胶囊化） -->
-        <div class="vl-btnrow">
-          <div class="vl-tabs">
-            <button data-vl-tab="stroke" aria-selected="true">设备行程与速度</button>
-            <button data-vl-tab="idle">待机缓动设置</button>
-            <button data-vl-tab="burst">一键爆发设置</button>
-          </div>
-          <button class="vl-round" id="vlPause" title="播放/暂停">⏸</button>
-          <div class="vl-actions">
-            <button class="vl-capsule" id="vlBoost">BOOST</button>
-            <button class="vl-capsule" id="vlPresetToggle">播放/暂停预设</button>
-            <button class="vl-capsule" id="vlRandom">RANDOM</button>
-          </div>
-        </div>
-
-        <!-- 下部三列：左页签卡（严格手机三卡） | 中快捷动作卡 | 右预设网格（固定 4，不滚动） -->
-        <div class="vl-lower">
-          <div class="vl-tabstack" id="vlTabCard"></div>
-          <div class="steel-card">
-            <div class="vl-quickrow">
-              <button class="steel-capsule" id="vqIdle">待机缓动</button>
-              <button class="steel-capsule" id="vqStop">一键急停</button>
-              <button class="steel-capsule" id="vqBurst">一键爆发</button>
+          <!-- ① 大框框：媒体库浏览 ⇄ 视频播放窗口（双模） -->
+          <div class="panel card vl-stage">
+            <div id="vlBrowse">
+              <div class="vl-crumb">
+                <button class="btn ghost" id="vlBack" style="display:none"><svg class="ic"><use href="#i-chevron-left"/></svg><span>返回上一级</span></button>
+                <div class="vl-dir" id="vlBrowseTitle">媒体库</div>
+                <div class="vl-count" id="vlCount"></div>
+              </div>
+              <div id="vlBrowseBody" class="vl-browse-body"></div>
+            </div>
+            <div id="vlPlayView" style="display:none">
+              <div class="vl-vwrap" id="vlVWrap">
+                <video id="vlVideo" playsinline preload="metadata"></video>
+                <button class="vl-vback" id="vlVBack"><svg class="ic"><use href="#i-chevron-left"/></svg><span>返回媒体库</span></button>
+                <div class="vl-voff" id="vlVOff" hidden>
+                  <div class="vl-voff-t">内置播放器打不开这个文件</div>
+                  <div class="vl-voff-d" id="vlVOffD">可能是编码不受支持（如 HEVC/MKV）</div>
+                  <button class="btn ghost" id="vlUseMpv"><svg class="ic"><use href="#i-arrow-up-right"/></svg><span>用外部播放器打开</span></button>
+                </div>
+                <div class="vl-vchrome" id="vlVChrome">
+                  <button class="vl-cbtn" id="vlPrev" title="上一个视频"><svg class="ic"><use href="#i-skip-back"/></svg></button>
+                  <button class="vl-cbtn big" id="vlPlay" title="播放/暂停（空格）"><svg class="ic"><use href="#i-play"/></svg></button>
+                  <button class="vl-cbtn" id="vlNext" title="下一个视频"><svg class="ic"><use href="#i-skip-fwd"/></svg></button>
+                  <span class="vl-ctime" id="vlVPos">0:00</span>
+                  <div class="vl-slider vl-vseek" id="vlVSeek" data-single="1" data-min="0" data-max="1" data-val="0">
+                    <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
+                  </div>
+                  <span class="vl-ctime" id="vlVDur">0:00</span>
+                  <button class="vl-cbtn" id="vlMute" title="静音"><svg class="ic"><use href="#i-volume"/></svg></button>
+                  <div class="vl-slider vl-vvol" id="vlVVol" data-single="1" data-min="0" data-max="100" data-val="100">
+                    <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
+                  </div>
+                  <button class="vl-cbtn" id="vlPip" title="画中画"><svg class="ic"><use href="#i-pip"/></svg></button>
+                  <button class="vl-cbtn" id="vlFull" title="全屏"><svg class="ic"><use href="#i-maximize"/></svg></button>
+                </div>
+              </div>
+              <div class="vl-screen-path"><span id="vlPlayName">—</span><span class="vl-ppath" id="vlPlayPath">—</span></div>
             </div>
           </div>
-          <div class="steel-card">
-            <div class="vl-phead">预设</div>
-            <div class="vl-pgrid" id="vlPGrid"></div>
+
+          <!-- ② 时间轴：当前进度 | 脚本热力图 | 总时长 -->
+          <div class="vl-timeline">
+            <span class="vl-time" id="vlPos">0:00</span>
+            <canvas id="vlHeat" class="vl-heat" title="点击跳转进度"></canvas>
+            <span class="vl-time" id="vlDur">0:00</span>
           </div>
+
+          <!-- ③ 按钮行：左三页签（340） | ⏸（居中） | 右三胶囊（340） -->
+          <div class="vl-btnrow">
+            <div class="vl-group vl-tabs">
+              <button data-vl-tab="stroke" aria-selected="true">设备行程与速度</button>
+              <button data-vl-tab="idle">待机缓动设置</button>
+              <button data-vl-tab="burst">一键爆发设置</button>
+            </div>
+            <button class="vl-round" id="vlPause" title="播放/暂停"><svg class="ic"><use href="#i-pause"/></svg></button>
+            <div class="vl-group vl-actions">
+              <button class="vl-capsule" id="vlRandom">RANDOM</button>
+              <button class="vl-capsule" id="vlPresetToggle">播放/暂停预设</button>
+              <button class="vl-capsule" id="vlBoost">BOOST</button>
+            </div>
+          </div>
+
+          <!-- ④ 下三列：设置卡（340） | 快捷动作（75 竖排） | 预设网格（340） -->
+          <div class="vl-lower">
+            <div class="steel-card" id="vlTabCard"></div>
+            <div class="vl-quick">
+              <button id="vqIdle">待机缓动</button>
+              <button id="vqBurst">一键爆发</button>
+              <button id="vqStop">一键急停</button>
+            </div>
+            <div class="steel-card vl-presets">
+              <div class="vl-pgrid" id="vlPGrid"></div>
+            </div>
+          </div>
+
         </div>
       </section>
 
