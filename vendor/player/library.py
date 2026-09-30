@@ -51,7 +51,9 @@ class Library:
     def __init__(self, index_file: Path, thumb_dir: Path):
         self.index_file = index_file
         self.thumb_dir = thumb_dir
-        self.lock = threading.Lock()
+        # RLock：host 的 /api/library/* 处理器会持锁调 cards()（内部再加锁）——
+        # Lock 不可重入，曾经因此在 browse/items 两个端点上永久死锁（R110）。
+        self.lock = threading.RLock()
         self.scanning = False
         self.scan_progress = ""      # 人读的进度行
         self.last_scan = 0.0

@@ -2220,7 +2220,7 @@ class Handler(BaseHTTPRequestHandler):
                                                                       ".mov", ".webm", ".m2ts", ".ts"):
                                     fs = e2.path.rsplit(".", 1)[0] + ".funscript"
                                     with lib.lock:
-                                        card = next((c for c in lib.cards()
+                                        card = next((c for c in lib._cards
                                                      if e2.path in c.get("paths", [])), None)
                                     vids.append({
                                         "name": e2.name, "path": e2.path,
@@ -2240,14 +2240,14 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/library/items":
                 lib = _get_library()
                 with lib.lock:
-                    items = lib.cards()
+                    items = list(lib._cards)
                 self._json({"ok": True, "items": items,
                             "scanning": lib.scanning, "progress": lib.scan_progress,
                             "last_scan": lib.last_scan})
             elif path == "/api/library/state":
                 lib = _get_library()
                 with lib.lock:
-                    n = len(lib._cards)
+                    n = len(lib._cards)   # 直接读字段，不调会二次加锁的 cards()
                 self._json({"ok": True,
                             "roots": [r for r in (load_settings().get("library_roots") or []) if r],
                             "scanning": lib.scanning, "progress": lib.scan_progress,
