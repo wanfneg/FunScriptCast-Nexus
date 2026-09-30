@@ -168,15 +168,15 @@
           <svg class="ic"><use href="#i-layout-dashboard"/></svg>
           <span class="nav-label">仪表盘</span>
         </button>
-        <button data-page="dlna">
+        <button data-page="library">
           <span class="nav-ix">02</span>
+          <svg class="ic"><use href="#i-layout-grid"/></svg>
+          <span class="nav-label">视频联动</span>
+        </button>
+        <button data-page="dlna">
+          <span class="nav-ix">03</span>
           <svg class="ic"><use href="#i-radio-tower"/></svg>
           <span class="nav-label">DLNA 服务器</span>
-        </button>
-        <button data-page="library">
-          <span class="nav-ix">03</span>
-          <svg class="ic"><use href="#i-layout-grid"/></svg>
-          <span class="nav-label">媒体库</span>
         </button>
         <button data-page="subtitle">
           <span class="nav-ix">04</span>
@@ -378,38 +378,65 @@
       <!-- ---------------------------- AI 字幕 ---------------------------- -->
       <section class="page" id="page-library">
         <header class="page-head">
-          <div class="eyebrow">Library</div>
-          <h1>媒体库</h1>
-          <p class="page-sub">本地视频库 · 点击卡片即播（外挂播放器窗口）</p>
+          <div class="eyebrow">Video Link</div>
+          <h1>视频联动</h1>
+          <p class="page-sub">媒体库 · 播放联动 · 预设</p>
         </header>
 
-        <!-- 正在播放控制条 -->
-        <div class="panel card" id="libPlaying" style="display:none">
-          <div class="row flush" style="align-items:center">
-            <div class="grow">
-              <div class="name" id="libPlayTitle">—</div>
-              <div class="sub"><span id="libPlayPos">0:00</span> / <span id="libPlayDur">0:00</span></div>
-            </div>
-            <button class="btn ghost" id="libToggle">播放/暂停</button>
-            <button class="btn ghost" id="libFs">全屏</button>
-            <button class="btn ghost" id="libStop">关闭</button>
+        <!-- 顶部：媒体库 / 播放窗口区 -->
+        <div class="panel card vl-stage">
+          <div id="libPlaying" class="vl-playing" style="display:none">
+            <span class="dot ok"></span>
+            <span id="libPlayTitle">—</span>
+            <span class="sub" id="libPlayPos">0:00</span>
+            <button class="btn ghost" id="libToggle">暂停</button>
+            <button class="btn ghost" id="libStop">关闭播放器</button>
           </div>
-          <input type="range" id="libSeek" min="0" max="1000" value="0" style="width:100%;margin-top:8px">
-        </div>
-
-        <div class="panel card" style="margin-bottom:16px">
           <div class="row flush" style="align-items:center">
             <div class="grow">
-              <div class="name">媒体库状态</div>
+              <div class="name">媒体库</div>
               <div class="sub" id="libStatus">未扫描</div>
             </div>
             <button class="btn ghost" id="libRescan">重新扫描</button>
           </div>
+          <div class="lib-grid" id="libGrid"></div>
+          <div id="libEmpty" class="empty">库是空的——去「设置 → 媒体库目录」添加文件夹，然后点「重新扫描」</div>
         </div>
 
-        <div class="grid" id="libGrid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px"></div>
-        <div id="libEmpty" style="display:none;color:var(--muted);padding:32px 0;text-align:center">
-          库是空的——去「设置 → 媒体库目录」添加文件夹，然后点「重新扫描」
+        <!-- 时间轴：当前进度 | 脚本热力图 | 总时长 -->
+        <div class="panel card vl-timeline">
+          <span class="vl-time" id="vlPos">0:00</span>
+          <canvas id="vlHeat" class="vl-heat"></canvas>
+          <span class="vl-time" id="vlDur">0:00</span>
+        </div>
+
+        <!-- 按钮行：左三页签 + ⏸ + 右三动作 -->
+        <div class="vl-btnrow">
+          <div class="vl-tabs">
+            <button data-vl-tab="stroke" aria-selected="true">设备行程与速度</button>
+            <button data-vl-tab="idle">待机缓动设置</button>
+            <button data-vl-tab="burst">一键爆发设置</button>
+          </div>
+          <button class="vl-round" id="vlPause" title="播放/暂停">⏸</button>
+          <div class="vl-actions">
+            <button id="vlRandom">RANDOM</button>
+            <button id="vlPresetToggle">播放/暂停预设</button>
+            <button id="vlBoost">BOOST</button>
+          </div>
+        </div>
+
+        <!-- 下部三列：左页签卡片 | 中快捷钮列 | 右预设卡片 2x2 -->
+        <div class="vl-lower">
+          <div class="panel card vl-tabcard" id="vlTabCard"></div>
+          <div class="vl-quick">
+            <button id="vqIdle">待机缓动</button>
+            <button id="vqBurst">一键爆发</button>
+            <button id="vqStop" class="danger">一键急停</button>
+          </div>
+          <div class="panel card vl-presets">
+            <div class="vl-pgrid" id="vlPGrid"></div>
+            <div class="sub" style="text-align:center">设备通道接入后可用（接入前点击仅预览波形）</div>
+          </div>
         </div>
       </section>
 

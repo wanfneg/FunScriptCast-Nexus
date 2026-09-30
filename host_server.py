@@ -309,6 +309,7 @@ DEFAULT_SETTINGS = {
     "motion": "full",
     "subtitle_auto_start": False,
     "library_roots": [],
+    "video_link": {},
     "script_folder": "",
     "video_folder": "",
     "device_folder": "/sdcard/Movies",
@@ -2176,6 +2177,22 @@ class Handler(BaseHTTPRequestHandler):
             # ---------------- 桌面播放器（M1）----------------
             elif path == "/api/player/state":
                 self._json(_get_player().state())
+            elif path == "/api/library/script":
+                from urllib.parse import parse_qs, urlparse as _up2
+                q = parse_qs(_up2(self.path).query)
+                vp = (q.get("path") or [""])[0]
+                fs = Path(vp).with_suffix(".funscript")
+                try:
+                    if (not vp or not Path(vp).is_file() or not fs.is_file()):
+                        self._json({"ok": False, "error": "no script"})
+                        return
+                    data = json.loads(fs.read_text(encoding="utf-8"))
+                    acts = data.get("actions") or []
+                    acts = [[int(a[0]), int(a[1])] for a in acts if len(a) >= 2]
+                    acts.sort(key=lambda a: a[0])
+                    self._json({"ok": True, "actions": acts})
+                except Exception as e:
+                    self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
             elif path == "/api/library/items":
                 lib = _get_library()
                 with lib.lock:

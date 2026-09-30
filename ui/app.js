@@ -1382,8 +1382,9 @@
   }
   document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(true); });
 
-  /* ---------- 媒体库 + 桌面播放器（M1） ---------- */
+  /* ---------- 视频联动（M1：媒体库+播放；预设/设备动作 UI 先行） ---------- */
   var libPollTimer = 0, libCardsSig = "", libSeekDrag = false;
+  var VL_PRESETS = null, vlTab = "stroke", vlHeatScript = null, vlHeatKey = "";
   function fmtTime(sec) {
     sec = Math.max(0, Math.floor(sec || 0));
     var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
@@ -1393,14 +1394,13 @@
   function renderPlayStrip(p) {
     var el = $("#libPlaying");
     if (!el) return;
-    if (!p || !p.open) { el.style.display = "none"; return; }
+    if (!p || !p.open) { el.style.display = "none"; vlHeatScript = null; drawHeat(); return; }
     el.style.display = "";
     $("#libPlayTitle").textContent = p.title || "—";
     $("#libPlayPos").textContent = fmtTime(p.pos);
-    $("#libPlayDur").textContent = fmtTime(p.dur);
-    if (!libSeekDrag && p.dur > 0) {
-      $("#libSeek").value = Math.round((p.pos / p.dur) * 1000);
-    }
+    $("#vlPos").textContent = fmtTime(p.pos);
+    $("#vlDur").textContent = fmtTime(p.dur);
+    if (!libSeekDrag && p.dur > 0) drawHeat(p.pos, p.dur);
   }
   function libCardHtml(c) {
     var thumb = c.thumb
@@ -1414,7 +1414,6 @@
         && c.progress.pos < c.progress.dur * 0.95) {
       prog = '<div class="lib-prog"><i style="width:' + Math.round(c.progress.pos / c.progress.dur * 100) + '%"></i></div>';
     }
-    var main = c.parts && c.parts.length ? c.parts[0].path : "";
     var paths = (c.parts || []).map(function (x) { return encodeURIComponent(x.path); }).join("|");
     return '<div class="lib-card" data-paths="' + paths + '">' +
       '<div class="lib-thumb">' + thumb +
@@ -1436,7 +1435,7 @@
     var sig = JSON.stringify(items.map(function (c) {
       return [c.id, c.thumb, c.progress && c.progress.pos, c.last_played];
     }));
-    if (sig === libCardsSig) return;          // 无变化不重建（保住滚动位置与懒加载）
+    if (sig === libCardsSig) return;
     libCardsSig = sig;
     grid.innerHTML = items.map(libCardHtml).join("");
   }
@@ -1447,7 +1446,7 @@
         if (!r || !r.ok) { clearTimeout(libPollTimer); libPollTimer = setTimeout(loadLibrary, 5000); return; }
         renderCards(r);
         clearTimeout(libPollTimer);
-        libPollTimer = setTimeout(loadLibrary, r.scanning ? 2500 : ((p && p.open) ? 1500 : 8000));
+        libPollTimer = setTimeout(loadLibrary, r.scanning ? 2500 : ((p && p.open) ? 1000 : 8000));
       });
     });
   }
@@ -1456,7 +1455,6 @@
     if (!card) return;
     var paths = (card.getAttribute("data-paths") || "").split("|").filter(Boolean);
     if (!paths.length) return;
-    // 多分件：默认播第一件；有进度记录的优先
     api("/api/player/open", "POST", { path: decodeURIComponent(paths[0]) }).then(function (r) {
       if (r && r.ok) { toast("播放器已启动", "外挂 mpv 窗口", "ok"); setTimeout(loadLibrary, 800); }
       else { toast("启动失败", (r && r.error) || "", "err"); }
@@ -1474,16 +1472,227 @@
   $("#libStop").addEventListener("click", function () {
     api("/api/player/stop", "POST", {}).then(function () { loadLibrary(); });
   });
-  $("#libFs").addEventListener("click", function () {
-    api("/api/player/fullscreen", "POST", {});
+  $("#vlPause").addEventListener("click", function () {
+    api("/api/player/toggle", "POST", {}).then(function () { loadLibrary(); });
   });
-  $("#libSeek").addEventListener("pointerdown", function () { libSeekDrag = true; });
-  $("#libSeek").addEventListener("change", function () {
+
+  /* --- 脚本热力图：funscript 速度→色带，播放头叠加，点击 seek --- */
+  function drawHeat(pos, dur) {
+    var cv = $("#vlHeat");
+    if (!cv) return;
+    var dpr = window.devicePixelRatio || 1;
+    var w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;
+    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "rgba(255,255,255,0.04)";
+    ctx.fillRect(0, 0, w, h);
+    var sc = vlHeatScript;
+    if (sc && sc.actions && sc.actions.length > 1 && dur > 0) {
+      var bucket = Math.max(1, Math.ceil(w / 4));
+      var speeds = new Array(bucket).fill(null);
+      var acts = sc.actions;
+      for (var i = 1; i < acts.length; i++) {
+        var t0 = acts[i - 1][0] / 1000, t1 = acts[i][0] / 1000;
+        var v = Math.abs(acts[i][1] - acts[i - 1][1]) / Math.max(0.05, t1 - t0);
+        var b0 = Math.floor(t0 / dur * bucket), b1 = Math.min(bucket - 1, Math.floor(t1 / dur * bucket));
+        for (var b = Math.max(0, b0); b <= b1; b++) {
+          speeds[b] = speeds[b] == null ? v : Math.max(speeds[b], v);
+        }
+      }
+      for (var b2 = 0; b2 < bucket; b2++) {
+        var vv = speeds[b2];
+        if (vv == null) continue;
+        var k = Math.min(1, vv / 400);
+        var hue = 190 - 160 * k;
+        ctx.fillStyle = "hsl(" + hue + ",85%," + (30 + 25 * k) + "%)";
+        ctx.fillRect(b2 * 4, 0, 3, h);
+      }
+    } else {
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.font = "12px sans-serif";
+      ctx.fillText("播放视频后显示脚本热力图（需配对 .funscript）", 12, h / 2 + 4);
+    }
+    if (dur > 0 && pos > 0) {
+      var x = Math.min(w, w * pos / dur);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(x - 1, 0, 2, h);
+    }
+  }
+  $("#vlHeat").addEventListener("click", function (e) {
+    var rect = this.getBoundingClientRect();
+    var frac = (e.clientX - rect.left) / rect.width;
     api("/api/player/state").then(function (p) {
-      if (p && p.dur > 0) api("/api/player/seek", "POST", { pos: (Number(this.value) / 1000) * p.dur });
-      libSeekDrag = false;
-    }.bind(this));
+      if (p && p.open && p.dur > 0) api("/api/player/seek", "POST", { pos: frac * p.dur });
+    });
   });
+  function loadHeat() {
+    api("/api/player/state").then(function (p) {
+      if (!p || !p.open) { vlHeatScript = null; drawHeat(); return; }
+      var want = p.path;
+      if (vlHeatKey === want && vlHeatScript) { drawHeat(p.pos, p.dur); return; }
+      api("/api/library/script?path=" + encodeURIComponent(p.path)).then(function (r) {
+        vlHeatKey = want;
+        vlHeatScript = (r && r.ok) ? r : null;
+        drawHeat(p.pos, p.dur);
+      });
+    });
+  }
+  setInterval(function () {
+    if (document.querySelector("#page-library.active")) loadHeat();
+  }, 1000);
+
+  /* --- 左侧页签：行程与速度 / 待机缓动 / 一键爆发（设置持久化，设备动作 M2 接入） --- */
+  var VL_TABS = {
+    stroke: { label: "设备行程与速度", rows: [
+      ["stroke_min", "行程下限 %", 0, 90], ["stroke_max", "行程上限 %", 10, 100],
+      ["speed", "速度", 10, 100]
+    ]},
+    idle: { label: "待机缓动", rows: [
+      ["idle_speed", "缓动速度", 5, 60]
+    ], toggle: "idle_enabled", toggleLabel: "待机缓动启用" },
+    burst: { label: "一键爆发", rows: [
+      ["burst_duration", "爆发时长 (s)", 1, 30], ["burst_speed", "爆发速度", 20, 100]
+    ]}
+  };
+  function vlCfg() { return (S.settings && S.settings.video_link) || {}; }
+  function saveVlCfg(patch) {
+    var merged = Object.assign({}, vlCfg(), patch);
+    api("/api/settings", "POST", { video_link: merged }).then(function (r) {
+      if (!r || r.ok === false) toast("保存失败", (r && r.error) || "", "err");
+    });
+  }
+  function renderVlTabCard() {
+    var box = $("#vlTabCard");
+    if (!box) return;
+    var t = VL_TABS[vlTab];
+    var cfg = vlCfg();
+    var html = '<div class="name" style="margin-bottom:8px">' + t.label + '</div>';
+    if (t.toggle) {
+      html += '<div class="row flush"><div class="grow"><div class="sub">' + t.toggleLabel + '</div></div>' +
+        '<button class="btn ghost" id="vlToggle_' + t.toggle + '">' + (cfg[t.toggle] ? "开" : "关") + '</button></div>';
+    }
+    (t.rows || []).forEach(function (row) {
+      var v = cfg[row[0]];
+      if (v == null) v = Math.round((row[2] + row[3]) / 2);
+      html += '<label class="field" style="margin-top:6px"><span>' + row[1] + '：<b id="vlv_' + row[0] + '">' + v + '</b></span>' +
+        '<input type="range" class="vl-slider" data-k="' + row[0] + '" min="' + row[2] + '" max="' + row[3] + '" value="' + v + '"></label>';
+    });
+    html += '<div class="sub" style="margin-top:8px">设备通道接入后生效（M2）</div>';
+    box.innerHTML = html;
+    $$(".vl-slider", box).forEach(function (sl) {
+      sl.addEventListener("change", function () {
+        var patch = {}; patch[this.getAttribute("data-k")] = Number(this.value);
+        saveVlCfg(patch);
+      });
+      sl.addEventListener("input", function () {
+        var el = $("#vlv_" + this.getAttribute("data-k"));
+        if (el) el.textContent = this.value;
+      });
+    });
+    if (t.toggle) {
+      var tb = $("#vlToggle_" + t.toggle);
+      if (tb) tb.addEventListener("click", function () {
+        var patch = {}; patch[t.toggle] = !cfg[t.toggle];
+        saveVlCfg(patch);
+        renderVlTabCard();
+      });
+    }
+  }
+  $$(".vl-tabs button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      vlTab = this.getAttribute("data-vl-tab");
+      $$(".vl-tabs button").forEach(function (x) { x.removeAttribute("aria-selected"); });
+      this.setAttribute("aria-selected", "true");
+      renderVlTabCard();
+    });
+  });
+
+  /* --- 设备动作桩（M2 接入前 toast 提示） --- */
+  function vlStub(name) {
+    toast(name, "设备通道未接入（M2），接入后此动作直达设备", "warn");
+  }
+  ["vlRandom", "vlBoost", "vlPresetToggle", "vqIdle", "vqBurst"].forEach(function (id) {
+    var b = $("#" + id);
+    if (b) b.addEventListener("click", function () {
+      vlStub({ vlRandom: "RANDOM", vlBoost: "BOOST", vlPresetToggle: "播放/暂停预设",
+               vqIdle: "待机缓动", vqBurst: "一键爆发" }[id]);
+    });
+  });
+  $("#vqStop").addEventListener("click", function () {
+    toast("一键急停", "设备通道未接入（M2）。急停是安全动作，接入后无需确认立即下发", "warn");
+  });
+
+  /* --- 右侧预设卡片（波形小图，手机端 24 个内置预设的前 4 个） --- */
+  function drawPresetWave(cv, pr) {
+    var dpr = window.devicePixelRatio || 1;
+    var w = cv.clientWidth || 130, h = cv.clientHeight || 44;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = "#40a9ff";
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    var i, seg;
+    if (pr.segments && pr.segments.length) {
+      var segs = pr.segments;
+      var total = 0;
+      segs.forEach(function (s2) { total += Math.abs(s2[1] - s2[0]); });
+      var loops = (pr.previewTo > pr.previewFrom) ? (pr.previewTo - pr.previewFrom) / 1000 : 1;
+      var winTotal = total * loops;
+      var x0 = 0;
+      ctx.moveTo(0, h - (segs[0][0] / 100) * h);
+      for (i = 0; i < segs.length; i++) {
+        seg = segs[i];
+        x0 += Math.abs(seg[1] - seg[0]);
+        var px = x0 / Math.max(1, winTotal) * w;
+        ctx.lineTo(px, h - (seg[1] / 100) * h);
+        if (px > w) break;
+      }
+    } else if (pr.keyframes && pr.keyframes.length > 1) {
+      var t0 = pr.keyframes[0][1], tN = pr.keyframes[pr.keyframes.length - 1][1];
+      ctx.moveTo(0, h - (pr.keyframes[0][0] / 100) * h);
+      for (i = 1; i < pr.keyframes.length; i++) {
+        var kfx = (pr.keyframes[i][1] - t0) / Math.max(1, tN - t0) * w;
+        ctx.lineTo(kfx, h - (pr.keyframes[i][0] / 100) * h);
+      }
+    } else {
+      return;
+    }
+    ctx.stroke();
+  }
+  function renderPresetCards() {
+    var grid = $("#vlPGrid");
+    if (!grid || grid.childElementCount) return;
+    if (VL_PRESETS == null) {
+      fetch("/presets.json").then(function (r) { return r.json(); }).then(function (list) {
+        VL_PRESETS = list;
+        renderPresetCards();
+      }).catch(function () { VL_PRESETS = []; });
+      return;
+    }
+    grid.innerHTML = VL_PRESETS.slice(0, 4).map(function (pr) {
+      return '<div class="vl-pcard" data-preset="' + pr.id + '">' +
+        '<div class="name">' + pr.name + '</div>' +
+        '<canvas class="vl-wave" data-preset="' + pr.id + '" height="44"></canvas></div>';
+    }).join("");
+    $$(".vl-wave", grid).forEach(function (cv) {
+      var pr = (VL_PRESETS || []).find(function (x) { return x.id === cv.getAttribute("data-preset"); });
+      if (pr) drawPresetWave(cv, pr);
+    });
+  }
+  $("#vlPGrid").addEventListener("click", function (e) {
+    var card = e.target.closest(".vl-pcard");
+    if (!card) return;
+    var pr = (VL_PRESETS || []).find(function (x) { return x.id === card.getAttribute("data-preset"); });
+    vlStub("预设「" + (pr ? pr.name : card.getAttribute("data-preset")) + "」");
+  });
+
+  renderVlTabCard();
+  renderPresetCards();
 
   /* ---------------------------------------------------------- 启动 */
   /* ================================================================

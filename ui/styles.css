@@ -792,3 +792,83 @@ html[data-theme="light"] .logbox{ background:#eef2f8; }
   padding: 0 10px 10px; font-size: 11px; color: var(--muted, #8b93a3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* ======================== 视频联动（R109 草图布局） ======================== */
+.vl-stage { margin-bottom: 14px; }
+.vl-playing {
+  display: flex; align-items: center; gap: 12px;
+  background: rgba(64, 169, 255, 0.08);
+  border: 1px solid rgba(64, 169, 255, 0.35);
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;
+}
+.vl-playing .dot { width: 8px; height: 8px; border-radius: 50%; }
+.vl-playing .dot.ok { background: #35c46f; box-shadow: 0 0 8px #35c46f; }
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+  max-height: 46vh;
+  overflow-y: auto;
+  margin-top: 10px;
+}
+.vl-timeline {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; margin-bottom: 14px;
+}
+.vl-time { font-family: var(--mono, monospace); font-size: 13px; color: var(--muted, #8b93a3); min-width: 52px; text-align: center; }
+.vl-heat { flex: 1; height: 64px; border-radius: 6px; cursor: crosshair; }
+.vl-btnrow {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+}
+.vl-tabs { display: flex; gap: 8px; flex: 1; }
+.vl-tabs button {
+  background: var(--card, #12161f); color: var(--muted, #8b93a3);
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px;
+  padding: 10px 14px; font-size: 13px; cursor: pointer;
+}
+.vl-tabs button[aria-selected="true"] {
+  color: #fff; border-color: rgba(64, 169, 255, 0.6);
+  background: rgba(64, 169, 255, 0.1);
+}
+.vl-round {
+  width: 48px; height: 48px; border-radius: 50%;
+  background: var(--card, #12161f); color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 18px; cursor: pointer;
+}
+.vl-round:hover { border-color: rgba(64, 169, 255, 0.6); }
+.vl-actions { display: flex; gap: 8px; flex: 1; justify-content: flex-end; }
+.vl-actions button {
+  background: var(--card, #12161f); color: #e8e8e8;
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px;
+  padding: 10px 16px; font-size: 13px; cursor: pointer;
+}
+.vl-actions button:hover { border-color: rgba(64, 169, 255, 0.6); }
+.vl-lower {
+  display: grid;
+  grid-template-columns: 1.2fr auto 1.2fr;
+  gap: 14px; align-items: stretch;
+}
+.vl-tabcard { min-height: 170px; }
+.vl-quick {
+  display: flex; flex-direction: column; gap: 10px; justify-content: center;
+}
+.vl-quick button {
+  background: var(--card, #12161f); color: #e8e8e8;
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px;
+  padding: 12px 20px; font-size: 13px; cursor: pointer; white-space: nowrap;
+}
+.vl-quick button:hover { border-color: rgba(64, 169, 255, 0.6); }
+.vl-quick button.danger { color: #ff8a8a; border-color: rgba(255, 100, 100, 0.35); }
+.vl-presets { display: flex; flex-direction: column; gap: 10px; }
+.vl-pgrid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px; flex: 1;
+}
+.vl-pcard {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px; padding: 8px 10px; cursor: pointer;
+}
+.vl-pcard:hover { border-color: rgba(64, 169, 255, 0.6); }
+.vl-pcard .name { font-size: 12px; font-weight: 600; color: var(--text, #e8e8e8); margin-bottom: 4px; }
+.vl-wave { width: 100%; height: 44px; display: block; }
