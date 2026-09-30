@@ -308,6 +308,7 @@ DEFAULT_SETTINGS = {
     "theme": "dark",
     "motion": "full",
     "subtitle_auto_start": False,
+    "library_roots": [],
     "script_folder": "",
     "video_folder": "",
     "device_folder": "/sdcard/Movies",
@@ -537,6 +538,8 @@ def save_settings(patch: dict) -> dict:
             if k in PATH_KEYS and isinstance(v, str):
                 v = norm_path(v)
             elif k == "dlna_roots" and isinstance(v, list):
+                v = [norm_path(x) for x in v if norm_path(x)]
+            elif k == "library_roots" and isinstance(v, list):
                 v = [norm_path(x) for x in v if norm_path(x)]
             s[k] = v
         try:
@@ -2170,6 +2173,44 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(update_check())
             elif path == "/api/models/catalog":
                 self._json(models_catalog_payload())
+            # ---------------- 桌面播放器（M1）----------------
+            elif path == "/api/player/state":
+                self._json(_get_player().state())
+            elif path == "/api/library/items":
+                lib = _get_library()
+                with lib.lock:
+                    items = lib.cards()
+                self._json({"ok": True, "items": items,
+                            "scanning": lib.scanning, "progress": lib.scan_progress,
+                            "last_scan": lib.last_scan})
+            elif path == "/api/library/state":
+                lib = _get_library()
+                with lib.lock:
+                    n = len(lib._cards)
+                self._json({"ok": True,
+                            "roots": [r for r in (load_settings().get("library_roots") or []) if r],
+                            "scanning": lib.scanning, "progress": lib.scan_progress,
+                            "last_scan": lib.last_scan, "count": n})
+            elif path == "/api/library/thumb":
+                # 缩略图：name 必须是纯文件名（防路径穿越），只服务 thumb 目录
+                from urllib.parse import parse_qs, urlparse as _up
+                q = parse_qs(_up(self.path).query)
+                name = (q.get("name") or [""])[0]
+                if not re.fullmatch(r"[0-9a-f]{16}\.jpg", name):
+                    self._json({"ok": False, "error": "bad name"}, 400)
+                    return
+                f = _get_library().thumb_dir / name
+                if not f.is_file():
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                body = f.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "max-age=86400")
+                self.end_headers()
+                self.wfile.write(body)
             elif path in ("/", "/index.html"):
                 self._file("index.html")
             else:
@@ -2212,6 +2253,39 @@ class Handler(BaseHTTPRequestHandler):
                 # 供「重复启动」唤起已有实例的窗口（见 run() 开头的单实例处理）。
                 # 托盘图标可能被系统收进溢出面板、用户找不到入口，这条路始终可用。
                 TRAY.show_window()
+                self._json({"ok": True})
+            # ---------------- 桌面播放器（M1）----------------
+            elif path == "/api/player/open":
+                vp = str(body.get("path") or "")
+                pos = float(body.get("pos") or 0)
+                if not vp or not re.fullmatch(r".*\.(mp4|mkv|wmv|avi|mov|webm|m2ts|ts)",
+                                              vp, re.I) or not Path(vp).is_file():
+                    self._json({"ok": False, "error": "视频文件不存在"}, 400)
+                    return
+                self._json({"ok": True, **_get_player().open(vp, start_pos=pos)})
+            elif path == "/api/player/toggle":
+                paused = _get_player().toggle_pause()
+                self._json({"ok": True, "paused": paused})
+            elif path == "/api/player/stop":
+                _get_player().stop()
+                self._json({"ok": True})
+            elif path == "/api/player/seek":
+                _get_player().seek(float(body.get("pos") or 0))
+                self._json({"ok": True})
+            elif path == "/api/player/volume":
+                _get_player().set_volume(int(body.get("v") or 100))
+                self._json({"ok": True})
+            elif path == "/api/player/fullscreen":
+                fs = _get_player().toggle_fullscreen()
+                self._json({"ok": True, "fullscreen": fs})
+            # ---------------- 媒体库（M1）----------------
+            elif path == "/api/library/rescan":
+                lib = _get_library()
+                if lib.scanning:
+                    self._json({"ok": False, "error": "扫描已在进行"}, 400)
+                    return
+                threading.Thread(target=_library_scan_bg, daemon=True,
+                                 name="library-scan").start()
                 self._json({"ok": True})
             elif path == "/api/dlna/start":
                 self._json(dlna_start(body.get("port"), body.get("roots")))
@@ -3367,6 +3441,49 @@ def _setup_file_logging() -> None:
         log.warning("宿主文件日志不可用（忽略）：%s", e)
 
 
+# ---------------------------------------------------------------- 媒体库与桌面播放器（M1）
+PLAYER = None        # MpvPlayer 单例（懒建——import mpv 需要 vendor\mpv 就绪）
+LIB = None
+
+
+def _get_player():
+    global PLAYER
+    if PLAYER is None:
+        sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
+        from mpv_player import MpvPlayer   # noqa: PLC0415
+
+        def _on_progress(path, pos, dur):
+            try:
+                LIB.set_progress(path, pos, dur, time.time())
+            except Exception:
+                pass
+
+        PLAYER = MpvPlayer(on_progress=_on_progress)
+    return PLAYER
+
+
+def _get_library():
+    global LIB
+    if LIB is None:
+        sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
+        from library import Library   # noqa: PLC0415
+
+        LIB = Library(APP_DIR / "data" / "library_index.json",
+                      APP_DIR / "data" / "library_thumbs")
+    return LIB
+
+
+def _library_scan_bg() -> None:
+    try:
+        roots = [r for r in (load_settings().get("library_roots") or []) if r]
+        if roots:
+            r = _get_library().rescan(roots)
+            RT.add_log(f"媒体库扫描完成：{r.get('files', 0)} 个视频 / {r.get('cards', 0)} 张卡片"
+                       f"（{r.get('sec', 0)}s）", "ok")
+    except Exception as e:
+        RT.add_log(f"媒体库扫描失败：{e}", "err")
+
+
 def run(open_window: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
     _setup_file_logging()
@@ -3471,6 +3588,9 @@ def run(open_window: bool = True) -> None:
         dlna_start()
     if s.get("subtitle_auto_start"):
         sub_start()
+    # 媒体库后台首扫（有配置根目录才扫）
+    if [r for r in (s.get("library_roots") or []) if r]:
+        threading.Thread(target=_library_scan_bg, daemon=True, name="library-scan").start()
 
     # 启动体检：上次被强杀可能留下 audiocpp 常驻进程（约 3 GB 内存）。
     # 判据是"它在跑，但字幕服务并不在"——那它就没有主人，是残留。

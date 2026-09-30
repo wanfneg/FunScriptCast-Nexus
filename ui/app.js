@@ -111,6 +111,7 @@
     }
     var next = document.getElementById("page-" + name);
     if (!next) return;
+    if (name === "library") loadLibrary();
     var cur = $(".page.active", content);
     clearTimeout(pageTimer);
     if (cur && cur !== next) {
@@ -541,6 +542,23 @@
       if (s.theme) setTheme(s.theme, false);
       if (s.motion) setMotion(s.motion, false);
     }
+    renderLibRoots(s.library_roots || []);
+  }
+
+  /* 媒体库目录（设置页）：与 DLNA 根目录同一套交互（选择器 + 按路径值删除）。
+     保存走 /api/settings 的 library_roots；保存成功后触发一次重扫。 */
+  var libRootSig = "";
+  function renderLibRoots(roots) {
+    var sig = roots.join("");
+    if (sig === libRootSig) return;
+    libRootSig = sig;
+    var box = $("#libRootList");
+    if (!box) return;
+    if (!roots.length) { box.innerHTML = '<div class="empty">还没有目录</div>'; return; }
+    box.innerHTML = roots.map(function (p) {
+      return '<div class="row flush"><div class="grow"><div class="name mono">' + p + '</div></div>' +
+             '<button class="btn ghost" data-del-libroot="' + p + '">移除</button></div>';
+    }).join("");
   }
 
   /* ---------------------------------------------------------- 字幕配置 / 术语表 */
@@ -842,6 +860,50 @@
       return rootsOpChain;   // 链上排队：并发调用共享同一条串行链
     }
     $("#addRoot").addEventListener("click", function () { addRoots([$("#newRoot").value]); });
+    /* 媒体库目录：添加（选择器，多选）与移除 */
+    $("#libRootAdd").addEventListener("click", function () {
+      if (!bridgeReady()) return;
+      window.pywebview.api.pick_folder($("#newRoot").value || "", true).then(function (r) {
+        if (!r || !r.ok) { if (r && r.error) toast("打开选择器失败", r.error, "err"); return; }
+        addLibRoots(r.paths || [r.path]);
+      });
+    });
+    var libRootChain = Promise.resolve();
+    function addLibRoots(list) {
+      libRootChain = libRootChain.then(function () {
+        return api("/api/settings").then(function (cur) {
+          var roots = (((cur || {}).settings || {}).library_roots || []).slice();
+          var added = 0;
+          (list || []).forEach(function (p) {
+            p = String(p == null ? "" : p).trim();
+            if (p && roots.indexOf(p) < 0) { roots.push(p); added++; }
+          });
+          if (!added) { toast("这些目录已经在列表里了", "", "warn"); return; }
+          return api("/api/settings", "POST", { library_roots: roots }).then(function (r) {
+            if (!r || r.ok === false) { toast("保存失败", (r && r.error) || "", "err"); return; }
+            toast("已添加 " + added + " 个媒体库目录", "点击「重新扫描」生成海报墙", "ok");
+            libRootSig = "";   // 强制重渲染
+            api("/api/library/rescan", "POST", {}).then(function () { loadLibrary(); });
+          });
+        });
+      });
+      return libRootChain;
+    }
+    $("#libRootList").addEventListener("click", function (e) {
+      var b = e.target.closest("[data-del-libroot]");
+      if (!b) return;
+      var p = b.getAttribute("data-del-libroot");
+      libRootChain = libRootChain.then(function () {
+        return api("/api/settings").then(function (cur) {
+          var roots = (((cur || {}).settings || {}).library_roots || []).filter(function (x) { return x !== p; });
+          return api("/api/settings", "POST", { library_roots: roots }).then(function (r) {
+            if (!r || r.ok === false) { toast("移除失败", (r && r.error) || "", "err"); return; }
+            toast("已移除", p, "ok");
+            libRootSig = "";
+          });
+        });
+      });
+    });
     /* 系统「选择文件夹」：主入口。手打路径容易带进引号/全角字符，
        而那种错误在头显里只表现为"目录为空"。支持一次多选。 */
     $("#pickRoot").addEventListener("click", function () {
@@ -1319,6 +1381,109 @@
     S.pollTimer = setTimeout(function () { poll(false); }, delay);
   }
   document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(true); });
+
+  /* ---------- 媒体库 + 桌面播放器（M1） ---------- */
+  var libPollTimer = 0, libCardsSig = "", libSeekDrag = false;
+  function fmtTime(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return h > 0 ? (h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0"))
+                 : (m + ":" + String(s).padStart(2, "0"));
+  }
+  function renderPlayStrip(p) {
+    var el = $("#libPlaying");
+    if (!el) return;
+    if (!p || !p.open) { el.style.display = "none"; return; }
+    el.style.display = "";
+    $("#libPlayTitle").textContent = p.title || "—";
+    $("#libPlayPos").textContent = fmtTime(p.pos);
+    $("#libPlayDur").textContent = fmtTime(p.dur);
+    if (!libSeekDrag && p.dur > 0) {
+      $("#libSeek").value = Math.round((p.pos / p.dur) * 1000);
+    }
+  }
+  function libCardHtml(c) {
+    var thumb = c.thumb
+      ? ('<img loading="lazy" src="/api/library/thumb?name=' + encodeURIComponent(c.thumb) + '" alt="">')
+      : '<div class="lib-nothumb">⋮</div>';
+    var dur = c.duration ? fmtTime(c.duration) : (c.local ? "" : "网盘");
+    var badges = (c.has_funscript ? '<span class="lib-badge ok" title="有 funscript">⟳</span>' : '')
+               + (c.parts && c.parts.length > 1 ? '<span class="lib-badge" title="多个分件">' + c.parts.length + ' 件</span>' : '');
+    var prog = "";
+    if (c.progress && c.progress.dur > 0 && c.progress.pos > 5
+        && c.progress.pos < c.progress.dur * 0.95) {
+      prog = '<div class="lib-prog"><i style="width:' + Math.round(c.progress.pos / c.progress.dur * 100) + '%"></i></div>';
+    }
+    var main = c.parts && c.parts.length ? c.parts[0].path : "";
+    var paths = (c.parts || []).map(function (x) { return encodeURIComponent(x.path); }).join("|");
+    return '<div class="lib-card" data-paths="' + paths + '">' +
+      '<div class="lib-thumb">' + thumb +
+        '<span class="lib-dur">' + dur + '</span>' + badges + prog + '</div>' +
+      '<div class="lib-title" title="' + (c.title || "") + '">' + (c.title || "未命名") + '</div>' +
+      '<div class="lib-sub">' + (c.folder || "") + '</div>' +
+      '</div>';
+  }
+  function renderCards(r) {
+    var grid = $("#libGrid"), empty = $("#libEmpty");
+    if (!grid) return;
+    $("#libStatus").textContent = r.scanning
+      ? ("扫描中… " + (r.progress || ""))
+      : (r.last_scan ? ("共 " + (r.items || []).length + " 张 · 上次扫描 " + new Date(r.last_scan * 1000).toLocaleTimeString())
+                     : "未扫描");
+    var items = r.items || [];
+    empty.style.display = items.length ? "none" : "";
+    grid.style.display = items.length ? "" : "none";
+    var sig = JSON.stringify(items.map(function (c) {
+      return [c.id, c.thumb, c.progress && c.progress.pos, c.last_played];
+    }));
+    if (sig === libCardsSig) return;          // 无变化不重建（保住滚动位置与懒加载）
+    libCardsSig = sig;
+    grid.innerHTML = items.map(libCardHtml).join("");
+  }
+  function loadLibrary() {
+    api("/api/player/state").then(function (p) {
+      renderPlayStrip(p);
+      api("/api/library/items").then(function (r) {
+        if (!r || !r.ok) { clearTimeout(libPollTimer); libPollTimer = setTimeout(loadLibrary, 5000); return; }
+        renderCards(r);
+        clearTimeout(libPollTimer);
+        libPollTimer = setTimeout(loadLibrary, r.scanning ? 2500 : ((p && p.open) ? 1500 : 8000));
+      });
+    });
+  }
+  $("#libGrid").addEventListener("click", function (e) {
+    var card = e.target.closest(".lib-card");
+    if (!card) return;
+    var paths = (card.getAttribute("data-paths") || "").split("|").filter(Boolean);
+    if (!paths.length) return;
+    // 多分件：默认播第一件；有进度记录的优先
+    api("/api/player/open", "POST", { path: decodeURIComponent(paths[0]) }).then(function (r) {
+      if (r && r.ok) { toast("播放器已启动", "外挂 mpv 窗口", "ok"); setTimeout(loadLibrary, 800); }
+      else { toast("启动失败", (r && r.error) || "", "err"); }
+    });
+  });
+  $("#libRescan").addEventListener("click", function () {
+    api("/api/library/rescan", "POST", {}).then(function (r) {
+      if (r && r.ok) { toast("开始扫描媒体库", "", "ok"); loadLibrary(); }
+      else { toast("扫描已在进行", "", "warn"); }
+    });
+  });
+  $("#libToggle").addEventListener("click", function () {
+    api("/api/player/toggle", "POST", {}).then(function () { loadLibrary(); });
+  });
+  $("#libStop").addEventListener("click", function () {
+    api("/api/player/stop", "POST", {}).then(function () { loadLibrary(); });
+  });
+  $("#libFs").addEventListener("click", function () {
+    api("/api/player/fullscreen", "POST", {});
+  });
+  $("#libSeek").addEventListener("pointerdown", function () { libSeekDrag = true; });
+  $("#libSeek").addEventListener("change", function () {
+    api("/api/player/state").then(function (p) {
+      if (p && p.dur > 0) api("/api/player/seek", "POST", { pos: (Number(this.value) / 1000) * p.dur });
+      libSeekDrag = false;
+    }.bind(this));
+  });
 
   /* ---------------------------------------------------------- 启动 */
   /* ================================================================

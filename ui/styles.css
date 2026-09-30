@@ -745,3 +745,50 @@ html[data-theme="light"] .logbox{ background:#eef2f8; }
 /* ---- 更新下载进度条（R76） ---- */
 .upd-bar{ height:8px; border-radius:4px; background:var(--line); overflow:hidden; }
 .upd-bar i{ display:block; height:100%; width:0; background:var(--accent); border-radius:4px; transition:width .3s var(--ease-out, ease); }
+
+/* ======================== 媒体库（M1） ======================== */
+.lib-card {
+  background: var(--card, #12161f);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.lib-card:hover { border-color: rgba(64, 169, 255, 0.55); transform: translateY(-2px); }
+.lib-thumb {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lib-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lib-nothumb { color: rgba(255, 255, 255, 0.18); font-size: 40px; }
+.lib-dur {
+  position: absolute; right: 6px; bottom: 6px;
+  background: rgba(0, 0, 0, 0.72); color: #fff;
+  font-size: 11px; padding: 2px 6px; border-radius: 4px;
+}
+.lib-badge {
+  position: absolute; top: 6px; left: 6px;
+  background: rgba(0, 0, 0, 0.72); color: #9fd1ff;
+  font-size: 11px; padding: 2px 6px; border-radius: 4px;
+  margin-right: 4px;
+}
+.lib-badge + .lib-badge { left: auto; right: 6px; }
+.lib-badge.ok { color: #7be0a2; }
+.lib-prog {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: 4px; background: rgba(255, 255, 255, 0.14);
+}
+.lib-prog i { display: block; height: 100%; background: #40a9ff; }
+.lib-title {
+  padding: 8px 10px 2px; font-size: 13px; font-weight: 600;
+  color: var(--text, #e8e8e8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lib-sub {
+  padding: 0 10px 10px; font-size: 11px; color: var(--muted, #8b93a3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}

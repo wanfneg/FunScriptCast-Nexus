@@ -72,3 +72,6 @@ tests/_eval_*
 tests/_combo_judge_*
 vendor/subtitle/docs/*.txt
 vendor/subtitle/config.json.bak-*
+
+# libmpv 运行库（121MB，fetch_mpv.ps1 拉取；构建机与开发机就地放置）
+vendor/mpv/libmpv-2.dll
