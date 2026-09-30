@@ -154,6 +154,12 @@ class MpvPlayer:
                 alive = not m.core_idle
             except Exception:
                 alive = False
+            if not alive and time.monotonic() - self._started_mono < 8.0:
+                # 起播宽限窗（R109）：play() 是异步的，加载完成前 core_idle 短暂
+                # 为 True——不能当"已退出"杀掉（首版把刚启动的播放器自己杀了）。
+                return {"open": True, "playing": False, "path": self._path,
+                        "title": self._title, "pos": 0.0, "dur": 0.0,
+                        "paused": False, "starting": True}
             if not alive:
                 # mpv 窗口被用户关掉/播完退出：等同 stop（含 on_end 回调）
                 self._terminate_locked()
@@ -189,6 +195,8 @@ class MpvPlayer:
                     if self._mpv is None:
                         continue
                     alive = not self._mpv.core_idle
+                    if not alive and time.monotonic() - self._started_mono < 8.0:
+                        continue   # 起播宽限窗内不判死
                     if not alive:
                         self._terminate_locked()
                         continue

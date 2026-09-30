@@ -109,6 +109,7 @@ class Library:
         finally:
             with self.lock:
                 self.scanning = False
+                self.scan_progress = ""
                 self.last_scan = time.time()
 
     def _scan(self, roots: list[str]) -> dict:
@@ -193,23 +194,32 @@ class Library:
                 m.terminate()
             if not thumb and dur > 0:
                 for frac in (0.12, 0.45):
+                    cand = self.thumb_dir / "00000001.jpg"
                     try:
-                        t = mpv.MPV(vo=f"image:format=jpg:outdir={self.thumb_dir}",
+                        if cand.exists():
+                            cand.unlink()
+                        # outdir 必须用独立属性 vo_image_outdir——塞进 vo= 子选项
+                        # 会被盘符冒号切坏（R109 实测）。
+                        t = mpv.MPV(vo="image", vo_image_format="jpg",
+                                    vo_image_outdir=str(self.thumb_dir),
                                     start=round(dur * frac, 1), frames=1,
                                     ao="null", osc=False,
                                     input_default_bindings=False)
                         t.play(str(vp))
                         for _ in range(80):
-                            if (self.thumb_dir / "00000001.jpg").is_file():
+                            if cand.is_file():
                                 break
                             time.sleep(0.25)
                         t.terminate()
-                        cand = self.thumb_dir / "00000001.jpg"
                         if cand.is_file():
                             cand.replace(out)
                             thumb = out.name
                             break
                     except Exception:
+                        try:
+                            t.terminate()
+                        except Exception:
+                            pass
                         continue
         except Exception:
             pass
