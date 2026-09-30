@@ -3754,3 +3754,16 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 **结论（M1 播放器架构定案）**：**外挂 mpv 窗口 + IPC 控制**——宿主进程内 python-mpv 控制 mpv 独立窗口（无边框/定位可选），Nexus UI 作为库与遥控面板。渲染零风险、HEVC 全覆盖、全屏体验对 VR 反而更优（无 webview 开销）。嵌入方案（SetParent+样式位、render API 纹理注入）列为 R&D 备选不阻塞 M1。代价：libmpv-2.dll 121MB 需随包/下载条目分发（M1 做 fetch 脚本）。
 
 **杂项**：py7zr 不支持 BCJ2（mpv-dev 7z）→ 官方 7zr.exe 单文件解包；测试时在用户桌面闪过若干播放器窗口（原型固有，已清理）。
+
+## R109（2026-10-01）：M1 媒体库+桌面播放器落地（1.0.52）
+
+**实现**：
+- `vendor/player/mpv_player.py`：MpvPlayer（外挂 mpv 窗口，python-mpv 控制；1s 轮询 detects core_idle + 5s 进度持久化回调）
+- `vendor/player/library.py`：Library 扫描器（增量索引 data\library_index.json；本地盘/网盘分级 GetDriveTypeW；番号正则 + 分件聚合 + funscript 同目录配对；缩略图/时长全走 libmpv——无 ffmpeg 依赖）
+- host：/api/player/{state,open,toggle,stop,seek,volume,fullscreen} + /api/library/{state,items,thumb,rescan}；settings 新键 library_roots；启动后台首扫
+- UI：新「媒体库」页（海报墙 grid + 徽标 ⟳/分件数 + 进度条 + 正在播放控制条）；设置页「媒体库目录」面板（选择器多选 + 按路径删除）
+- 分发：vendor/mpv/libmpv-2.dll（121MB，gitignore + tools/fetch_mpv.ps1；安装包 128→169MB）
+
+**调试踩坑（三个都是我自己的）**：①起播竞态自杀——play() 异步，core_idle 短暂 True 被 state() 当"已退出"触发终止 → 8s 起播宽限窗；②测试 curl 的 `\t` 被 bash 吃成 TAB 字符存进 settings（路径 E:<TAB>estvideo 永远 is_dir=False，扫描 0.0s 秒回）→ 浪费两轮排查，教训=**测 JSON 接口用 python 写文件体，别在 bash 里手搓反斜杠**；③vo=image 的 outdir 塞子选项被盘符冒号切坏 → 独立属性 vo_image_outdir。
+**部署**：1.0.52 装到 D 盘时两个残留 dev 宿主（旧代码占 8790）导致静默安装失败+404 假象 → 清进程重装成功。**部署铁律再加一条：静默安装前 tasklist 查残留 python/宿主**。
+**验证**：dev 宿主 E2E（扫描 7 卡/播放 pos 前进/暂停/停止）；生产 1.0.52 端点活；缩略图实测为真实画面帧。
