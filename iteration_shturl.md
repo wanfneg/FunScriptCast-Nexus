@@ -3741,3 +3741,16 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 
 **回归**：test_pipeline_unit 全部通过（F23 mock 无返回值暴露兼容问题→ `is not False` 判据）；device_guard 7/7；生产真机识别翻译/档位/门控/扣行全部活体验证。
 **版本**：1.0.51（构建失败重试多 bump 了 49/50，无碍）。
+
+## R108（2026-09-28）：播放器原型验证（第 0 步）——wid 直嵌黑屏，外挂 mpv 窗口方案成立
+
+**背景**：四大功能规划（R108 前）确认播放器是全盘地基；pywebview 6.2.1 无原生渲染面入口（34 参数无一 exposes 句柄），挑刺员指出主流素材是 HEVC 4K VR，浏览器解码不覆盖。
+
+**原型实验（build/_mpv-proto，libmpv 0.7.x 最新构建 121MB dll + python-mpv，测试素材 HEVC 4K VR CRVR-194 + H.264 SIVR-002）**：
+- **A 独立冒烟 ✓**：libmpv 载入、HEVC 硬解（hwdec=d3d11va-copy）、时间轴前进，VR 鱼眼画面完美渲染。
+- **C wid 直嵌 pywebview ✗**：子窗口机械嵌入成功（mpv 报告 hevc/d3d11va/pos 前进），但**窗口表面全黑**（双截图像素差 44%→RGB 采样证伪，均值 1→9 纯黑；对照实验独立窗口同段完美渲染）。WebView2 合成面与 mpv D3D swapchain 冲突类问题，钻进去是周级 Win32 兔子洞。
+- **D SetParent 挂靠 ✗**：调用成功（ret=旧父句柄）但 mpv 检测到重挂后窗口关系被重置（GetParent=0），mpv W32 代码会反抗外部重挂。
+
+**结论（M1 播放器架构定案）**：**外挂 mpv 窗口 + IPC 控制**——宿主进程内 python-mpv 控制 mpv 独立窗口（无边框/定位可选），Nexus UI 作为库与遥控面板。渲染零风险、HEVC 全覆盖、全屏体验对 VR 反而更优（无 webview 开销）。嵌入方案（SetParent+样式位、render API 纹理注入）列为 R&D 备选不阻塞 M1。代价：libmpv-2.dll 121MB 需随包/下载条目分发（M1 做 fetch 脚本）。
+
+**杂项**：py7zr 不支持 BCJ2（mpv-dev 7z）→ 官方 7zr.exe 单文件解包；测试时在用户桌面闪过若干播放器窗口（原型固有，已清理）。
