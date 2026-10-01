@@ -121,7 +121,7 @@ class SyncEngine:
             return                          # 位置没变就别刷 BLE
         self._last_pos = pos
         try:
-            await self.ch.move_to(target, int(min(speed, self.ch.max_speed)) or None, force=True)
+            await self.ch.move_to(target, int(min(speed, self.ch.max_speed)) or None)
             self.sent += 1
         except Exception:
             pass

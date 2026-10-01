@@ -131,7 +131,7 @@
     content.scrollTop = 0;
     /* 分段控件与 canvas 在隐藏页里量不到尺寸（getBoundingClientRect 全是 0），
        所以每次页面显示后都要重新摆一次；等一帧让 display 生效。 */
-    requestAnimationFrame(function () { placeAllSegs(); });
+    requestAnimationFrame(function () { placeAllSegs(); });
     requestAnimationFrame(function () { redrawPresetWaves(); });   // 切页后按新尺寸重画
   }
   nav.addEventListener("click", function (e) {
@@ -1415,7 +1415,7 @@
     var html = "";
     dirs.forEach(function (d) {
       html += '<div class="vl-folder" data-path="' + encodeURIComponent(d.path) + '">' +
-        '<svg class="ic"><use href="#i-vk-folder"/></svg><div class="name">' + d.name + '</div></div>';
+        '<svg class="ic"><use href="#i-vk-folder"/></svg><div class="name">' + esc(d.name) + '</div></div>';
     });
     vids.forEach(function (v) {
       var thumb = v.thumb
@@ -1429,7 +1429,7 @@
       html += '<div class="lib-card" data-vpath="' + encodeURIComponent(v.path) + '">' +
         '<div class="lib-thumb">' + thumb +
         (badges ? '<span class="lib-badges">' + badges + '</span>' : "") + dur + prog + '</div>' +
-        '<div class="lib-title">' + v.name + '</div></div>';
+        '<div class="lib-title">' + esc(v.name) + '</div></div>';
     });
     if (!html) html = '<div class="empty">这里没有视频</div>';
     $("#vlBrowseBody").innerHTML = html;
@@ -1613,7 +1613,7 @@
       toast("没有正在播放的视频", "先在媒体库里点一个视频", "warn");
     });
     $("#vlVBack").addEventListener("click", function () {
-      /* 回到媒体库（暂停并释放流，时间轴交回 mpv 轮询口径） */
+      /* 回到媒体库（暂停并释放流，时间轴交回 mpv 轮询口径） */
       /* 先退全屏再动 DOM：虽然现在全屏元素是文档根、隐藏子容器已经安全，
          但退出动作放前面更稳（这里就是"全屏后点返回直接卡死"的现场）。 */
       try {

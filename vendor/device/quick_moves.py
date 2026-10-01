@@ -110,7 +110,7 @@ class QuickMoves:
                     continue
                 pos = hi if pos == lo else lo
                 self._self_moving = True
-                await self.ch.move_to(pos, speed, force=True, raw=True)
+                await self.ch.move_to(pos, speed, raw=True)
                 self._self_moving = False
                 await asyncio.sleep(max(0.05, interval))   # 手机端下限 50ms
         except asyncio.CancelledError:
@@ -161,8 +161,12 @@ class QuickMoves:
             while self.is_slow and gen == self._gen_s:
                 self._slow_index += 1
                 target = lo if self._slow_index % 2 else hi
+                if not self.ch.state.allow_move:
+                    # 纵深防御（急停正常路径已停会话）：缓动空转不写帧，等闸门开
+                    await asyncio.sleep(0.25)
+                    continue
                 self._self_moving = True
-                await self.ch.move_to(target, speed, force=True, raw=True)
+                await self.ch.move_to(target, speed, raw=True)
                 self._self_moving = False
                 await asyncio.sleep(1.0)
         except asyncio.CancelledError:

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from dataclasses import dataclass, field
 
@@ -55,7 +56,13 @@ class DeviceChannel:
     # ---------- 宿主线程调用 ----------
     def submit(self, coro, timeout: float = 30.0):
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return fut.result(timeout)
+        try:
+            return fut.result(timeout)
+        except concurrent.futures.TimeoutError:
+            # 超时不取消的话协程还在循环里跑：断开流程超时后"迟到的帧"会继续写下去。
+            # （cancel 对已开跑的任务是请求取消，能停的都停。）
+            fut.cancel()
+            raise
 
     def state_dict(self) -> dict:
         s = self.state
@@ -202,6 +209,12 @@ class DeviceChannel:
         self._client = None
         self._toy = None
         self._ready = False
+        # 会话边界复位（手机端 AppViewModel 断开时显式复位同款）：重连后算"新设备"，
+        # 急停态/限位记忆不能跨连接残留 —— 否则"连上了但设备不动"还没处查。
+        self.state.allow_move = True
+        self.state.limit_min = 0
+        self.state.limit_speed = 0
+        self.state.recent = []
         self.state.connected = False
         self.state.address = ""
         self.state.name = ""
@@ -245,11 +258,14 @@ class DeviceChannel:
         v = 100.0 - float(percent) if self.reversed else float(percent)
         return int(max(0, min(100, round(v))))
 
-    async def move_to(self, percent: float, speed: int | None = None, force: bool = False,
-                      raw: bool = False) -> bool:
+    async def move_to(self, percent: float, speed: int | None = None, raw: bool = False,
+                      *, bypass_estop: bool = False) -> bool:
         """percent 0..100。raw=True 表示**跳过行程重映射**（只保留反转）——
-        快捷动作/预设播放用手机端 forceMoveToInverted 的语义。"""
-        if not self.state.allow_move and not force:
+        快捷动作/预设播放用手机端 forceMoveToInverted 的语义。
+        急停（allow_move=False）时一律拒写；只有急停的复位路径允许 bypass_estop，
+        四个运动写点（脚本/预设/爆发/缓动）和手动移动都**不传**——
+        旧版的 force=True 同时背"跳过重映射/跳过急停/强制写"三种含义，把这道闸门吃成了死代码。"""
+        if not self.state.allow_move and not bypass_estop:
             return False
         base = self.max_speed if speed is None else int(speed)
         if raw:

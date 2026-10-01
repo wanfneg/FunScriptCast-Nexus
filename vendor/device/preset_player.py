@@ -39,11 +39,33 @@ def load_presets(path: Path) -> list[dict]:
         return []
 
 
+def to_segments(kfs: list) -> list[list]:
+    """波形式 keyframes → 段式（**逐条对齐手机端 PresetDefs.toSegments**，无损转换）：
+    相邻关键帧 = 一段，speed = 距离÷时长（下限 1），durationMs 记录原始时间轴。
+    24 个预设里 22 个只有 keyframes —— 手机端 `playSegments = segments 非空 ? segments
+    : toSegments(keyframes)`（PresetDefs.kt:66-67），缺了这步派生就是空段列表，
+    `_play_one_loop` 里一个 await 都没有，纯 CPU 自旋锁死整条 BLE 事件循环。"""
+    out = []
+    for a, b in zip(kfs, kfs[1:]):
+        dist = abs(float(b[0]) - float(a[0]))
+        dur = float(b[1]) - float(a[1])
+        speed = max(1, int(round(dist * 1000.0 / dur))) if (dist > 0 and dur > 0) else 1
+        out.append([float(a[0]), float(b[0]), speed, max(0.0, dur)])
+    return out
+
+
 class PresetPlayer:
     def __init__(self, channel, loop: asyncio.AbstractEventLoop, presets_path: Path) -> None:
         self.ch = channel
         self.loop = loop
         self.presets = load_presets(presets_path)
+        # 播放用段式列表：段式预设直接用；波形式**加载时一次性派生**（手机端 PresetDef
+        # 构造时同款）。派生结果放在独立键里，原 segments/keyframes 原样保留。
+        for pr in self.presets:
+            if not pr.get("segments") and pr.get("keyframes"):
+                pr["_play"] = to_segments(pr["keyframes"])
+            else:
+                pr["_play"] = list(pr.get("segments") or [])
         self.selected: str | None = None
         self.playing = False
         self.random_mode = False
@@ -152,7 +174,7 @@ class PresetPlayer:
             pass
 
     async def _play_one_loop(self, pr: dict, gen: int) -> None:
-        for sg in (pr.get("segments") or []):
+        for sg in (pr.get("_play") or pr.get("segments") or []):
             if not self._can(gen, pr.get("id")):
                 return
             s, e = float(sg[0]), float(sg[1])
@@ -162,10 +184,12 @@ class PresetPlayer:
             speed = self._effective_speed()
             natural_ms = float(dur) if dur else (dist * 1000.0 / seg_speed)
             wait_ms = natural_ms * seg_speed / max(1, speed)
-            if dist > 0:
+            if dist > 0 and self.ch.state.allow_move:
+                # allow_move 检查是纵深防御：急停正常路径已把会话停掉（arbiter），
+                # 这里兜的是"会话外残留调用"——不发帧但照常等待，节奏不乱。
                 self._self_moving = True
                 try:
-                    await self.ch.move_to(e, speed, force=True)   # 先发
+                    await self.ch.move_to(e, speed)   # 先发
                 finally:
                     self._self_moving = False
             t0 = time.monotonic()                                 # 后等（20ms 步进，可打断）

@@ -2214,10 +2214,13 @@ class Handler(BaseHTTPRequestHandler):
                         _roots += [str(x) for x in _v]
                     elif _v:
                         _roots.append(str(_v))
-                _abs = str(_fp.resolve()).lower()
-                _allowed = any(_abs.startswith(str(_P(r).resolve()).lower()) for r in _roots if r)
-                if not _allowed and not getattr(sys, "frozen", False):
-                    _allowed = True          # 源码/开发运行放宽，便于调试
+                # resolve() 折叠 .. 与符号链接后按"祖先关系"判定 —— 裸前缀比较会被
+                # `E:\testvideo-evil` 命中 `E:\testvideo`，`..` 则根本不折叠（P1-4）
+                _abs = _fp.resolve()
+                _allowed = any(_abs == _rt or _rt in _abs.parents
+                               for _rt in (_P(r).resolve() for r in _roots if r))
+                if not _allowed and os.environ.get("FSC_NEXUS_DEV_STREAM") == "1":
+                    _allowed = True          # 源码调试放宽：必须显式设环境变量，默认收紧
                 if not _allowed:
                     self._json({"ok": False, "error": "这个文件不在媒体库或 DLNA 目录里"}, 403)
                     return
@@ -2305,13 +2308,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not bp:
                     dirs = [{"name": Path(r).name or r, "path": r} for r in roots if Path(r).is_dir()]
                 else:
-                    bp_norm = str(Path(bp))
-                    if not any(str(Path(r)) == bp_norm or bp_norm.startswith(str(Path(r)) + os.sep)
-                               for r in roots):
+                    # 同 stream：resolve() 折叠 .. 后判祖先关系，`E:\testvideo\..\..\Windows`
+                    # 这类"过校验落别处"的路径直接 403（P1-4）
+                    bp_real = Path(bp).resolve()
+                    roots_real = [Path(r).resolve() for r in roots]
+                    if not any(bp_real == r or r in bp_real.parents for r in roots_real):
                         self._json({"ok": False, "error": "路径不在媒体库目录内"}, 403)
                         return
                     try:
-                        for e2 in os.scandir(bp_norm):
+                        for e2 in os.scandir(str(bp_real)):
                             if e2.name.startswith((".", "$")):
                                 continue
                             try:
@@ -2461,7 +2466,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not d["ch"].state.connected:
                     self._json({"ok": False, "error": "设备未连接", "no_device": True})
                     return
-                self._json(d["sync"].start(vp))
+                # 单一写者仲裁：脚本跑起来才停预设/快捷动作；加载失败不动别人
+                self._json(d["arbiter"].start_script(vp))
             elif path == "/api/sync/tick":
                 d = _get_device()
                 d["sync"].tick(float(body.get("t") or 0))
@@ -2490,19 +2496,27 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": "缺少 address"}, 400)
                     return
                 self._json(d["ch"].submit(d["ch"].connect(addr, str(body.get("toy") or "") or None), timeout=60))
+                # 重连成功后缓动从"现在"重新计时（I5 会话边界）：否则用断开前的旧
+                # 空闲时间戳，一连上缓动可能立刻开跑
+                if _DEV["obj"] and _DEV["obj"]["ch"].state.connected:
+                    _DEV["obj"]["quick"].note_external()
             elif path == "/api/device/disconnect":
                 d = _get_device()
-                res = d["ch"].submit(d["ch"].disconnect(), timeout=20)
-                d["quick"].stop_slow()
-                d["quick"].stop_orgasm()
-                d["preset"].stop()
-                d["sync"].stop()
+                try:
+                    res = d["ch"].submit(d["ch"].disconnect(), timeout=20)
+                except Exception as e:
+                    # BLE 提交超时（connect 持锁时常见）不能把后面的会话清理跳掉 ——
+                    # 否则"断开了但预设/缓动还在跑，迟到帧照写"。
+                    res = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                finally:
+                    d["arbiter"].stop_all()
                 self._json(res)
             elif path == "/api/device/move":
                 d = _get_device()
                 pct = float(body.get("percent") or 0)
                 sp = body.get("speed")
-                ok = d["ch"].submit(d["ch"].move_to(pct, int(sp) if sp is not None else None, force=True), timeout=10)
+                # 手动移动同样受急停闸门约束（急停 = 设备停，解除前手动也不动）
+                ok = d["ch"].submit(d["ch"].move_to(pct, int(sp) if sp is not None else None), timeout=10)
                 self._json({"ok": bool(ok)})
             elif path == "/api/device/limit":
                 d = _get_device()
@@ -2548,13 +2562,20 @@ class Handler(BaseHTTPRequestHandler):
                 on = bool(body.get("on"))
                 q = d["quick"]
                 if kind == "stop":
-                    was = q.is_stop
+                    # F1：QuickMoves 没有 is_stop 属性，旧写法在读属性时就抛异常 →
+                    # 急停接口 100% 变 500，set_allow_move 永不可达
+                    was = not d["ch"].state.allow_move
+                    if on:
+                        # 急停 = 四个会话（脚本/预设/爆发/缓动）全部停止本身（I6，
+                        # 用户裁定"四个全受"），不是"继续播但不写帧"；
+                        # 解除后不自动恢复，要动需重新启动（有意严于手机端）。
+                        d["arbiter"].stop_all()
                     res = q.set_stop(on)
                     if was and not on:
                         d["sync"].reset_last_index()   # 手机端：急停→继续 强制重发当前段
                 elif kind in ("orgasm", "slow") and on:
-                    d["preset"].stop()                 # 手机端：爆发/缓动接管设备，先停预设
-                    res = q.start_orgasm() if kind == "orgasm" else q.start_slow()
+                    # 单一写者仲裁：接管设备前停掉脚本/预设/另一快捷动作
+                    res = d["arbiter"].start_orgasm() if kind == "orgasm" else d["arbiter"].start_slow()
                 elif kind in ("orgasm", "slow"):
                     res = q.stop_orgasm() if kind == "orgasm" else q.stop_slow()
                 elif False:
@@ -2574,11 +2595,11 @@ class Handler(BaseHTTPRequestHandler):
                 if act == "select":
                     res = p.select(body.get("id") or None)
                 elif act in ("play", "start"):
-                    res = p.start()                       # 手机端方法名是 start()
+                    res = d["arbiter"].start_preset()   # 三件事：清脚本+停快捷动作+开预设（不关视频）
                 elif act in ("pause", "stop"):
                     res = p.stop()
                 elif act == "toggle_play":
-                    res = p.toggle_play()
+                    res = d["arbiter"].toggle_preset()
                 elif act == "random":
                     res = p.toggle_random()
                 elif act == "boost":
@@ -3889,6 +3910,9 @@ def _get_device() -> dict:
                 "preset": PresetPlayer(ch, ch._loop, APP_DIR / "ui" / "presets.json"),
                 "sync": SyncEngine(ch, ch._loop),
             }
+            from device.arbiter import DeviceArbiter             # noqa: PLC0415
+            _DEV["obj"]["arbiter"] = DeviceArbiter(
+                ch, _DEV["obj"]["quick"], _DEV["obj"]["preset"], _DEV["obj"]["sync"])
             _apply_device_settings()
         return _DEV["obj"]
 
