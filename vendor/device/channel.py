@@ -222,15 +222,18 @@ class DeviceChannel:
         return True
 
     # ---------- 运动 ----------
+    def _scale_speed(self, speed: float) -> int:
+        """手机端 forceMoveTo：scaledSpeed = round(speed * span/100)——速度按行程跨度缩放。"""
+        span = self.range_hi - self.range_lo
+        return int(round(float(speed) * span / 100.0))
+
     def _remap(self, percent: float) -> int:
         """行程范围重映射（对应手机端 moveTo：先按 range 映射，再按需反转）。"""
-        lo, hi = self.range_lo, self.range_hi
-        if hi <= lo:
-            return int(max(0, min(100, round(percent))))
-        v = lo + (hi - lo) * (percent / 100.0)
-        if self.reversed:
-            v = self.range_lo + self.range_hi - v
-        return int(max(0, min(100, round(v))))
+        span = self.range_hi - self.range_lo
+        remapped = int(round(float(percent) * span / 100.0)) + int(self.range_lo)
+        # 手机端：target = if (invert) 100 - remapped else remapped
+        target = (100 - remapped) if self.reversed else remapped
+        return int(max(0, min(100, target)))
 
     def _invert(self, percent: float) -> int:
         v = 100.0 - float(percent) if self.reversed else float(percent)
@@ -242,9 +245,14 @@ class DeviceChannel:
         快捷动作/预设播放用手机端 forceMoveToInverted 的语义。"""
         if not self.state.allow_move and not force:
             return False
-        sp = self.max_speed if speed is None else int(speed)
+        base = self.max_speed if speed is None else int(speed)
+        if raw:
+            target = self._invert(percent)          # forceMoveToInverted：只加反转
+            sp = base                              # 不改速度
+        else:
+            target = self._remap(percent)           # forceMoveTo
+            sp = self._scale_speed(base)            # 速度按跨度缩放
         sp = max(0, min(self.max_speed, sp))
-        target = self._invert(percent) if raw else self._remap(percent)
         ok = await self._write(cmd_move(target, sp))
         if ok:
             self.state.last_move = (percent, sp)
