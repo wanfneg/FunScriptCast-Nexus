@@ -72,6 +72,18 @@ try {
     $env:NO_PROXY = '*'
     $env:no_proxy = '*'
     & $venvPy -m pip install --target $sitePkgs "fastapi" "uvicorn" "numpy" "zhconv" "faster-whisper"
+# ---- BLE 设备通道（M2）：bleak + WinRT 依赖 ----
+# 注意：本机 .venv 的 pip 21.2.3 在 TLS 下会报 "check_hostname requires server_hostname"，
+# 所以优先用离线轮子（tools\wheels\bleak\*.whl，cp310）；没有再退常规 pip。
+$bleakWheels = Join-Path $root 'tools\wheels\bleak'
+if (Test-Path $bleakWheels) {
+    Write-Host "  用离线轮子装 bleak（$bleakWheels）…" -ForegroundColor DarkGray
+    & $venvPy -m pip install --no-index --find-links $bleakWheels --target $sitePkgs bleak
+    if ($LASTEXITCODE -ne 0) { throw "bleak 离线安装失败（exit $LASTEXITCODE）" }
+} else {
+    & $venvPy -m pip install --target $sitePkgs bleak
+    if ($LASTEXITCODE -ne 0) { throw "bleak 安装失败（exit $LASTEXITCODE）" }
+}
     if ($LASTEXITCODE -ne 0) {
         # pip 半途失败会留下残目录——下次直接跑会被当成"已存在"（现已会被冒烟拦住，
         # 但这里主动删掉更干净）

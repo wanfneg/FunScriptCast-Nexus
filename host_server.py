@@ -317,6 +317,17 @@ DEFAULT_SETTINGS = {
     "device_folder_script": "/sdcard/Funscript",
     "device_folder_video": "/sdcard/Movies",
     "sync_force_full": False,
+    # ---- 设备通道（M2）：快捷动作 / 预设 / 脚本同步 ----
+    "device": {
+        "script_sync": True,            # 播视频时用 funscript 驱动设备
+        "preset_speed": 100,            # 预设播放速度（手机端 presetSpeed 默认 100）
+        "a10_mode": None,               # 伪装设备（None=按设备默认）
+        "oc_mode": False,               # 狂暴模式
+        "orgasm": {"min_percent": 0, "max_percent": 100, "max_speed": 500,
+                   "link_percent": False, "link_speed": False},
+        "slow": {"min_percent": 0, "max_percent": 100, "max_speed": 100,
+                 "idle_detect_seconds": 5, "link_percent": False},
+    },
     "sync_delete_extra": False,
 }
 
@@ -2256,6 +2267,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "items": items,
                             "scanning": lib.scanning, "progress": lib.scan_progress,
                             "last_scan": lib.last_scan})
+            elif path == "/api/device/state":
+                d = _get_device()
+                st = d["ch"].state_dict()
+                st["quick"] = d["quick"].state()
+                st["preset"] = d["preset"].state()
+                st["sync"] = d["sync"].state()
+                st["available"] = _bleak_ok()
+                self._json({"ok": True, "device": st})
             elif path == "/api/library/state":
                 lib = _get_library()
                 with lib.lock:
@@ -2321,6 +2340,7 @@ class Handler(BaseHTTPRequestHandler):
                 if res.get("ok") is False:
                     self._json(res)
                 else:
+                    _apply_device_settings()
                     self._json({"ok": True, "settings": res})
             elif path == "/api/win/show":
                 # 供「重复启动」唤起已有实例的窗口（见 run() 开头的单实例处理）。
@@ -2352,6 +2372,123 @@ class Handler(BaseHTTPRequestHandler):
                 fs = _get_player().toggle_fullscreen()
                 self._json({"ok": True, "fullscreen": fs})
             # ---------------- 媒体库（M1）----------------
+            # ---------------- 脚本同步（M2） ----------------
+            elif path == "/api/sync/start":
+                d = _get_device()
+                vp = str(body.get("path") or "")
+                if not vp:
+                    self._json({"ok": False, "error": "缺少 path"}, 400)
+                    return
+                if not d["ch"].state.connected:
+                    self._json({"ok": False, "error": "设备未连接", "no_device": True})
+                    return
+                self._json(d["sync"].start(vp))
+            elif path == "/api/sync/tick":
+                d = _get_device()
+                d["sync"].tick(float(body.get("t") or 0))
+                self._json({"ok": True})
+            elif path == "/api/sync/delay":
+                d = _get_device()
+                d["sync"].delay_ms = float(body.get("ms") or 0)
+                self._json({"ok": True, "delay_ms": d["sync"].delay_ms})
+            elif path == "/api/sync/stop":
+                d = _get_device()
+                self._json(d["sync"].stop())
+            # ---------------- 设备通道（M2） ----------------
+            elif path == "/api/device/scan":
+                d = _get_device()
+                if not _bleak_ok():
+                    self._json({"ok": False, "error": "缺少 bleak（BLE 依赖未安装）"})
+                    return
+                try:
+                    self._json({"ok": True, "devices": d["ch"].submit(d["ch"].scan(6.0), timeout=40)})
+                except Exception as e:
+                    self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            elif path == "/api/device/connect":
+                d = _get_device()
+                addr = str(body.get("address") or "")
+                if not addr:
+                    self._json({"ok": False, "error": "缺少 address"}, 400)
+                    return
+                self._json(d["ch"].submit(d["ch"].connect(addr), timeout=60))
+            elif path == "/api/device/disconnect":
+                d = _get_device()
+                res = d["ch"].submit(d["ch"].disconnect(), timeout=20)
+                d["quick"].stop_slow()
+                d["quick"].stop_orgasm()
+                d["preset"].stop()
+                d["sync"].stop()
+                self._json(res)
+            elif path == "/api/device/move":
+                d = _get_device()
+                pct = float(body.get("percent") or 0)
+                sp = body.get("speed")
+                ok = d["ch"].submit(d["ch"].move_to(pct, int(sp) if sp is not None else None, force=True), timeout=10)
+                self._json({"ok": bool(ok)})
+            elif path == "/api/device/limit":
+                d = _get_device()
+                ok = d["ch"].submit(d["ch"].set_limit(int(body.get("min") or 0), int(body.get("max") or 100),
+                                                       int(body.get("speed") or 0)), timeout=10)
+                self._json({"ok": bool(ok)})
+            elif path == "/api/device/mode":
+                d = _get_device()
+                ok = d["ch"].submit(d["ch"].set_mode(int(body.get("a10") or 0)), timeout=10)
+                self._json({"ok": bool(ok)})
+            elif path == "/api/device/settings":
+                # 设备段设置（快捷动作/预设速度/A10 模式）持久化到 settings.device
+                dev = dict((load_settings().get("device") or {}))
+                for k in ("orgasm", "slow"):
+                    if isinstance(body.get(k), dict):
+                        dev[k] = {**(dev.get(k) or {}), **{kk: vv for kk, vv in body[k].items() if vv is not None}}
+                for k in ("preset_speed", "a10_mode", "oc_mode"):   # oc_mode 漏过 → 下发了却不存盘
+                    if body.get(k) is not None:
+                        dev[k] = body[k]
+                save_settings({"device": dev})
+                _apply_device_settings()
+                d = _get_device()
+                try:
+                    if body.get("a10_mode") is not None:
+                        d["ch"].submit(d["ch"].set_mode(int(body["a10_mode"])), timeout=10)
+                    if body.get("oc_mode") is not None:      # 狂暴模式真下发 MotorMaxPower
+                        d["ch"].submit(d["ch"].set_oc_mode(bool(body["oc_mode"])), timeout=10)
+                except Exception:
+                    pass
+                self._json({"ok": True, "device": dev})
+            elif path == "/api/quick":
+                d = _get_device()
+                kind = str(body.get("kind") or "")
+                on = bool(body.get("on"))
+                q = d["quick"]
+                if kind == "stop":
+                    res = q.set_stop(on)
+                elif kind == "orgasm":
+                    res = q.start_orgasm() if on else q.stop_orgasm()
+                elif kind == "slow":
+                    res = q.start_slow() if on else q.stop_slow()
+                else:
+                    self._json({"ok": False, "error": "未知快捷动作"}, 400)
+                    return
+                self._json({"ok": True, "quick": res})
+            elif path == "/api/preset":
+                d = _get_device()
+                act = str(body.get("action") or "")
+                p = d["preset"]
+                if act == "select":
+                    res = p.select(body.get("id") or None)
+                elif act == "play":
+                    res = p.play()
+                elif act == "stop":
+                    res = p.stop()
+                elif act == "random":
+                    res = p.toggle_random()
+                elif act == "boost":
+                    res = p.toggle_boost()
+                elif act == "speed":
+                    res = p.set_speed(int(body.get("speed") or 100))
+                else:
+                    self._json({"ok": False, "error": "未知预设动作"}, 400)
+                    return
+                self._json(res if isinstance(res, dict) else {"ok": True, "preset": res})
             elif path == "/api/library/rescan":
                 lib = _get_library()
                 if lib.scanning:
@@ -3575,6 +3712,62 @@ def _setup_file_logging() -> None:
 # ---------------------------------------------------------------- 媒体库与桌面播放器（M1）
 PLAYER = None        # MpvPlayer 单例（懒建——import mpv 需要 vendor\mpv 就绪）
 LIB = None
+
+
+
+# ---------------- 设备通道（M2） ----------------
+_DEV: dict = {"obj": None, "lock": threading.Lock()}
+
+
+def _bleak_ok() -> bool:
+    try:
+        import bleak  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _apply_device_settings() -> None:
+    """settings → 设备层（行程范围/限速取视频联动页那张卡，快捷动作/预设取 device 段）。"""
+    d = _DEV.get("obj")
+    if not d:
+        return
+    s = load_settings()
+    vl = s.get("video_link") or {}
+    dev = s.get("device") or {}
+    try:
+        d["ch"].apply_motion(range_lo=vl.get("range_min", 0), range_hi=vl.get("range_max", 100),
+                             max_speed=vl.get("max_speed", 500), reversed_=bool(vl.get("reversed")))
+        d["quick"].apply(dev.get("orgasm"), dev.get("slow"))
+        # 设备侧偏好：重连后由 channel.connect 自动补发
+        d["ch"].oc_mode = bool(dev.get("oc_mode"))
+        if dev.get("a10_mode") is not None:
+            d["ch"].mode_override = int(dev["a10_mode"])
+        if dev.get("preset_speed"):
+            d["preset"].set_speed(int(dev["preset_speed"]))
+    except Exception as e:
+        log.warning("应用设备设置失败：%s", e)
+
+
+def _get_device() -> dict:
+    """懒加载设备通道（bleak 缺失时也返回对象，只是 connect/scan 会报错）。"""
+    with _DEV["lock"]:
+        if _DEV["obj"] is None:
+            import sys as _sys
+            _sys.path.insert(0, str(APP_DIR / "vendor"))
+            from device import get_channel                      # noqa: PLC0415
+            from device.quick_moves import QuickMoves           # noqa: PLC0415
+            from device.preset_player import PresetPlayer       # noqa: PLC0415
+            from device.sync_engine import SyncEngine           # noqa: PLC0415
+            ch = get_channel()
+            _DEV["obj"] = {
+                "ch": ch,
+                "quick": QuickMoves(ch, ch._loop),
+                "preset": PresetPlayer(ch, ch._loop, APP_DIR / "ui" / "presets.json"),
+                "sync": SyncEngine(ch, ch._loop),
+            }
+            _apply_device_settings()
+        return _DEV["obj"]
 
 
 def _get_player():

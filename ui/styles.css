@@ -965,3 +965,8 @@ html[data-theme="light"] .vl-pcard.selected{ background:#D6DFEC; border-color:rg
 html[data-theme="light"] .vl-pcard.selected .vl-pname{ color:#4A5F8A; }
 .vl-ploop{ flex:none; font-size:9.5px; color:var(--ink-3); white-space:nowrap; }
 .vl-wave{ flex:1; min-height:0; width:100%; display:block; margin-top:3px; }
+
+/* 预设速度滑轨（手机端 presetSpeed 1..500，默认 100）：贴在预设网格上方一条 */
+.vl-prespeed{ display:flex; align-items:center; gap:8px; height:24px; margin:0 0 6px; }
+.vl-prespeed .lbl{ font:500 11px/1 var(--f-ui); color:var(--text-2); white-space:nowrap; }
+.vl-prespeed .val{ font:600 11px/1 var(--f-num,var(--f-ui)); color:var(--text); min-width:30px; text-align:right; }

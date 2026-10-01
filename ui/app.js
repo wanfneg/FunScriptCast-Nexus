@@ -1596,6 +1596,9 @@
       vlVideoFail("这个文件内置播放器打不开（常见原因：HEVC/10bit 等编码不受支持，或 DLNA 服务没在跑）。");
     });
     v.addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
+    v.addEventListener("play", function () { syncStart(vlMed.path); });
+    v.addEventListener("timeupdate", function () { syncTick(v.currentTime); });
+    v.addEventListener("ended", function () { syncStop(); });
     $("#vlPlay").addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
     $("#vlPrev").addEventListener("click", function () { vlStep(-1); });
     $("#vlNext").addEventListener("click", function () { vlStep(1); });
@@ -1614,6 +1617,15 @@
         if (document.pictureInPictureElement) document.exitPictureInPicture();
         else if (v.requestPictureInPicture) v.requestPictureInPicture();
       } catch (e) { toast("画中画不可用", "", "warn"); }
+    });
+    /* ⏸ 大按钮：直接控制内置播放器（本页不再操作外部播放器） */
+    $("#vlPause").addEventListener("click", function () {
+      if (vlMed.path && !vlMed.failed) {
+        if (v.paused) v.play(); else v.pause();
+        vlTouch();
+        return;
+      }
+      toast("没有正在播放的视频", "先在媒体库里点一个视频", "warn");
     });
     $("#vlVBack").addEventListener("click", function () {
       /* 回到媒体库（暂停并释放流，时间轴交回 mpv 轮询口径） */
@@ -1637,13 +1649,7 @@
       browse(vlBrowsePath || "");
       if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
     });
-    $("#vlUseMpv").addEventListener("click", function () {
-      if (!vlMed.path) return;
-      api("/api/player/open", "POST", { path: vlMed.path }).then(function (r) {
-        if (r && r.ok) toast("已交给外部播放器", "mpv 独立窗口", "ok");
-        else toast("外部播放器启动失败", (r && r.error) || "", "err");
-      });
-    });
+
     /* 进度/音量滑轨：复用页面的自研滑轨（--a/--b 驱动，几何一致） */
     initSlider("vlVSeek", false, function (lo, hi) {
       var d = isFinite(v.duration) ? v.duration : 0;
@@ -1677,24 +1683,8 @@
   /* --- 播放状态轮询（驱动播放视图/时间轴） --- */
   var vlPlayerOpen = false;
   function renderPlayState(p) {
+    /* 视频联动页只用内置播放器：不再镜像外部 mpv 的播放状态 */
     vlPlayerOpen = !!(p && p.open);
-    if (vlMed.path && !vlMed.failed) return;   // 内置播放器在放，别被 mpv 状态抢画面
-    var el = $("#libPlaying");
-    if (p && p.open) {
-      $("#vlPlayPath").textContent = p.path || "—";
-      $("#vlPos").textContent = fmtTime(p.pos);
-      $("#vlDur").textContent = fmtTime(p.dur);
-      if (!libSeekDrag && p.dur > 0) drawHeat(p.pos, p.dur);
-    } else {
-      /* 只有"人正停在播放视图、而 mpv 播放器没了"才自动回根。
-         否则每秒轮询会在内置播放器返回媒体库的空档里把视图踢回根目录
-         （实测：从 E:\testvideo 返回后标题变成"媒体库"、视频卡 0 张）。 */
-      if (vlCurPath && $("#vlPlayView") && $("#vlPlayView").style.display !== "none") {
-        vlCurPath = "";
-        browse("");
-      }
-      drawHeat();
-    }
   }
   function loadLibrary() {
     api("/api/player/state").then(function (p) {
@@ -1821,11 +1811,7 @@
       if (end > 0) vlSeekTo(frac * end);
       return;
     }
-    api("/api/player/state").then(function (p) {
-      if (!(p && p.open)) return;
-      var timelineEnd = Math.max(p.dur || 0, scriptEnd);
-      if (timelineEnd > 0) api("/api/player/seek", "POST", { pos: frac * timelineEnd });
-    });
+    /* 没有内置播放时什么都不做（本页不再操作外部播放器） */
   });
   function loadHeat() {
     if (!document.querySelector("#page-library.active")) return;
@@ -2039,70 +2025,27 @@
   });
 
   /* --- 中列快捷动作卡（严格手机：激活填充变色 + 文字切换） --- */
-  var vq = { slow: false, stop: false, orgasm: false };
-  function renderQuick() {
-    var b1 = $("#vqIdle"), b2 = $("#vqStop"), b3 = $("#vqBurst");
-    b1.textContent = vq.slow ? "停止缓动" : "待机缓动";
-    b1.classList.toggle("filled-green", vq.slow);
-    b2.textContent = vq.stop ? "一键继续" : "一键急停";
-    b2.classList.toggle("filled-blue", vq.stop);
-    b3.textContent = vq.orgasm ? "停止爆发" : "一键爆发";
-    b3.classList.toggle("filled-red", vq.orgasm);
+  function quickCmd(kind, on) {
+    api("/api/quick", "POST", { kind: kind, on: !!on }).then(function (r) {
+      if (!r || !r.ok) { toast("命令失败", (r && r.error) || "宿主未提供设备接口（需 1.0.57）", "err"); return; }
+      pollDev();
+    });
   }
-  $("#vqIdle").addEventListener("click", function () { vq.slow = !vq.slow; renderQuick(); });
-  $("#vqStop").addEventListener("click", function () { vq.stop = !vq.stop; renderQuick(); });
-  $("#vqBurst").addEventListener("click", function () { vq.orgasm = !vq.orgasm; renderQuick(); });
+  $("#vqIdle").addEventListener("click", function () { quickCmd("slow", !DEV.quick.slow); });
+  $("#vqBurst").addEventListener("click", function () { quickCmd("orgasm", !DEV.quick.orgasm); });
+  $("#vqStop").addEventListener("click", function () { quickCmd("stop", !DEV.quick.stop); });
 
   /* --- 右上三胶囊（严格手机三圆钮语义：BOOST 红 / 播放蓝 / RANDOM 绿） --- */
-  function renderCapsules() {
-    $("#vlBoost").classList.toggle("filled-red", vlBoostMode);
-    $("#vlRandom").classList.toggle("filled-green", vlRandomMode);
-    $("#vlPresetToggle").classList.toggle("filled-blue", vlPlayingPreset);
-    $("#vlPresetToggle").textContent = vlPlayingPreset ? "暂停预设" : "播放预设";
-  }
-  $("#vlBoost").addEventListener("click", function () { vlBoostMode = !vlBoostMode; renderCapsules(); });
-  /* ⏸（/api/player/toggle）：此前只画了按钮没接线，点了没反应 */
-  function setPauseIcon(paused) {
-    var b = $("#vlPause");
-    var u = b && b.querySelector("use");
-    if (u) u.setAttribute("href", paused ? "#i-play" : "#i-pause");
-  }
-  $("#vlPause").addEventListener("click", function () {
-    /* 内置播放器在放 → 直接切播放/暂停（同一窗口内） */
-    if (vlMed.path && !vlMed.failed) {
-      var v0 = vlVid();
-      if (v0) { if (v0.paused) v0.play(); else v0.pause(); vlTouch(); }
-      return;
-    }
-        /* 没有打开的视频时别调 toggle：host 的 _get_player() 会按需实例化播放器 */
-    if (!vlPlayerOpen) { toast("没有正在播放的视频", "先在媒体库里点一个视频", "warn"); return; }
-    api("/api/player/toggle", "POST", {}).then(function (r) {
-      if (r && r.ok) setPauseIcon(!!r.paused);
+  function presetCmd(action, extra) {
+    var body = Object.assign({ action: action }, extra || {});
+    api("/api/preset", "POST", body).then(function (r) {
+      if (!r || r.ok === false) { toast("预设命令失败", (r && r.error) || "宿主未提供设备接口（需 1.0.57）", "err"); return; }
+      pollDev();
     });
-  });
-  /* 布局自适应：⏸ 保持正圆且不超出按钮行；预设网格"可见 2 行"（草图） */
-  function layoutVl() {
-    var row = $(".vl-btnrow"), b = $("#vlPause");
-    if (row && b) {
-      var s = Math.max(26, Math.min(row.clientHeight, row.clientWidth * 40 / 770));
-      b.style.width = s + "px"; b.style.height = s + "px";
-    }
-    var g = $("#vlPGrid");
-    if (g) {
-      var h = g.clientHeight;
-      if (h > 0) g.style.gridAutoRows = Math.max(46, (h - 10) / 2) + "px";
-    /* 浏览网格同理：行高按"正好放 2 行"算，避免第二行被裁半截（窗口多小都成立） */
-    var bg = $("#vlBrowseBody");
-    if (bg) {
-      var bh = bg.clientHeight;
-      if (bh > 0) bg.style.gridAutoRows = Math.max(118, (bh - 10) / 2) + "px";
-    }
-    }
-    drawHeat();
   }
-  window.addEventListener("resize", function () { heatOffKey = ""; layoutVl(); });
-  $("#vlRandom").addEventListener("click", function () { vlRandomMode = !vlRandomMode; renderCapsules(); });
-  $("#vlPresetToggle").addEventListener("click", function () { vlPlayingPreset = !vlPlayingPreset; renderCapsules(); });
+  $("#vlBoost").addEventListener("click", function () { presetCmd("boost"); });
+  $("#vlRandom").addEventListener("click", function () { presetCmd("random"); });
+  $("#vlPresetToggle").addEventListener("click", function () { presetCmd(DEV.preset.playing ? "stop" : "play"); });
 
   /* --- 预设网格（严格手机 PresetTile：两列、固定 4 个、不滚动） --- */
   function presetPoints(pr) {
@@ -2230,40 +2173,220 @@
     var id = card.getAttribute("data-preset");
     vlSelPreset = (vlSelPreset === id) ? null : id;
     renderPresetCards();
+    api("/api/preset", "POST", { action: "select", id: vlSelPreset }).then(function () { pollDev(); });
   });
 
-  /* --- 顶栏连接设备按钮（状态机：未连接 → 连接中(动画) → 已连接；实际通道 M2） --- */
-  function setDevState(state) {
-    vlDevState = state;
-    var btn = $("#devBtn"), sp = $("#devSpinner"), lb = $("#devLabel");
+  /* =====================================================================
+     设备通道（M2）：连接 BLE 玩具 / 快捷动作 / 预设播放。
+     状态一律以 /api/device/state 为准（2 秒轮询），按钮只发命令，不自己编状态。
+     ===================================================================== */
+  var DEV = { available: null, connected: false, connecting: false, name: "", info: {},
+              quick: { slow: false, orgasm: false, stop: false },
+              preset: { playing: false, selected: null, random: false, boost: false } };
+
+  function renderDev() {
+    var btn = $("#devBtn"), lb = $("#devLabel"), sp = $("#devSpinner");
+    if (!btn) return;
     btn.classList.remove("busy", "on");
     sp.hidden = true;
-    if (state === "connecting") {
-      btn.classList.add("busy");
-      btn.title = "正在扫描设备";
-      sp.hidden = false;
-      lb.textContent = "正在扫描";
-    } else if (state === "connected") {
-      btn.classList.add("on");
-      btn.title = "已连接，点击断开";
-      lb.textContent = "断开设备";
-    } else {
-      btn.title = "扫描并连接设备";
-      lb.textContent = "扫描并连接";
-    }
+    if (DEV.available === false) { lb.textContent = "无 BLE 依赖"; btn.title = "宿主缺少 bleak，需重新打包"; return; }
+    if (DEV.connecting) { btn.classList.add("busy"); sp.hidden = false; lb.textContent = "连接中"; return; }
+    if (DEV.connected) { btn.classList.add("on"); lb.textContent = "断开设备"; btn.title = (DEV.name || "设备") + " 已连接（点击断开）"; }
+    else { lb.textContent = "扫描并连接"; btn.title = "扫描并连接设备"; }
+    var q = DEV.quick || {};
+    $("#vqIdle").textContent = q.slow ? "停止缓动" : "待机缓动";
+    $("#vqIdle").classList.toggle("filled-green", !!q.slow);
+    $("#vqBurst").textContent = q.orgasm ? "停止爆发" : "一键爆发";
+    $("#vqBurst").classList.toggle("filled-red", !!q.orgasm);
+    $("#vqStop").textContent = q.stop ? "一键继续" : "一键急停";
+    $("#vqStop").classList.toggle("filled-blue", !!q.stop);
+    var p = DEV.preset || {};
+    $("#vlPresetToggle").textContent = p.playing ? "暂停预设" : "播放预设";
+    $("#vlPresetToggle").classList.toggle("filled-blue", !!p.playing);
+    $("#vlRandom").classList.toggle("filled-green", !!p.random);
+    $("#vlBoost").classList.toggle("filled-red", !!p.boost);
+    var psEl = $("#vlPresetSpeed");                       // 预设速度回填（宿主为准）
+    var psVal = Number(p.speed || 100);
+    if (psEl) { psEl.style.setProperty("--a", 0); psEl.style.setProperty("--b", (psVal - 1) / 499); psEl.setAttribute("data-val", psVal); }
+    if ($("#vlPresetSpeedVal")) $("#vlPresetSpeedVal").textContent = psVal;
+    renderSetDev();      // 设置页「设备」块跟着一起刷新
   }
-  $("#devBtn").addEventListener("click", function () {
-    if (vlDevState === "connecting") return;
-    if (vlDevState === "connected") { setDevState("disconnected"); toast("设备已断开", "", "ok"); return; }
-    setDevState("connecting");
-    // 实际 BLE 通道 M2 接入；当前模拟扫描 2s 后回未连接
-    setTimeout(function () {
-      if (vlDevState === "connecting") {
-        setDevState("disconnected");
-        toast("未发现设备", "BLE 设备通道将在 M2 接入", "warn");
-      }
-    }, 2000);
+  /* 预设速度滑轨（1..500，默认 100）——手机端 presetSpeed */
+  initSlider("vlPresetSpeed", false, function (lo, hi) {
+    var v = Math.max(1, Math.round(hi));
+    if ($("#vlPresetSpeedVal")) $("#vlPresetSpeedVal").textContent = v;
+    presetCmd("speed", { speed: v });
   });
+
+  /* ---- 设置页：设备与同步（M2）---- */
+  var SET_DEV = { script_sync: true, preset_speed: 100, a10_mode: null, oc_mode: false,
+                  orgasm: { max_speed: 500 }, slow: { idle_detect_seconds: 5, max_speed: 100 } };
+  function renderSetDev() {
+    var nameEl = $("#setDevName");
+    if (!nameEl) return;
+    var i = DEV.info || {};
+    nameEl.textContent = DEV.connected ? (DEV.name || "设备") : "未连接";
+    $("#setDevInfo").textContent = DEV.connected
+      ? ("硬件 v" + (i.hardware || "?") + " · 固件 v" + (i.software || "?") + " · 最高 " + (i.max_speed || "?") +
+         " Units/s · 限位 " + (i.min_pos || 0) + "-" + (i.max_pos || 100) + (i.motor_power >= 100 ? " · 狂暴中" : ""))
+      : (DEV.available === false ? "宿主缺少 BLE 依赖（需要重新打包）" : "支持 ServeU / VorzePiston（BLE），点右上角扫描");
+    $("#setDevConnect").textContent = DEV.connected ? "断开设备" : "扫描并连接";
+    var a10 = (DEV.a10_mode === null || DEV.a10_mode === undefined) ? null : Number(DEV.a10_mode);
+    Array.prototype.forEach.call($("#setA10Seg").querySelectorAll("button"), function (b) {
+      b.setAttribute("aria-selected", String(a10 !== null && Number(b.getAttribute("data-a10")) === a10));
+    });
+    var th = $("#setA10Thumb");
+    if (th) { th.style.transform = a10 === 1 ? "translateX(100%)" : "translateX(0)"; th.style.width = "50%"; }
+    var sy = DEV.sync || {};
+    $("#setSyncState").textContent = sy.active ? ("脚本同步中 · " + (sy.script || "")) : "脚本同步待命";
+    $("#setSyncSub").textContent = sy.active
+      ? ("已发 " + (sy.sent || 0) + " 帧 · 空闲跳过 " + (sy.skipped || 0))
+      : (DEV.connected ? "播放带脚本的视频会自动开始" : "未连接设备");
+  }
+  function saveDev(patch) {
+    api("/api/device/settings", "POST", patch).then(function (r) {
+      if (r && r.ok) { toast("已保存", "", "ok"); pollDev(); }
+      else toast("保存失败", (r && r.error) || "宿主未提供设备接口（需 1.0.57）", "err");
+    });
+  }
+  function loadSetDev() {
+    api("/api/settings").then(function (r) {
+      var d = (r && r.settings && r.settings.device) || {};
+      SET_DEV = Object.assign(SET_DEV, d);
+      if (d.orgasm) SET_DEV.orgasm = Object.assign({ max_speed: 500 }, d.orgasm);
+      if (d.slow) SET_DEV.slow = Object.assign({ idle_detect_seconds: 5, max_speed: 100 }, d.slow);
+      if ($("#setScriptSync")) $("#setScriptSync").checked = d.script_sync !== false;
+      if ($("#setSlowIdle")) $("#setSlowIdle").value = SET_DEV.slow.idle_detect_seconds;
+      if ($("#setSlowSpeed")) $("#setSlowSpeed").value = SET_DEV.slow.max_speed;
+      if ($("#setOrgasmSpeed")) $("#setOrgasmSpeed").value = SET_DEV.orgasm.max_speed;
+      if ($("#setOcMode")) $("#setOcMode").checked = !!d.oc_mode;
+      if ($("#setSyncDelay") && DEV.sync) $("#setSyncDelay").value = DEV.sync.delay_ms || 0;
+      if ($("#setScriptFolder") && r && r.settings) $("#setScriptFolder").value = r.settings.script_folder || "";
+    });
+  }
+  function bindSetDev() {
+    if (!$("#setDevConnect")) return;
+    $("#setDevConnect").addEventListener("click", function () { $("#devBtn").click(); });
+    $("#setGotoSync").addEventListener("click", function () {
+      var b = document.querySelector('button[data-page="sync"]') || document.querySelector('button[data-page="devices"]');
+      if (b) b.click();
+    });
+    Array.prototype.forEach.call($("#setA10Seg").querySelectorAll("button"), function (b) {
+      b.addEventListener("click", function () { saveDev({ a10_mode: Number(b.getAttribute("data-a10")) }); });
+    });
+    $("#setOcMode").addEventListener("change", function () { saveDev({ oc_mode: this.checked }); });
+    $("#setScriptSync").addEventListener("change", function () { saveDev({ script_sync: this.checked }); });
+    $("#setSlowIdle").addEventListener("change", function () { saveDev({ slow: { idle_detect_seconds: Number(this.value) } }); });
+    $("#setSlowSpeed").addEventListener("change", function () { saveDev({ slow: { max_speed: Number(this.value) } }); });
+    $("#setOrgasmSpeed").addEventListener("change", function () { saveDev({ orgasm: { max_speed: Number(this.value) } }); });
+    $("#setSyncDelay").addEventListener("change", function () {
+      api("/api/sync/delay", "POST", { ms: Number(this.value) }).then(function () { toast("已保存", "", "ok"); });
+    });
+    $("#setScriptFolderPick").addEventListener("click", function () {
+      var cur = $("#setScriptFolder").value || "";
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
+        window.pywebview.api.pick_folder(cur, true).then(function (r) {
+          var p = (r && (r.path || r.folder)) || (typeof r === "string" ? r : "");
+          if (p) { $("#setScriptFolder").value = p; api("/api/settings", "POST", { script_folder: p }); }
+        });
+      }
+    });
+    $("#setScriptFolder").addEventListener("change", function () {
+      api("/api/settings", "POST", { script_folder: this.value }).then(function () { toast("已保存", "", "ok"); });
+    });
+  }
+  bindSetDev();
+  loadSetDev();
+
+  /* ---- 脚本同步：播放进度 → 设备 ---- */
+  var SYNC = { on: false, last: 0, path: "" };
+  function syncEnabled() { return SET_DEV.script_sync !== false; }
+  function syncStart(path) {
+    if (!DEV.connected || !syncEnabled() || !path) return;
+    api("/api/sync/start", "POST", { path: path }).then(function (r) {
+      if (r && r.ok) { SYNC.on = true; SYNC.path = r.script || path; }
+      else if (r && r.error && !r.no_device) { SYNC.on = false; }
+    });
+  }
+  function syncStop() {
+    if (!SYNC.on) return;
+    SYNC.on = false;
+    api("/api/sync/stop", "POST", {});
+  }
+  function syncTick(t) {
+    if (!SYNC.on) return;
+    var now = Date.now();
+    if (now - SYNC.last < 180) return;
+    SYNC.last = now;
+    api("/api/sync/tick", "POST", { t: t });
+  }
+
+  function pollDev() {
+    api("/api/device/state").then(function (r) {
+      if (!r || !r.ok || !r.device) { DEV.available = false; renderDev(); return; }
+      var d = r.device;
+      DEV.available = d.available !== false;
+      DEV.connected = !!d.connected;
+      DEV.name = d.name || "";
+      DEV.info = d.info || {};
+      DEV.quick = d.quick || DEV.quick;
+      DEV.preset = d.preset || DEV.preset;
+      renderDev();
+    }).catch(function () { DEV.available = false; renderDev(); });
+  }
+  setInterval(pollDev, 2000);
+  pollDev();
+
+  $("#devBtn").addEventListener("click", function () {
+    if (DEV.connecting) return;
+    if (DEV.connected) {
+      api("/api/device/disconnect", "POST", {}).then(function (r) {
+        toast(r && r.ok ? "设备已断开" : "断开失败", "", r && r.ok ? "ok" : "err");
+        pollDev();
+      });
+      return;
+    }
+    DEV.connecting = true; renderDev();
+    toast("正在扫描设备", "BLE 扫描约 6 秒", "ok");
+    api("/api/device/scan", "POST", {}).then(function (r) {
+      DEV.connecting = false;
+      if (!r || !r.ok) { renderDev(); toast("扫描失败", (r && r.error) || "宿主未提供设备接口（需 1.0.57）", "err"); return; }
+      var hit = (r.devices || []).filter(function (d) { return d.supported; })[0];
+      if (!hit) { renderDev(); toast("未发现受支持的设备", "支持 ServeU / VorzePiston", "warn"); return; }
+      DEV.connecting = true; renderDev();
+      api("/api/device/connect", "POST", { address: hit.address }).then(function (c) {
+        DEV.connecting = false;
+        if (c && c.ok) {
+          var info = (c.state && c.state.info) || {};
+          toast("已连接 " + (hit.name || hit.address), info.hardware ? ("硬件 v" + info.hardware + " · 固件 v" + info.software + " · 最高 " + info.max_speed) : "", "ok");
+        } else {
+          toast("连接失败", (c && c.error) || "", "err");
+        }
+        pollDev();
+      });
+    });
+  });
+
+  /* --- 布局自适应：⏸ 保持正圆、预设/浏览网格"正好 2 行"（草图口径） --- */
+  function layoutVl() {
+    var row = $(".vl-btnrow"), b = $("#vlPause");
+    if (row && b) {
+      var s = Math.max(26, Math.min(row.clientHeight, row.clientWidth * 40 / 770));
+      b.style.width = s + "px"; b.style.height = s + "px";
+    }
+    var g = $("#vlPGrid");
+    if (g) {
+      var h = g.clientHeight;
+      if (h > 0) g.style.gridAutoRows = Math.max(46, (h - 10) / 2) + "px";
+    }
+    var bg = $("#vlBrowseBody");
+    if (bg) {
+      var bh = bg.clientHeight;
+      if (bh > 0) bg.style.gridAutoRows = Math.max(118, (bh - 10) / 2) + "px";
+    }
+    drawHeat();
+  }
+  window.addEventListener("resize", function () { heatOffKey = ""; layoutVl(); });
 
   /* --- 标题栏最大化 --- */
   /* 最大化/还原。
@@ -2297,8 +2420,7 @@
   vlInitPlayer();
   browse("");
   renderVlTabCard();
-  renderQuick();
-  renderCapsules();
+  renderDev();      // 设备/快捷动作/预设状态由 /api/device/state 轮询驱动
   renderPresetCards();
   // hash 深链（自检截图用）：#library / #library/browse=<路径> / #library/play=<路径>
   window.addEventListener("hashchange", function () { vlApplyHash(); });
@@ -2312,9 +2434,8 @@
     } else if (h.indexOf("#library/play=") === 0) {
       showPage("library");
       var vp = h.slice("#library/play=".length);
-      api("/api/player/open", "POST", { path: vp }).then(function (r) {
-        if (r && r.ok) showPlayView(vp);
-      });
+      /* 深链直接进内置播放器（原来这里会拉起外部 mpv） */
+      openVideo(vp, String(vp).split(/[\\/]/).pop(), [], 0);
     } else if (h === "#library") {
       showPage("library");
     }

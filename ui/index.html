@@ -417,8 +417,7 @@
                 <button class="vl-vback" id="vlVBack"><svg class="ic"><use href="#i-chevron-left"/></svg><span>返回媒体库</span></button>
                 <div class="vl-voff" id="vlVOff" hidden>
                   <div class="vl-voff-t">内置播放器打不开这个文件</div>
-                  <div class="vl-voff-d" id="vlVOffD">可能是编码不受支持（如 HEVC/MKV）</div>
-                  <button class="btn ghost" id="vlUseMpv"><svg class="ic"><use href="#i-arrow-up-right"/></svg><span>用外部播放器打开</span></button>
+                  <div class="vl-voff-d" id="vlVOffD">内置播放器打不开这个文件：可能是编码不受支持（HEVC/10bit），或 DLNA 服务没在跑</div>
                 </div>
                 <div class="vl-vchrome" id="vlVChrome">
                   <button class="vl-cbtn" id="vlPrev" title="上一个视频"><svg class="ic"><use href="#i-skip-back"/></svg></button>
@@ -472,7 +471,14 @@
               <button id="vqStop">一键急停</button>
             </div>
             <div class="steel-card vl-presets">
-              <div class="vl-pgrid" id="vlPGrid"></div>
+                      <div class="vl-prespeed">
+                  <span class="lbl">预设速度</span>
+                  <div class="vl-slider" id="vlPresetSpeed" data-single data-min="1" data-max="500" data-val="100">
+                    <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
+                  </div>
+                  <span class="val" id="vlPresetSpeedVal">100</span>
+                </div>
+        <div class="vl-pgrid" id="vlPGrid"></div>
             </div>
           </div>
 
@@ -776,6 +782,64 @@
             </div>
             <div class="sub">本地磁盘目录会生成缩略图海报墙；网络盘只列文件名（不逐文件探测）</div>
             <div id="libRootList"></div>
+          </div>
+
+          <div class="panel card">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow">Device</div>
+                <h2>设备</h2>
+              </div>
+              <button class="btn ghost" id="setDevConnect">扫描并连接</button>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name" id="setDevName">未连接</div><div class="sub" id="setDevInfo">支持 ServeU / VorzePiston（BLE）</div></div>
+            </div>
+            <label class="field top-3">
+              <span>伪装设备（A10 模式）</span>
+              <div class="seg" id="setA10Seg">
+                <span class="seg-thumb" id="setA10Thumb"></span>
+                <button data-a10="0">ServeU</button>
+                <button data-a10="1">VorzePiston</button>
+              </div>
+            </label>
+            <div class="row flush">
+              <div class="grow"><div class="name">狂暴模式</div><div class="sub">扭矩约提升 30%，动力更强；行程/限速设置不当会明显增加受伤风险，也可能加快设备老化</div></div>
+              <label class="switch"><input type="checkbox" id="setOcMode"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <label class="field top-3"><span>待机缓动：空闲触发（秒）</span>
+              <input class="input num" id="setSlowIdle" type="number" min="1" max="120" step="1" value="5"></label>
+            <label class="field top-3"><span>待机缓动速度上限（Units/s）</span>
+              <input class="input num" id="setSlowSpeed" type="number" min="1" max="500" step="10" value="100"></label>
+            <label class="field top-3"><span>一键爆发速度上限（Units/s）</span>
+              <input class="input num" id="setOrgasmSpeed" type="number" min="1" max="500" step="10" value="500"></label>
+          </div>
+
+          <div class="panel card">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow">Script &amp; Sync</div>
+                <h2>脚本与同步</h2>
+              </div>
+              <button class="btn ghost" id="setGotoSync">打开设备同步</button>
+            </div>
+            <label class="field top-3">
+              <span>脚本文件夹</span>
+              <div class="row flush gap-2">
+                <input class="input" id="setScriptFolder" placeholder="例如 E:\scripts">
+                <button class="btn ghost" id="setScriptFolderPick">选择</button>
+              </div>
+            </label>
+            <div class="sub">设备同步的「本地脚本目录」与这里的脚本文件夹是同一个设置</div>
+            <div class="row flush">
+              <div class="grow"><div class="name">播放视频时同步驱动设备</div><div class="sub">用配套 funscript 驱动已连接设备；一键急停或设备断开时自动让路</div></div>
+              <label class="switch"><input type="checkbox" id="setScriptSync"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <label class="field top-3"><span>同步延迟补偿（ms）</span>
+              <input class="input num" id="setSyncDelay" type="number" min="-2000" max="2000" step="10" value="0"></label>
+            <div class="row flush">
+              <div class="grow"><div class="name" id="setSyncState">脚本同步待命</div><div class="sub" id="setSyncSub">未连接设备</div></div>
+            </div>
           </div>
 
           <div class="panel card">
