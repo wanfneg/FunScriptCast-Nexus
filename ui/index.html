@@ -732,229 +732,227 @@ try {
 
         <div class="setcols">
           <div class="setcol">
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Startup</div>
-                <h2>启动</h2>
-              </div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">启动应用时自动开启 DLNA</div></div>
-              <label class="switch"><input type="checkbox" id="setDlnaAuto"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">启动时自动开启字幕服务</div></div>
-              <label class="switch"><input type="checkbox" id="setSubAuto"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">点击关闭时最小化到托盘</div><div class="sub">关闭后从托盘图标恢复</div></div>
-              <label class="switch"><input type="checkbox" id="setCloseTray"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">启动时直接隐藏到托盘</div><div class="sub">只跑服务，不弹出主窗口</div></div>
-              <label class="switch"><input type="checkbox" id="setStartMin"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">开机自动启动</div><div class="sub">随 Windows 登录启动，建议配合隐藏到托盘</div></div>
-              <label class="switch"><input type="checkbox" id="setAutoStart"><span class="track"></span><span class="knob"></span></label>
-            </div>
-          </div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">Startup</div>
+                <h2>启动</h2>
+              </div>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">启动应用时自动开启 DLNA</div></div>
+              <label class="switch"><input type="checkbox" id="setDlnaAuto"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">启动时自动开启字幕服务</div></div>
+              <label class="switch"><input type="checkbox" id="setSubAuto"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">点击关闭时最小化到托盘</div><div class="sub">关闭后从托盘图标恢复</div></div>
+              <label class="switch"><input type="checkbox" id="setCloseTray"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">启动时直接隐藏到托盘</div><div class="sub">只跑服务，不弹出主窗口</div></div>
+              <label class="switch"><input type="checkbox" id="setStartMin"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">开机自动启动</div><div class="sub">随 Windows 登录启动，建议配合隐藏到托盘</div></div>
+              <label class="switch"><input type="checkbox" id="setAutoStart"><span class="track"></span><span class="knob"></span></label>
+            </div>
           </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Device</div>
-                <h2>设备与同步</h2>
-              </div>
-              <div class="spacer"><button class="btn ghost" id="setDevConnect">扫描并连接</button></div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name" id="setDevName">未连接设备</div>
-                <div class="sub" id="setDevInfo">硬件版本：— · 固件版本：— · 设备最大速度：—</div></div>
-              <button class="btn ghost" id="setDevRefresh">刷新</button>
-            </div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">Device</div>
+                <h2>设备与同步</h2>
+              </div>
+              <div class="spacer"><button class="btn ghost" id="setDevConnect">扫描并连接</button></div>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name" id="setDevName">未连接设备</div>
+                <div class="sub" id="setDevInfo">硬件版本：— · 固件版本：— · 设备最大速度：—</div></div>
+              <button class="btn ghost" id="setDevRefresh">刷新</button>
+            </div>
           </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Idle &amp; Skip</div>
-                <h2>缓动与跳过</h2>
-              </div>
-            </div>
-            <label class="field"><span>待机缓动 · 空闲判定秒数</span>
-              <input class="input num" id="setSlowIdle" type="number" min="1" max="600" step="1" value="5"></label>
-            <div class="sub">设备连续无动作达到该秒数后开始轻柔往返</div>
-            <div class="row flush top-3">
-              <div class="grow"><div class="name">跳过无动作部分</div></div>
-              <label class="switch"><input type="checkbox" id="setSkipIdle"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <label class="field"><span>无动作判定时长（秒）</span>
-              <input class="input num" id="setIdleThreshold" type="number" min="5" max="3600" step="5" value="60"></label>
-            <div class="sub">脚本的连续无动作段达到此时长跳过该段</div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">Idle &amp; Skip</div>
+                <h2>缓动与跳过</h2>
+              </div>
+            </div>
+            <label class="field"><span>待机缓动 · 空闲判定秒数</span>
+              <input class="input num" id="setSlowIdle" type="number" min="1" max="600" step="1" value="5"></label>
+            <div class="sub">设备连续无动作达到该秒数后开始轻柔往返</div>
+            <div class="row flush top-3">
+              <div class="grow"><div class="name">跳过无动作部分</div></div>
+              <label class="switch"><input type="checkbox" id="setSkipIdle"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <label class="field"><span>无动作判定时长（秒）</span>
+              <input class="input num" id="setIdleThreshold" type="number" min="5" max="3600" step="5" value="60"></label>
+            <div class="sub">脚本的连续无动作段达到此时长跳过该段</div>
           </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Manual</div>
-                <h2>手动控制位置</h2>
-              </div>
-              <div class="spacer"><button class="btn primary" id="setManualMove">移动</button></div>
-            </div>
-            <label class="field">
-              <span>目标位置 <b id="setManualVal">50%</b></span>
-              <div class="vl-slider" id="setManualPos" data-single data-min="0" data-max="100" data-val="50">
-                <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
-              </div></label>
-            <div class="sub">拖到位置后点「移动」，设备立即过去</div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">Manual</div>
+                <h2>手动控制位置</h2>
+              </div>
+              <div class="spacer"><button class="btn primary" id="setManualMove">移动</button></div>
+            </div>
+            <label class="field">
+              <span>目标位置 <b id="setManualVal">50%</b></span>
+              <div class="vl-slider" id="setManualPos" data-single data-min="0" data-max="100" data-val="50">
+                <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
+              </div></label>
+            <div class="sub">拖到位置后点「移动」，设备立即过去</div>
           </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Delay</div>
-                <h2>延迟调整</h2>
-              </div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name" id="setDelayVal">0 ms</div><div class="sub">负值提前，正值滞后</div></div>
-              <div class="row gap-2">
-                <button class="btn ghost" data-delay="-100">-100</button>
-                <button class="btn ghost" data-delay="-10">-10</button>
-                <button class="btn ghost" data-delay="10">+10</button>
-                <button class="btn ghost" data-delay="100">+100</button>
-              </div>
-            </div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">Delay</div>
+                <h2>延迟调整</h2>
+              </div>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name" id="setDelayVal">0 ms</div><div class="sub">负值提前，正值滞后</div></div>
+              <div class="row gap-2">
+                <button class="btn ghost" data-delay="-100">-100</button>
+                <button class="btn ghost" data-delay="-10">-10</button>
+                <button class="btn ghost" data-delay="10">+10</button>
+                <button class="btn ghost" data-delay="100">+100</button>
+              </div>
+            </div>
           </section>
           </div>
 
           <div class="setcol">
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Library</div>
-                <h2>媒体库目录</h2>
-              </div>
-              <div class="spacer"><button class="btn ghost" id="libRootAdd">添加目录</button></div>
-            </div>
-            <div class="sub">本地磁盘目录会生成缩略图海报墙；网络盘只列文件名（不逐文件探测）</div>
-            <div id="libRootList"></div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">Library</div>
+                <h2>媒体库目录</h2>
+              </div>
+              <div class="spacer"><button class="btn ghost" id="libRootAdd">添加目录</button></div>
+            </div>
+            <div class="sub">本地磁盘目录会生成缩略图海报墙；网络盘只列文件名（不逐文件探测）</div>
+            <div id="libRootList"></div>
           </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Advanced</div>
-                <h2>设备高级设置</h2>
-              </div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">伪装设备（VorzePiston 模式）</div>
-                <div class="sub">同款 A10 硬件换一整套 GATT 档案（UUID + 模式）</div></div>
-              <label class="switch"><input type="checkbox" id="setA10"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">反转方向</div></div>
-              <label class="switch"><input type="checkbox" id="setReversed"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">电机狂暴模式</div>
-                <div class="sub">扭矩约提升 30%；行程/限速设置不当会明显增加受伤风险，也可能加快设备老化</div></div>
-              <label class="switch"><input type="checkbox" id="setOcMode"><span class="track"></span><span class="knob"></span></label>
-            </div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">Advanced</div>
+                <h2>设备高级设置</h2>
+              </div>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">伪装设备（VorzePiston 模式）</div>
+                <div class="sub">同款 A10 硬件换一整套 GATT 档案（UUID + 模式）</div></div>
+              <label class="switch"><input type="checkbox" id="setA10"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">反转方向</div></div>
+              <label class="switch"><input type="checkbox" id="setReversed"><span class="track"></span><span class="knob"></span></label>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">电机狂暴模式</div>
+                <div class="sub">扭矩约提升 30%；行程/限速设置不当会明显增加受伤风险，也可能加快设备老化</div></div>
+              <label class="switch"><input type="checkbox" id="setOcMode"><span class="track"></span><span class="knob"></span></label>
+            </div>
           </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Script &amp; Sync</div>
-                <h2>脚本与同步</h2>
-              </div>
-              <div class="spacer"><button class="btn ghost" id="setGotoSync">打开设备同步</button></div>
-            </div>
-            <label class="field">
-              <span>脚本文件夹</span>
-              <div class="row flush gap-2">
-                <input class="input" id="setScriptFolder" placeholder="例如 E:\scripts">
-                <button class="btn ghost" id="setScriptFolderPick">选择</button>
-              </div>
-            </label>
-            <div class="sub">设备同步的「本地脚本目录」与这里的脚本文件夹是同一个设置</div>
-            <div class="row flush">
-              <div class="grow"><div class="name" id="setSyncState">脚本同步待命</div><div class="sub" id="setSyncSub">未连接设备</div></div>
-            </div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">Script &amp; Sync</div>
+                <h2>脚本与同步</h2>
+              </div>
+              <div class="spacer"><button class="btn ghost" id="setGotoSync">打开设备同步</button></div>
+            </div>
+            <label class="field">
+              <span>脚本文件夹</span>
+              <div class="row flush gap-2">
+                <input class="input" id="setScriptFolder" placeholder="例如 E:\scripts">
+                <button class="btn ghost" id="setScriptFolderPick">选择</button>
+              </div>
+            </label>
+            <div class="sub">设备同步的「本地脚本目录」与这里的脚本文件夹是同一个设置</div>
+            <div class="row flush">
+              <div class="grow"><div class="name" id="setSyncState">脚本同步待命</div><div class="sub" id="setSyncSub">未连接设备</div></div>
+            </div>
           </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">AI Subtitle</div>
-                <h2>AI 字幕</h2>
-              </div>
-            </div>
-            <label class="field">
-              <span>空闲回收显存</span>
-              <select class="input" id="subIdleRelease">
-                <option value="0.5">30 秒</option>
-                <option value="1">1 分钟</option>
-                <option value="2">2 分钟</option>
-                <option value="5">5 分钟</option>
-                <option value="15">15 分钟</option>
-                <option value="0">永不</option>
-              </select>
-            </label>
-            <div class="sub">字幕服务空闲这段时间后自动退出并释放显存，下次使用自动再启动；头显暂停播放也算空闲，超时后继续播放会重新等待模型加载</div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">AI Subtitle</div>
+                <h2>AI 字幕</h2>
+              </div>
+            </div>
+            <label class="field">
+              <span>空闲回收显存</span>
+              <select class="input" id="subIdleRelease">
+                <option value="0.5">30 秒</option>
+                <option value="1">1 分钟</option>
+                <option value="2">2 分钟</option>
+                <option value="5">5 分钟</option>
+                <option value="15">15 分钟</option>
+                <option value="0">永不</option>
+              </select>
+            </label>
+            <div class="sub">字幕服务空闲这段时间后自动退出并释放显存，下次使用自动再启动；头显暂停播放也算空闲，超时后继续播放会重新等待模型加载</div>
           </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Update</div>
-                <h2>更新</h2>
-              </div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">当前版本</div><div class="sub" id="updCurrent">—</div></div>
-              <button class="btn ghost" id="chkUpdate">检查更新</button>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name" id="updTitle">尚未检查</div><div class="sub" id="updDesc">应用启动时会自动检查一次</div></div>
-              <button class="btn primary" id="updAction" hidden>下载更新</button>
-            </div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">Update</div>
+                <h2>更新</h2>
+              </div>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name">当前版本</div><div class="sub" id="updCurrent">—</div></div>
+              <button class="btn ghost" id="chkUpdate">检查更新</button>
+            </div>
+            <div class="row flush">
+              <div class="grow"><div class="name" id="updTitle">尚未检查</div><div class="sub" id="updDesc">应用启动时会自动检查一次</div></div>
+              <button class="btn primary" id="updAction" hidden>下载更新</button>
+            </div>
           </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">About</div>
-                <h2>关于</h2>
-              </div>
-            </div>
-            <div class="about-grid">
-              <div class="row flush">
-                <svg class="ic muted"><use href="#i-network"/></svg>
-                <div class="grow"><div class="name">本机地址</div><div class="sub" id="aboutIp">—</div></div>
-                <button class="icon-btn" id="copyIp" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
-              </div>
-              <div class="row flush">
-                <svg class="ic muted"><use href="#i-server"/></svg>
-                <div class="grow"><div class="name">宿主端口</div><div class="sub mono" id="aboutPort">—</div></div>
-              </div>
-              <div class="row flush">
-                <svg class="ic muted"><use href="#i-monitor"/></svg>
-                <div class="grow"><div class="name">头显接口</div><div class="sub mono" id="aboutLanApi">—</div></div>
-                <button class="icon-btn" id="copyLanApi" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
-              </div>
-            </div>
-            <div class="top-4">
-              <button class="btn danger" id="quitApp"><svg class="ic"><use href="#i-power"/></svg><span>退出应用</span></button>
-            </div>
+          <section class="setsec">
+            <div class="set-head">
+              <div>
+                <div class="eyebrow">About</div>
+                <h2>关于</h2>
+              </div>
+            </div>
+            <div class="about-grid">
+              <div class="row flush">
+                <svg class="ic muted"><use href="#i-network"/></svg>
+                <div class="grow"><div class="name">本机地址</div><div class="sub" id="aboutIp">—</div></div>
+                <button class="icon-btn" id="copyIp" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
+              </div>
+              <div class="row flush">
+                <svg class="ic muted"><use href="#i-server"/></svg>
+                <div class="grow"><div class="name">宿主端口</div><div class="sub mono" id="aboutPort">—</div></div>
+              </div>
+              <div class="row flush">
+                <svg class="ic muted"><use href="#i-monitor"/></svg>
+                <div class="grow"><div class="name">头显接口</div><div class="sub mono" id="aboutLanApi">—</div></div>
+                <button class="icon-btn" id="copyLanApi" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
+              </div>
+            </div>
+            <div class="top-4">
+              <button class="btn danger" id="quitApp"><svg class="ic"><use href="#i-power"/></svg><span>退出应用</span></button>
+            </div>
           </section>
           </div>
-        </div>
         </div>
       </section>
 
