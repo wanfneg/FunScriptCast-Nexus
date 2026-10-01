@@ -25,18 +25,19 @@ _imported = False
 
 
 def ensure_dll() -> None:
-    """把 vendor\\mpv 加进 DLL 搜索路径（必须在 import mpv 之前调用一次）。"""
+    """把 vendor\\mpv 加进 DLL 搜索路径（必须在 import mpv 之前调用一次）。
+    DLL 不在时不置 _imported：装好/补回 DLL 后下次调用还能生效（旧版一次失败永不重试）。"""
     global _imported
     if _imported:
         return
-    d = str(DLL_DIR)
     if (DLL_DIR / "libmpv-2.dll").is_file():
+        d = str(DLL_DIR)
         try:
             os.add_dll_directory(d)
         except Exception:
             pass
         os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
-    _imported = True
+        _imported = True
 
 
 class MpvPlayer:

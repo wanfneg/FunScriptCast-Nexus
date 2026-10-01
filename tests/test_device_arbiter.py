@@ -300,6 +300,24 @@ class TestBatch2(Base):
         self.assertGreaterEqual(len(ch.calls), 3, "缓动速度滑轨没生效（仍是 1s/拍？）")
 
 
+class TestBatch3(unittest.TestCase):
+    def test_f24_clamp_video_link(self):
+        """range_min>range_max 曾让全部动作速度静默归零（二次确认 #1）。"""
+        try:
+            import host_server as hs
+        except Exception as e:                      # 完整宿主环境之外的机器上跳过
+            self.skipTest(f"host_server 需要完整运行环境：{e}")
+        out = hs._clamp_video_link({"range_min": 90, "range_max": 10, "max_speed": 99999})
+        self.assertEqual(out["range_min"], 10)      # 顺序被纠正
+        self.assertEqual(out["range_max"], 90)
+        self.assertEqual(out["max_speed"], 500)     # 夹紧到 0-500
+        out2 = hs._clamp_video_link({"idle_speed": "abc", "burst_min": 120})
+        self.assertNotIn("idle_speed", out2)        # 乱值删键回退默认，不留雷
+        self.assertEqual(out2["burst_min"], 100)
+        out3 = hs._clamp_video_link({"theme": "x"})   # 无关键原样保留
+        self.assertEqual(out3, {"theme": "x"})
+
+
 from contextlib import suppress  # noqa: E402
 
 if __name__ == "__main__":

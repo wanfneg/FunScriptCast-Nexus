@@ -523,25 +523,34 @@ def missing_roots(roots) -> list:
 def _clamp_video_link(vl: dict) -> dict:
     """联动页数值夹紧（二次确认 #1）。此前零校验：range_min=90 / range_max=10 存得进去，
     span=-80 → _scale_speed 出负值 → move_to 里 sp=max(0,…)=0，**全部动作速度静默归零**。
-    非法输入夹紧而不是 500 报错（与现有保存流一致）。"""
-    def _num(key, lo, hi, default):
-        try:
-            x = float(vl.get(key, default))
-        except (TypeError, ValueError):
-            x = float(default)
-        return max(float(lo), min(float(hi), x))
-
+    只动请求里出现的键；非法值删键回退代码默认，不注入新键。"""
     out = dict(vl)
-    for key in ("range_min", "idle_min", "burst_min"):
-        out[key] = _num(key, 0, 100, 0)
-    for key in ("range_max", "idle_max", "burst_max"):
-        out[key] = _num(key, 0, 100, 100)
+
+    def _num(x, lo, hi):
+        try:
+            return max(float(lo), min(float(hi), float(x)))
+        except (TypeError, ValueError):
+            return None
+
+    for key in ("range_min", "range_max", "idle_min", "idle_max", "burst_min", "burst_max"):
+        if key in out:
+            v2 = _num(out[key], 0, 100)
+            if v2 is None:
+                out.pop(key)             # 乱值宁可不存（读侧有默认），也不留颗雷
+            else:
+                out[key] = v2
     for lo_k, hi_k in (("range_min", "range_max"), ("idle_min", "idle_max"),
                        ("burst_min", "burst_max")):
-        if out[lo_k] > out[hi_k]:
-            out[lo_k], out[hi_k] = out[hi_k], out[lo_k]
+        lo, hi = out.get(lo_k), out.get(hi_k)
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and lo > hi:
+            out[lo_k], out[hi_k] = hi, lo
     for key in ("max_speed", "idle_speed", "burst_speed"):
-        out[key] = int(_num(key, 0, 500, 500))
+        if key in out:
+            v2 = _num(out[key], 0, 500)
+            if v2 is None:
+                out.pop(key)
+            else:
+                out[key] = int(v2)
     return out
 
 
@@ -3981,19 +3990,24 @@ def _get_device() -> dict:
         return _DEV["obj"]
 
 
+_PLAYER_LOCK = threading.Lock()
+
+
 def _get_player():
     global PLAYER
     if PLAYER is None:
-        sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
-        from mpv_player import MpvPlayer   # noqa: PLC0415
+        with _PLAYER_LOCK:               # 双检锁：并发 /api/player/open 只建一份实例
+            if PLAYER is None:
+                sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
+                from mpv_player import MpvPlayer   # noqa: PLC0415
 
-        def _on_progress(path, pos, dur):
-            try:
-                LIB.set_progress(path, pos, dur, time.time())
-            except Exception:
-                pass
+                def _on_progress(path, pos, dur):
+                    try:
+                        LIB.set_progress(path, pos, dur, time.time())
+                    except Exception:
+                        pass
 
-        PLAYER = MpvPlayer(on_progress=_on_progress)
+                PLAYER = MpvPlayer(on_progress=_on_progress)
     return PLAYER
 
 

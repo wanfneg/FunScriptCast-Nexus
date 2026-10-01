@@ -65,10 +65,16 @@ class Library:
 
     # ------------------------------------------------------------ 索引
     def _load_index(self) -> dict:
+        # 内存缓存：browse 每个视频卡都查一次缩略图，旧版每次都整份读盘解析 JSON
+        # （100 个视频 = 100 次全量解析）；写路径都经 _save_index 回填缓存，
+        # _scan 与 set_progress 因此共享同一份 dict，扫描中途的进度更新不再被覆盖。
+        if getattr(self, "_idx_cache", None) is not None:
+            return self._idx_cache
         try:
-            return json.loads(self.index_file.read_text(encoding="utf-8"))
+            self._idx_cache = json.loads(self.index_file.read_text(encoding="utf-8"))
         except Exception:
-            return {}
+            self._idx_cache = {}
+        return self._idx_cache
 
     def _save_index(self, idx: dict) -> None:
         try:
@@ -76,6 +82,7 @@ class Library:
             tmp.write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
             import os
             os.replace(tmp, self.index_file)
+            self._idx_cache = idx
         except Exception:
             pass
 

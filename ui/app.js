@@ -1428,9 +1428,12 @@
     vlLastBrowse = { videos: vids };   // 内置播放器"上一个/下一个"用
     if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
   }
+  var vlBrowseGen = 0;                  // 异步代际：连点两个目录，慢的旧响应不得覆盖新结果
   function browse(path) {
     vlBrowsePath = path || "";
+    var gen = ++vlBrowseGen;
     api("/api/library/browse?path=" + encodeURIComponent(vlBrowsePath)).then(function (r) {
+      if (gen !== vlBrowseGen) return;
       if (r && r.ok) renderBrowse(r);
       else toast("打开失败", (r && r.error) || "", "err");
     });
@@ -1627,11 +1630,23 @@
       if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
     });
 
-    /* 进度/音量滑轨：复用页面的自研滑轨（--a/--b 驱动，几何一致） */
-    initSlider("vlVSeek", false, function (lo, hi) {
+    /* 进度/音量滑轨：复用页面的自研滑轨（--a/--b 驱动，几何一致）。
+       seek 节流（手机端 SEEK_THROTTLE_MS 同义）：拖动中每 250ms 才真 seek 一次，
+       松手立即落到最终位置 —— 否则每帧都 currentTime 会把解码器拖卡 */
+    var vlSeekLast = 0, vlSeekTimer = 0;
+    initSlider("vlVSeek", false, function (lo, hi, live) {
       var d = isFinite(v.duration) ? v.duration : 0;
-      if (d > 0) v.currentTime = Math.max(0, Math.min(d, hi * d));
-      vlTouch();
+      if (d <= 0) return;
+      var doSeek = function () {
+        v.currentTime = Math.max(0, Math.min(d, hi * d));
+        vlTouch();
+      };
+      if (!live) { clearTimeout(vlSeekTimer); vlSeekTimer = 0; doSeek(); return; }
+      var now = Date.now();
+      if (now - vlSeekLast >= 250) { vlSeekLast = now; doSeek(); }
+      else if (!vlSeekTimer) {
+        vlSeekTimer = setTimeout(function () { vlSeekTimer = 0; vlSeekLast = Date.now(); doSeek(); }, 250);
+      }
     });
     initSlider("vlVVol", false, function (lo, hi) {
       v.volume = Math.max(0, Math.min(1, hi / 100));
@@ -2401,9 +2416,12 @@
   /* ---- 脚本同步：播放进度 → 设备 ---- */
   /* 「播放视频时同步驱动设备」开关已删（手机端没有此项，视频在播即同步） */
   var SYNC = { on: false, last: 0, path: "" };
+  var syncStartGen = 0;
   function syncStart(path) {
     if (!DEV.connected || !path) return;
+    var gen = ++syncStartGen;       // 代际丢弃：连开两个视频，慢的旧 start 响应不得回退状态
     api("/api/sync/start", "POST", { path: path }).then(function (r) {
+      if (gen !== syncStartGen) return;
       if (r && r.ok) { SYNC.on = true; SYNC.path = r.script || path; }
       else if (r && r.error && !r.no_device) { SYNC.on = false; }
     });
