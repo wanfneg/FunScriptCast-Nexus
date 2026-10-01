@@ -2020,6 +2020,48 @@
   $("#vqStop").addEventListener("click", function () { quickCmd("stop", !DEV.quick.stop); });
 
   /* --- 右上三胶囊（严格手机三圆钮语义：BOOST 红 / 播放蓝 / RANDOM 绿） --- */
+  /* =====================================================================
+     预设类按钮的两段式确认（用户指定）：
+     当前处于"脚本联动模式"（内置播放器在播 + 脚本同步已开启）时，点这三个按钮
+     不直接执行，而是把按钮变成**红色告警态 + 文案「将退出联动，确定请再点击」**，
+     再点一次才执行（并停止脚本同步，与手机端"进预设前清空脚本"同一语义）。
+     ===================================================================== */
+  var VL_ARM_TEXT = "将退出联动，确定请再点击";
+  var vlArmed = null;          // 已进入告警态的按钮 id
+  var vlArmTimer = 0;
+  function vlInScriptLink() {
+    /* 联动模式 = 脚本同步正在跑（宿主已接受 /api/sync/start）*/
+    return !!(typeof SYNC !== "undefined" && SYNC.on);
+  }
+  function vlDisarm(reset) {
+    clearTimeout(vlArmTimer);
+    if (!vlArmed) return;
+    var btn = document.getElementById(vlArmed.id);
+    if (btn) {
+      btn.classList.remove("arm");
+      btn.textContent = vlArmed.text;
+    }
+    vlArmed = null;
+  }
+  function vlArm(btn) {
+    vlDisarm();
+    vlArmed = { id: btn.id, text: btn.textContent };
+    btn.classList.add("arm");
+    btn.textContent = VL_ARM_TEXT;
+    vlArmTimer = setTimeout(function () { vlDisarm(); }, 5000);   // 5 秒没再点就撤销
+  }
+  /** 预设类按钮统一入口：联动模式下第一下变红，第二下执行。 */
+  function vlPresetButton(btn, run) {
+    if (vlArmed && vlArmed.id === btn.id) {
+      vlDisarm();
+      syncStop();                     // 退出联动：停脚本同步（手机端进预设前清空脚本）
+      run();
+      return;
+    }
+    if (vlInScriptLink()) { vlArm(btn); return; }
+    vlDisarm();
+    run();
+  }
   function presetCmd(action, extra) {
     var body = Object.assign({ action: action }, extra || {});
     api("/api/preset", "POST", body).then(function (r) {
@@ -2027,10 +2069,10 @@
       pollDev();
     });
   }
-  $("#vlBoost").addEventListener("click", function () { presetCmd("boost"); });
-  $("#vlRandom").addEventListener("click", function () { presetCmd("random"); });
+  $("#vlBoost").addEventListener("click", function () { vlPresetButton(this, function () { presetCmd("boost"); }); });
+  $("#vlRandom").addEventListener("click", function () { vlPresetButton(this, function () { presetCmd("random"); }); });
   /* 中间按钮 = 手机端 PresetPlayer.togglePlay()：一个按钮在播就停、没播就开始 */
-  $("#vlPresetToggle").addEventListener("click", function () { presetCmd("toggle_play"); });
+  $("#vlPresetToggle").addEventListener("click", function () { vlPresetButton(this, function () { presetCmd("toggle_play"); }); });
 
   /* --- 预设网格（严格手机 PresetTile：两列、固定 4 个、不滚动） --- */
   function presetPoints(pr) {

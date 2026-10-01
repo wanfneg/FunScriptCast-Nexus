@@ -980,3 +980,14 @@ html[data-motion="off"] .dev-spinner, html[data-motion="reduced"] .dev-spinner{
   animation:vl-spin .9s linear infinite !important;
 }
 .dev-spinner{ animation:vl-spin .9s linear infinite; }
+
+/* 联动模式下点预设类按钮：先变成"红色告警态"，再点一次才执行（用户指定的交互）*/
+.vl-capsule.arm{
+  background:var(--danger,#C0392B) !important;
+  border-color:var(--danger,#C0392B) !important;
+  color:#fff !important;
+  width:auto;
+  padding-left:14px; padding-right:14px;
+  min-width:0;
+  transition:background var(--dur-fast), color var(--dur-fast);
+}
