@@ -47,6 +47,13 @@ class QuickMoves:
         self._self_moving = False
         self.ch.on_move = self._on_move
 
+    # ---- 线程安全地往事件循环里塞协程 ----
+    # 这些 start_*/stop_* 都是 HTTP 线程调用的；asyncio 的 loop.create_task()
+    # **不能跨线程用**（会静默失败/污染循环）—— 之前"待机缓动""预设播放"点了没反应
+    # 就是这个原因：任务压根没被创建。统一走 call_soon_threadsafe。
+    def _spawn(self, coro):
+        self.loop.call_soon_threadsafe(lambda: self.loop.create_task(coro))
+
     # ---- 外部动作记账（缓动让路） ----
     def _on_move(self, percent, speed) -> None:
         if self._self_moving:
@@ -77,7 +84,8 @@ class QuickMoves:
         if self.is_orgasm:
             return self.state()
         self.is_orgasm = True
-        self._orgasm_task = self.loop.create_task(self._orgasm_loop())
+        self._orgasm_task = True          # 占位：真实任务在线程安全投递后创建
+        self._spawn(self._orgasm_loop())
         return self.state()
 
     def stop_orgasm(self) -> dict:
@@ -112,7 +120,8 @@ class QuickMoves:
             return self.state()
         self.is_slow = True
         self._slow_index = 0
-        self._idle_task = self.loop.create_task(self._idle_watch())
+        self._idle_task = True
+        self._spawn(self._idle_watch())
         return self.state()
 
     def stop_slow(self, reason: str = "") -> dict:
@@ -135,7 +144,8 @@ class QuickMoves:
                 if not self.ch.state.allow_move:
                     continue
                 if time.time() - self._last_external >= secs and self._slow_task is None:
-                    self._slow_task = self.loop.create_task(self._slow_loop())
+                    self._slow_task = True
+                    self.loop.create_task(self._slow_loop())   # 已在循环线程内，可直接建
         except asyncio.CancelledError:
             pass
 

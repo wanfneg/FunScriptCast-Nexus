@@ -204,7 +204,7 @@
     $$("#motionSeg button").forEach(function (b) {
       b.setAttribute("aria-selected", b.getAttribute("data-motion-opt") === m ? "true" : "false");
     });
-    placeSegThumb("motionSeg", "motionThumb", '#motionSeg button[data-motion-opt="' + m + '"]');
+    if ($("#motionSeg")) placeSegThumb("motionSeg", "motionThumb", '#motionSeg button[data-motion-opt="' + m + '"]');
     if (persist) api("/api/settings", "POST", { motion: m });
   }
 
@@ -806,10 +806,10 @@
     $("#themeToggle").addEventListener("click", function () {
       setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark", true);
     });
-    $("#themeToggle2").addEventListener("click", function () {
+    var _t2 = $("#themeToggle2"); if (_t2) _t2.addEventListener("click", function () {
       setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark", true);
     });
-    initSeg("motionSeg", "motionThumb", function (b) { setMotion(b.getAttribute("data-motion-opt"), true); });
+    if ($("#motionSeg")) initSeg("motionSeg", "motionThumb", function (b) { setMotion(b.getAttribute("data-motion-opt"), true); });
 
     /* DLNA */
     $("#dlnaStart").addEventListener("click", startDlna);
@@ -1484,29 +1484,11 @@
 
   /* DLNA key 规则（vendor/dlna/vr_dlna.py path_to_key）：单根=相对路径，多根=label/相对路径，
      label = 根目录 basename（host_server 里 MediaRoot(label=Path(p).name or "Videos")） */
-  function vlDlnaUrl(absPath) {
-    var st = S.settings || {};
-    var roots = st.dlna_roots || [];
-    var port = st.dlna_port || 8899;
-    var p = String(absPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
-    for (var i = 0; i < roots.length; i++) {
-      var root = String(roots[i]).replace(/\\/g, "/").replace(/\/+$/, "");
-      if (!root || p.toLowerCase().indexOf(root.toLowerCase() + "/") !== 0) continue;
-      var rel = p.slice(root.length + 1);
-      var label = root.split("/").filter(Boolean).pop() || "Videos";
-      var key = (roots.length === 1) ? rel : (label + "/" + rel);
-      return "http://127.0.0.1:" + port + "/media/" + key.split("/").map(encodeURIComponent).join("/");
-    }
-    return null;
-  }
+  /* vlDlnaUrl 已删除：播放不再经过 DLNA */
   function vlStreamUrl(absPath, cb) {
-    var api = "/api/library/stream?path=" + encodeURIComponent(absPath);
-    if (VL_STREAM.api === true) { cb(api); return; }
-    if (VL_STREAM.api === false) { cb(vlDlnaUrl(absPath)); return; }
-    fetch(api, { headers: { Range: "bytes=0-0" } }).then(function (r) {
-      VL_STREAM.api = (r.status === 200 || r.status === 206);
-      cb(VL_STREAM.api ? api : vlDlnaUrl(absPath));
-    }).catch(function () { VL_STREAM.api = false; cb(vlDlnaUrl(absPath)); });
+    /* 电脑端播放只走宿主本地流（宿主直接读盘、Range/206）；
+       DLNA 是给手机/VR 的出站共享，与电脑自身播放无关。 */
+    cb("/api/library/stream?path=" + encodeURIComponent(absPath));
   }
 
   function vlShowChrome(on) {
@@ -1593,7 +1575,7 @@
         });
       });
     v.addEventListener("error", function () {
-      vlVideoFail("这个文件内置播放器打不开（常见原因：HEVC/10bit 等编码不受支持，或 DLNA 服务没在跑）。");
+      vlVideoFail("内置播放器打不开这个文件：多数是编码不受支持（HEVC / 10bit / AV1），或文件已经不在了。");
     });
     v.addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
     v.addEventListener("play", function () { syncStart(vlMed.path); });
@@ -2153,6 +2135,7 @@
     }
     // 全量 24 个、两列、可滚（与手机 PresetGridCard 一致）
     grid.innerHTML = VL_PRESETS.map(function (pr) {
+    if (typeof DEV !== "undefined" && DEV.preset && DEV.preset.selected) vlSelPreset = DEV.preset.selected;
       var selected = vlSelPreset === pr.id;
       var loopSec = presetLoopSec(pr);
       var label = "循环 " + (loopSec >= 100 ? Math.round(loopSec) + "s" : loopSec.toFixed(1) + "s");
@@ -2222,26 +2205,22 @@
   var SET_DEV = { script_sync: true, preset_speed: 100, a10_mode: null, oc_mode: false,
                   orgasm: { max_speed: 500 }, slow: { idle_detect_seconds: 5, max_speed: 100 } };
   function renderSetDev() {
-    var nameEl = $("#setDevName");
-    if (!nameEl) return;
-    var i = DEV.info || {};
-    nameEl.textContent = DEV.connected ? (DEV.name || "设备") : "未连接";
-    $("#setDevInfo").textContent = DEV.connected
-      ? ("硬件 v" + (i.hardware || "?") + " · 固件 v" + (i.software || "?") + " · 最高 " + (i.max_speed || "?") +
-         " Units/s · 限位 " + (i.min_pos || 0) + "-" + (i.max_pos || 100) + (i.motor_power >= 100 ? " · 狂暴中" : ""))
-      : (DEV.available === false ? "宿主缺少 BLE 依赖（需要重新打包）" : "支持 ServeU / VorzePiston（BLE），点右上角扫描");
-    $("#setDevConnect").textContent = DEV.connected ? "断开设备" : "扫描并连接";
-    var a10 = (DEV.a10_mode === null || DEV.a10_mode === undefined) ? null : Number(DEV.a10_mode);
-    Array.prototype.forEach.call($("#setA10Seg").querySelectorAll("button"), function (b) {
-      b.setAttribute("aria-selected", String(a10 !== null && Number(b.getAttribute("data-a10")) === a10));
-    });
-    var th = $("#setA10Thumb");
-    if (th) { th.style.transform = a10 === 1 ? "translateX(100%)" : "translateX(0)"; th.style.width = "50%"; }
-    var sy = DEV.sync || {};
-    $("#setSyncState").textContent = sy.active ? ("脚本同步中 · " + (sy.script || "")) : "脚本同步待命";
-    $("#setSyncSub").textContent = sy.active
-      ? ("已发 " + (sy.sent || 0) + " 帧 · 空闲跳过 " + (sy.skipped || 0))
-      : (DEV.connected ? "播放带脚本的视频会自动开始" : "未连接设备");
+    if (!$("#setDevName")) return;
+    var i = DEV.info || {}, sy = DEV.sync || {}, on = !!DEV.connected;
+    $("#setDevName").textContent = on ? (DEV.name || "设备") : "未连接设备";
+    $("#setDevInfo").textContent = on
+      ? ("硬件版本：" + (i.hardware || "—") + " · 固件版本：" + (i.software || "—") + " · 设备最大速度：" + (i.max_speed || "—"))
+      : "硬件版本：— · 固件版本：— · 设备最大速度：—";
+    $("#setDevConnect").textContent = on ? "断开设备" : "扫描并连接";
+    $("#setA10").checked = Number(DEV.a10_mode) === 1;
+    $("#setReversed").checked = !!DEV.reversed;
+    if (document.activeElement !== $("#setOcMode")) $("#setOcMode").checked = !!SET_DEV.oc_mode;
+    if ($("#setSyncState")) {
+      $("#setSyncState").textContent = sy.active ? ("脚本同步中 · " + (sy.script || "")) : "脚本同步待命";
+      $("#setSyncSub").textContent = sy.active
+        ? ("已发 " + (sy.sent || 0) + " 帧 · 空闲跳过 " + (sy.skipped || 0) + " · 延迟 " + Math.round(sy.delay_ms || 0) + "ms")
+        : (on ? "播放带脚本的视频会自动开始" : "未连接设备");
+    }
   }
   function saveDev(patch) {
     api("/api/device/settings", "POST", patch).then(function (r) {
@@ -2256,6 +2235,8 @@
       if (d.orgasm) SET_DEV.orgasm = Object.assign({ max_speed: 500 }, d.orgasm);
       if (d.slow) SET_DEV.slow = Object.assign({ idle_detect_seconds: 5, max_speed: 100 }, d.slow);
       if ($("#setScriptSync")) $("#setScriptSync").checked = d.script_sync !== false;
+      if ($("#setSkipIdle")) $("#setSkipIdle").checked = d.skip_idle !== false;
+      if ($("#setIdleThreshold")) $("#setIdleThreshold").value = d.idle_threshold || 3;
       if ($("#setSlowIdle")) $("#setSlowIdle").value = SET_DEV.slow.idle_detect_seconds;
       if ($("#setSlowSpeed")) $("#setSlowSpeed").value = SET_DEV.slow.max_speed;
       if ($("#setOrgasmSpeed")) $("#setOrgasmSpeed").value = SET_DEV.orgasm.max_speed;
@@ -2267,22 +2248,47 @@
   function bindSetDev() {
     if (!$("#setDevConnect")) return;
     $("#setDevConnect").addEventListener("click", function () { $("#devBtn").click(); });
-    $("#setGotoSync").addEventListener("click", function () {
-      var b = document.querySelector('button[data-page="sync"]') || document.querySelector('button[data-page="devices"]');
-      if (b) b.click();
+    $("#setDevRefresh").addEventListener("click", function () {
+      api("/api/device/refresh", "POST", {}).then(function () { pollDev(); toast("已请求刷新", "设备信息稍后更新", "ok"); });
     });
-    Array.prototype.forEach.call($("#setA10Seg").querySelectorAll("button"), function (b) {
-      b.addEventListener("click", function () { saveDev({ a10_mode: Number(b.getAttribute("data-a10")) }); });
+    $("#setGotoSync") && $("#setGotoSync").addEventListener("click", function () {
+      var b = document.querySelector('button[data-page="sync"]'); if (b) b.click();
     });
-    $("#setOcMode").addEventListener("change", function () { saveDev({ oc_mode: this.checked }); });
-    $("#setScriptSync").addEventListener("change", function () { saveDev({ script_sync: this.checked }); });
     $("#setSlowIdle").addEventListener("change", function () { saveDev({ slow: { idle_detect_seconds: Number(this.value) } }); });
-    $("#setSlowSpeed").addEventListener("change", function () { saveDev({ slow: { max_speed: Number(this.value) } }); });
-    $("#setOrgasmSpeed").addEventListener("change", function () { saveDev({ orgasm: { max_speed: Number(this.value) } }); });
-    $("#setSyncDelay").addEventListener("change", function () {
+    $("#setSkipIdle").addEventListener("change", function () { saveDev({ skip_idle: this.checked }); });
+    $("#setIdleThreshold").addEventListener("change", function () { saveDev({ idle_threshold: Number(this.value) }); });
+    initSlider("setManualPos", false, function (lo, hi) {
+      if ($("#setManualVal")) $("#setManualVal").textContent = Math.round(hi) + "%";
+    });
+    $("#setManualMove").addEventListener("click", function () {
+      var el = $("#setManualPos");
+      var pct = Number(el && el.getAttribute("data-val") || 50);
+      var b = el && el.style.getPropertyValue("--b");
+      if (b) pct = Math.round(Number(b) * 100);
+      api("/api/device/move", "POST", { percent: pct }).then(function (r) {
+        toast(r && r.ok ? ("已移动到 " + pct + "%") : "移动失败（设备未连接？）", "", r && r.ok ? "ok" : "warn");
+      });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-delay]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var cur = Number((DEV.sync && DEV.sync.delay_ms) || 0);
+        var next = cur + Number(btn.getAttribute("data-delay"));
+        next = Math.max(-2000, Math.min(2000, next));
+        api("/api/sync/delay", "POST", { ms: next }).then(function () { pollDev(); toast("延迟 " + (next > 0 ? "+" : "") + next + " ms", "负值提前，正值滞后", "ok"); });
+      });
+    });
+    $("#setA10").addEventListener("change", function () { saveDev({ a10_mode: this.checked ? 1 : 0 }); });
+    $("#setReversed").addEventListener("change", function () { saveDev({ reversed: this.checked }); });
+    $("#setOcMode").addEventListener("change", function () {
+      var on = this.checked, self = this;
+      if (on && !window.confirm("确认开启狂暴模式？\n扭矩约提升 30%，动力更强；\n若行程、限速设置不当，受伤风险将明显增加。")) { self.checked = false; return; }
+      saveDev({ oc_mode: on });
+    });
+    $("#setScriptSync") && $("#setScriptSync").addEventListener("change", function () { saveDev({ script_sync: this.checked }); });
+    $("#setSyncDelay") && $("#setSyncDelay").addEventListener("change", function () {
       api("/api/sync/delay", "POST", { ms: Number(this.value) }).then(function () { toast("已保存", "", "ok"); });
     });
-    $("#setScriptFolderPick").addEventListener("click", function () {
+    $("#setScriptFolderPick") && $("#setScriptFolderPick").addEventListener("click", function () {
       var cur = $("#setScriptFolder").value || "";
       if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
         window.pywebview.api.pick_folder(cur, true).then(function (r) {
@@ -2291,11 +2297,10 @@
         });
       }
     });
-    $("#setScriptFolder").addEventListener("change", function () {
+    $("#setScriptFolder") && $("#setScriptFolder").addEventListener("change", function () {
       api("/api/settings", "POST", { script_folder: this.value }).then(function () { toast("已保存", "", "ok"); });
     });
   }
-  bindSetDev();
   loadSetDev();
 
   /* ---- 脚本同步：播放进度 → 设备 ---- */
@@ -2354,7 +2359,7 @@
       var hit = (r.devices || []).filter(function (d) { return d.supported; })[0];
       if (!hit) { renderDev(); toast("未发现受支持的设备", "支持 ServeU / VorzePiston", "warn"); return; }
       DEV.connecting = true; renderDev();
-      api("/api/device/connect", "POST", { address: hit.address }).then(function (c) {
+      api("/api/device/connect", "POST", { address: hit.address, toy: hit.toy }).then(function (c) {
         DEV.connecting = false;
         if (c && c.ok) {
           var info = (c.state && c.state.info) || {};
@@ -2369,6 +2374,14 @@
 
   /* --- 布局自适应：⏸ 保持正圆、预设/浏览网格"正好 2 行"（草图口径） --- */
   function layoutVl() {
+    /* aspect-16-9：大框框按 16:9 定高（用户要求消除两侧黑边），并覆写网格第一行 */    var _wrap = document.querySelector(".vl-vwrap"), _frame = document.querySelector(".vl-frame");
+    if (_wrap && _frame) {
+      var _w = _wrap.clientWidth || 906;
+      var _h = Math.round(_w * 9 / 16);
+      _wrap.style.height = _h + "px";
+      var _rows = getComputedStyle(_frame).gridTemplateRows.split(" ");
+      if (_rows.length > 1) _frame.style.gridTemplateRows = _h + "px " + _rows.slice(1).join(" ");
+    }
     var row = $(".vl-btnrow"), b = $("#vlPause");
     if (row && b) {
       var s = Math.max(26, Math.min(row.clientHeight, row.clientWidth * 40 / 770));

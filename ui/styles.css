@@ -876,7 +876,10 @@ html:fullscreen .vl-screen-path{ display:none; }
 .vl-time{ grid-column:1; font:500 13px/1.3 var(--f-mono); color:var(--ink-2); text-align:center; white-space:nowrap; overflow:hidden; }
 .vl-time:last-child{ grid-column:5; }
 .vl-heat{ grid-column:3; width:100%; height:100%; display:block; border-radius:var(--r-sm);
-  background:var(--heat-bg); cursor:crosshair; }
+  background:var(--heat-bg); cursor:crosshair;
+  /* 浅色主题下底色很浅，必须有描边才看得出边界（用户反馈）*/
+  box-shadow:inset 0 0 0 1px rgba(74,95,138,.45); }
+html[data-theme="dark"] .vl-heat{ box-shadow:inset 0 0 0 1px rgba(255,255,255,.16); }
 
 /* ---- ③ 按钮行：页签组与胶囊组同宽（340），⏸ 居中 ---- */
 .vl-btnrow{ grid-row:5; min-height:0; display:grid; align-items:center;
@@ -970,3 +973,10 @@ html[data-theme="light"] .vl-pcard.selected .vl-pname{ color:#4A5F8A; }
 .vl-prespeed{ display:flex; align-items:center; gap:8px; height:24px; margin:0 0 6px; }
 .vl-prespeed .lbl{ font:500 11px/1 var(--f-ui); color:var(--text-2); white-space:nowrap; }
 .vl-prespeed .val{ font:600 11px/1 var(--f-num,var(--f-ui)); color:var(--text); min-width:30px; text-align:right; }
+
+/* 连接中图标必须一直转：data-motion=off 会全局禁动画，这里显式豁免（用户反馈"圈不转"）*/
+@keyframes vl-spin{ to{ transform:rotate(360deg); } }
+html[data-motion="off"] .dev-spinner, html[data-motion="reduced"] .dev-spinner{
+  animation:vl-spin .9s linear infinite !important;
+}
+.dev-spinner{ animation:vl-spin .9s linear infinite; }

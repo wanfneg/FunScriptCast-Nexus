@@ -61,6 +61,10 @@ class PresetPlayer:
         self._task: asyncio.Task | None = None
         self._self_moving = False
 
+    def _spawn(self, coro):
+        """HTTP 线程 → 事件循环（loop.create_task 跨线程不安全，见 quick_moves 注释）。"""
+        self.loop.call_soon_threadsafe(lambda: self.loop.create_task(coro))
+
     def by_id(self, pid: str | None) -> dict | None:
         if not pid:
             return None
@@ -75,7 +79,23 @@ class PresetPlayer:
         self.selected = pid
         if pid:
             self.random_mode = False      # 手机端：点选网格预设 = 退出随机
+            if self.playing:              # 播放中点选 → 立即切到新预设（手机端同款）
+                self._restart()
         return {"ok": True, "state": self.state()}
+
+    def _restart(self) -> None:
+        if self._task is not None:
+            try:
+                self.loop.call_soon_threadsafe(self._cancel_task)
+            except Exception:
+                pass
+        self._task = True
+        self._spawn(self._run())
+
+    def _cancel_task(self) -> None:
+        t = self._task
+        if hasattr(t, "cancel"):
+            t.cancel()
 
     def toggle_random(self) -> dict:
         self.random_mode = not self.random_mode
@@ -97,7 +117,8 @@ class PresetPlayer:
         if not self.by_id(self.selected):
             return {"ok": False, "error": "没有可用预设"}
         self.playing = True
-        self._task = self.loop.create_task(self._run())
+        self._task = True
+        self._spawn(self._run())
         return {"ok": True, "state": self.state()}
 
     def stop(self) -> dict:

@@ -2195,6 +2195,85 @@ class Handler(BaseHTTPRequestHandler):
             # ---------------- 桌面播放器（M1）----------------
             elif path == "/api/player/state":
                 self._json(_get_player().state())
+            elif path == "/api/library/stream":
+                # 本地直连流（内置播放器主路径）：支持 Range/206，**不经过 DLNA**。
+                # 只允许媒体库目录/DLNA 共享目录里的文件（UI API 仅监听 127.0.0.1）。
+                import urllib.parse as _up
+                from pathlib import Path as _P
+                _q = _up.parse_qs(_up.urlparse(self.path).query)
+                _raw = (_q.get("path") or [""])[0]
+                _fp = _P(_raw)
+                if not _raw or not _fp.is_file():
+                    self._json({"ok": False, "error": "文件不存在"}, 404)
+                    return
+                _st = load_settings()
+                _roots: list[str] = []
+                for _k in ("library_roots", "dlna_roots", "video_folder", "script_folder"):
+                    _v = _st.get(_k)
+                    if isinstance(_v, list):
+                        _roots += [str(x) for x in _v]
+                    elif _v:
+                        _roots.append(str(_v))
+                _abs = str(_fp.resolve()).lower()
+                _allowed = any(_abs.startswith(str(_P(r).resolve()).lower()) for r in _roots if r)
+                if not _allowed and not getattr(sys, "frozen", False):
+                    _allowed = True          # 源码/开发运行放宽，便于调试
+                if not _allowed:
+                    self._json({"ok": False, "error": "这个文件不在媒体库或 DLNA 目录里"}, 403)
+                    return
+                _ext = _fp.suffix.lower()
+                _ctype = {
+                    ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
+                    ".mkv": "video/x-matroska", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+                    ".wmv": "video/x-ms-wmv", ".ts": "video/mp2t", ".m2ts": "video/mp2t",
+                    ".flv": "video/x-flv", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+                    ".srt": "text/plain; charset=utf-8", ".vtt": "text/vtt",
+                    ".funscript": "application/json", ".json": "application/json",
+                }.get(_ext, "application/octet-stream")
+                _size = _fp.stat().st_size
+                _start, _end = 0, _size - 1
+                _rng = self.headers.get("Range") or ""
+                _partial = False
+                if _rng.startswith("bytes="):
+                    _spec = _rng[6:].split(",")[0].strip()
+                    _a, _, _b = _spec.partition("-")
+                    try:
+                        if _a:
+                            _start = int(_a)
+                            _end = int(_b) if _b else _size - 1
+                        elif _b:                     # bytes=-N 末尾 N 字节
+                            _start = max(0, _size - int(_b))
+                    except ValueError:
+                        _start, _end = 0, _size - 1
+                    _end = min(_end, _size - 1)
+                    if _start > _end or _start >= _size:
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{_size}")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    _partial = True
+                _length = _end - _start + 1
+                self.send_response(206 if _partial else 200)
+                self.send_header("Content-Type", _ctype)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(_length))
+                if _partial:
+                    self.send_header("Content-Range", f"bytes {_start}-{_end}/{_size}")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    with open(_fp, "rb") as _f:
+                        _f.seek(_start)
+                        _left = _length
+                        while _left > 0:
+                            _chunk = _f.read(min(262144, _left))
+                            if not _chunk:
+                                break
+                            self.wfile.write(_chunk)
+                            _left -= len(_chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass                 # 播放器 seek 会主动断开，正常
             elif path == "/api/library/script":
                 from urllib.parse import parse_qs, urlparse as _up2
                 q = parse_qs(_up2(self.path).query)
@@ -2410,7 +2489,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not addr:
                     self._json({"ok": False, "error": "缺少 address"}, 400)
                     return
-                self._json(d["ch"].submit(d["ch"].connect(addr), timeout=60))
+                self._json(d["ch"].submit(d["ch"].connect(addr, str(body.get("toy") or "") or None), timeout=60))
             elif path == "/api/device/disconnect":
                 d = _get_device()
                 res = d["ch"].submit(d["ch"].disconnect(), timeout=20)
@@ -2434,13 +2513,22 @@ class Handler(BaseHTTPRequestHandler):
                 d = _get_device()
                 ok = d["ch"].submit(d["ch"].set_mode(int(body.get("a10") or 0)), timeout=10)
                 self._json({"ok": bool(ok)})
-            elif path == "/api/device/settings":
+            elif path == "/api/device/refresh":   # 设备信息「刷新」
+                d = _get_device()
+                self._json(d["ch"].submit(d["ch"].refresh_info(), timeout=10))
+            elif path == "/api/device/settings":   # device/settings-refresh
                 # 设备段设置（快捷动作/预设速度/A10 模式）持久化到 settings.device
                 dev = dict((load_settings().get("device") or {}))
                 for k in ("orgasm", "slow"):
                     if isinstance(body.get(k), dict):
                         dev[k] = {**(dev.get(k) or {}), **{kk: vv for kk, vv in body[k].items() if vv is not None}}
-                for k in ("preset_speed", "a10_mode", "oc_mode"):   # oc_mode 漏过 → 下发了却不存盘
+                if body.get("reversed") is not None:
+                    dev["reversed"] = bool(body["reversed"])
+                if body.get("skip_idle") is not None:
+                    dev["skip_idle"] = bool(body["skip_idle"])
+                if body.get("idle_threshold") is not None:
+                    dev["idle_threshold"] = float(body["idle_threshold"])
+                for k in ("preset_speed", "a10_mode", "oc_mode"):
                     if body.get(k) is not None:
                         dev[k] = body[k]
                 save_settings({"device": dev})
@@ -3741,6 +3829,15 @@ def _apply_device_settings() -> None:
         d["quick"].apply(dev.get("orgasm"), dev.get("slow"))
         # 设备侧偏好：重连后由 channel.connect 自动补发
         d["ch"].oc_mode = bool(dev.get("oc_mode"))
+        d["ch"].reversed = bool(dev.get("reversed"))
+        if dev.get("a10_mode") is not None:
+            _tp = ("vorze", "serveu")[int(dev["a10_mode"])] if int(dev["a10_mode"]) in (0, 1) else None
+            if _tp:
+                d["ch"]._forced_toy = next((t for t in __import__("vendor.device.protocols", fromlist=["TOYS"]).TOYS if t.id == _tp), None)
+        if dev.get("skip_idle") is not None:
+            d["sync"].skip_idle = bool(dev["skip_idle"])
+        if dev.get("idle_threshold") is not None:
+            d["sync"].idle_threshold = float(dev["idle_threshold"])
         if dev.get("a10_mode") is not None:
             d["ch"].mode_override = int(dev["a10_mode"])
         if dev.get("preset_speed"):

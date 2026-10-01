@@ -47,6 +47,7 @@ class DeviceChannel:
         self.reversed = False
         self.mode_override: int | None = None     # 伪装设备（A10 模式）
         self.oc_mode = False                      # 狂暴模式（MotorMaxPower 75/100）
+        self._forced_toy = None                   # 伪装设备：强制使用的 GATT 档案
         self.on_move = None                       # 每次写帧回调（脚本同步/快捷动作用来判空闲）
 
     # ---------- 宿主线程调用 ----------
@@ -56,6 +57,15 @@ class DeviceChannel:
 
     def state_dict(self) -> dict:
         s = self.state
+        # 设备可能掉线或被别处抢走：以 bleak 客户端真实连接态为准。
+        # 否则界面会一直显示"已连接"（用户反馈：明明断开了还显示"断开设备"）。
+        try:
+            if s.connected and (self._client is None or not getattr(self._client, "is_connected", False)):
+                s.connected = False
+                s.address = s.name = s.toy = ""
+                s.info = {}
+        except Exception:
+            pass
         return {
             "connected": s.connected, "connecting": s.connecting, "address": s.address,
             "name": s.name, "toy": s.toy, "error": s.error, "info": s.info,
@@ -87,7 +97,8 @@ class DeviceChannel:
         out.sort(key=lambda x: (not x["supported"], -(x["rssi"] or 0)))
         return out
 
-    async def connect(self, address: str) -> dict:
+    async def connect(self, address: str, toy_id: str | None = None) -> dict:
+        """连接。toy_id 由界面扫描结果透传（省掉重复扫描）；没有就现场扫一次认型号。"""
         from bleak import BleakClient
         async with self._lock:
             if self.state.connected:
@@ -95,16 +106,12 @@ class DeviceChannel:
             self.state.connecting = True
             self.state.error = ""
             try:
-                # 先从已扫描到的广播名认出玩具类型；认不出就按地址连上后再匹配
-                toy = None
-                try:
-                    found = await self.scan(4.0)
-                    for d in found:
+                toy = self._forced_toy or (next((t for t in TOYS if t.id == toy_id), None) if toy_id else None)
+                if toy is None:
+                    for d in await self.scan(5.0):
                         if d["address"].lower() == address.lower() and d["supported"]:
                             toy = next(t for t in TOYS if t.id == d["toy"])
                             break
-                except Exception:
-                    pass
                 client = BleakClient(address, timeout=20.0)
                 await client.connect()
                 self._client = client
@@ -116,12 +123,12 @@ class DeviceChannel:
                 if toy:
                     await self._start_notify(toy)
                     await self._write(cmd_mode(self.mode_override if self.mode_override is not None else toy.a10_mode))
-                    if self.oc_mode:                       # 狂暴模式是设备侧状态，重连要补发
+                    if self.oc_mode:
                         await self._write(cmd_oc_mode(True))
                     await self._write(cmd_info())
                 return {"ok": True, "state": self.state_dict()}
-            except Exception as e:
-                self.state.error = f"{type(e).__name__}: {e}"
+            except Exception as ex:
+                self.state.error = f"{type(ex).__name__}: {ex}"
                 await self._cleanup()
                 return {"ok": False, "error": self.state.error}
             finally:
@@ -210,6 +217,44 @@ class DeviceChannel:
         """狂暴模式：MotorMaxPower 100（开）/ 75（关）。"""
         self.oc_mode = bool(enabled)
         return await self._write(cmd_oc_mode(self.oc_mode))
+
+    async def set_profile(self, toy_id: str) -> dict:
+        """伪装设备：切换**整套 GATT 档案**（UUID + A10 模式），重订阅通知并重读设备信息。
+
+        手机端「伪装设备（VorzePiston 模式）」就是这个语义：同一套 A10 硬件在
+        不同固件下广播身份不同，只发一条 S 指令是换不过来的 —— 必须换 UUID。
+        未连接时记下来，下次连接直接用该档案。
+        """
+        toy = next((t for t in TOYS if t.id == toy_id), None)
+        if toy is None:
+            return {"ok": False, "error": "未知设备档案"}
+        self.mode_override = toy.a10_mode
+        self._forced_toy = toy
+        if not self.state.connected or self._client is None:
+            return {"ok": True, "pending": True, "toy": toy.id}
+        try:
+            if self._toy and self._toy.id != toy.id:
+                try:
+                    await self._client.stop_notify(self._toy.rx)
+                except Exception:
+                    pass
+            self._toy = toy
+            await self._start_notify(toy)
+            await self._write(cmd_mode(toy.a10_mode))
+            if self.oc_mode:
+                await self._write(cmd_oc_mode(True))
+            self.state.info = {}
+            await self._write(cmd_info())
+            self.state.name = toy.name
+            self.state.toy = toy.id
+            return {"ok": True, "toy": toy.id}
+        except Exception as ex:
+            return {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
+
+    async def refresh_info(self) -> dict:
+        """设备信息「刷新」：重发 D0。"""
+        ok = await self._write(cmd_info())
+        return {"ok": bool(ok)}
 
     async def set_mode(self, a10_mode: int) -> bool:
         self.mode_override = 1 if a10_mode else 0
