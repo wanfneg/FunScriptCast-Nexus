@@ -71,6 +71,11 @@ class SyncEngine:
         self.skipped = 0
         return {"ok": True, "script": self.path, "actions": len(self.actions)}
 
+    def reset_last_index(self) -> None:
+        """手机端 SyncEngine.resetLastIndex()：任何"急停 → 继续"都强制重发当前段目标帧，
+        否则同一段内位置没变（<1% 不刷）会一直不发，设备停在半路。"""
+        self._last_pos = None
+
     def stop(self) -> dict:
         self.active = False
         return {"ok": True}

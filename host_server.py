@@ -2548,11 +2548,17 @@ class Handler(BaseHTTPRequestHandler):
                 on = bool(body.get("on"))
                 q = d["quick"]
                 if kind == "stop":
+                    was = q.is_stop
                     res = q.set_stop(on)
-                elif kind == "orgasm":
-                    res = q.start_orgasm() if on else q.stop_orgasm()
-                elif kind == "slow":
-                    res = q.start_slow() if on else q.stop_slow()
+                    if was and not on:
+                        d["sync"].reset_last_index()   # 手机端：急停→继续 强制重发当前段
+                elif kind in ("orgasm", "slow") and on:
+                    d["preset"].stop()                 # 手机端：爆发/缓动接管设备，先停预设
+                    res = q.start_orgasm() if kind == "orgasm" else q.start_slow()
+                elif kind in ("orgasm", "slow"):
+                    res = q.stop_orgasm() if kind == "orgasm" else q.stop_slow()
+                elif False:
+                    pass
                 elif kind == "pause":
                     res = q.pause_for_player()
                 elif kind == "resume":
@@ -3833,7 +3839,20 @@ def _apply_device_settings() -> None:
         d["ch"].apply_motion(range_lo=vl.get("range_min", 0), range_hi=vl.get("range_max", 100),
                              max_speed=vl.get("max_speed", 500), reversed_=bool(vl.get("reversed")))
         d["ch"].submit(d["ch"].apply_limits(), timeout=10)   # 行程/限速改了立刻下发 0x42
-        d["quick"].apply(dev.get("orgasm"), dev.get("slow"))
+        # 视频联动页那两张卡（待机缓动 / 一键爆发）才是这两个动作的主设置 ——
+        # 以前它们只写进 video_link，设备层读的是 device.*，等于**完全没接上**。
+        vl_cards = {
+            "slow": {"min_percent": vl.get("idle_min"), "max_percent": vl.get("idle_max"),
+                     "max_speed": vl.get("idle_speed"), "link_percent": vl.get("idle_link")},
+            "orgasm": {"min_percent": vl.get("burst_min"), "max_percent": vl.get("burst_max"),
+                       "max_speed": vl.get("burst_speed"), "link_percent": vl.get("burst_link"),
+                       "link_speed": vl.get("burst_speed_link")},
+        }
+        d["quick"].apply({k: v for k, v in vl_cards["orgasm"].items() if v is not None},
+                         {k: v for k, v in vl_cards["slow"].items() if v is not None})
+        # 设置页只管"空闲判定秒数"，单独补上，不被卡片覆盖
+        if dev.get("slow", {}).get("idle_detect_seconds") is not None:
+            d["quick"].slow.idle_detect_seconds = int(dev["slow"]["idle_detect_seconds"])
         # 设备侧偏好：重连后由 channel.connect 自动补发
         d["ch"].oc_mode = bool(dev.get("oc_mode"))
         d["ch"].reversed = bool(dev.get("reversed"))

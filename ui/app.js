@@ -2075,7 +2075,7 @@
   function drawPresetWave(cv, pr) {
     var dpr = window.devicePixelRatio || 1;
     var w = cv.clientWidth || 130, h = cv.clientHeight || 40;
-    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    var dpr = window.devicePixelRatio || 1; cv.width = Math.round((Math.round(w * dpr)) * dpr); cv.height = Math.round((Math.round(h * dpr)) * dpr); cv.style.width = ((Math.round(w * dpr))) + "px"; cv.style.height = ((Math.round(h * dpr))) + "px"; try { cv.getContext("2d").setTransform(dpr,0,0,dpr,0,0); } catch (e) {}
     var ctx = cv.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     var padX = 1, padY = 2;
@@ -2126,9 +2126,10 @@
     ctx.lineJoin = "round";
     ctx.stroke(line);
   }
+  var vlSelRendered = "";
   function renderPresetCards() {
     var grid = $("#vlPGrid");
-    if (!grid || grid.childElementCount) return;
+    if (!grid) return;
     if (VL_PRESETS == null) {
       fetch("/presets.json").then(function (r) { return r.json(); }).then(function (list) {
         VL_PRESETS = list;
@@ -2136,28 +2137,48 @@
       }).catch(function () { VL_PRESETS = []; });
       return;
     }
-    // 全量 24 个、两列、可滚（与手机 PresetGridCard 一致）
-    grid.innerHTML = VL_PRESETS.map(function (pr) {
-    if (typeof DEV !== "undefined" && DEV.preset && DEV.preset.selected) vlSelPreset = DEV.preset.selected;
-      var selected = vlSelPreset === pr.id;
-      var loopSec = presetLoopSec(pr);
-      var label = "循环 " + (loopSec >= 100 ? Math.round(loopSec) + "s" : loopSec.toFixed(1) + "s");
-      return '<div class="vl-pcard' + (selected ? " selected" : "") + '" data-preset="' + pr.id + '">' +
-        '<div class="vl-phead-row"><span class="vl-pname' + (selected ? " sel" : "") + '">' +
-        (vlPlayingPreset && selected ? "▶ " : "") + pr.name + '</span>' +
-        '<span class="vl-ploop">' + label + '</span></div>' +
-        '<canvas class="vl-wave" data-preset="' + pr.id + '"></canvas></div>';
-    }).join("");
-    $$(".vl-wave", grid).forEach(function (cv) {
-      var pr = (VL_PRESETS || []).find(function (x) { return x.id === cv.getAttribute("data-preset"); });
-      if (pr) requestAnimationFrame(function () { drawPresetWave(cv, pr); });
+    /* 选中态**以宿主为准**（手机端 PhoneViewModel 的 currentPresetId）：
+       · 手动点选 → select(id)
+       · RANDOM 跳到哪个 → 宿主 selected 变哪个，这里跟着高亮并滚动到可见
+       · 没选就点播放 → 宿主兜底 normal，这里也高亮 normal */
+    var hostSel = (DEV && DEV.preset && DEV.preset.selected) ? DEV.preset.selected : null;
+    if (hostSel) vlSelPreset = hostSel;
+    var cur = vlSelPreset || "";
+    if (!grid.childElementCount) {
+      grid.innerHTML = VL_PRESETS.map(function (pr) {
+        var loopSec = presetLoopSec(pr);
+        var label = "循环 " + (loopSec >= 100 ? Math.round(loopSec) + "s" : loopSec.toFixed(1) + "s");
+        return '<div class="vl-pcard" data-preset="' + pr.id + '">' +
+          '<div class="vl-phead-row"><span class="vl-pname">' + pr.name + '</span>' +
+          '<span class="vl-ploop">' + label + '</span></div>' +
+          '<canvas class="vl-wave" data-preset="' + pr.id + '"></canvas></div>';
+      }).join("");
+      $$(".vl-wave", grid).forEach(function (cv) {
+        var pr = (VL_PRESETS || []).find(function (x) { return x.id === cv.getAttribute("data-preset"); });
+        if (pr) requestAnimationFrame(function () { drawPresetWave(cv, pr); });
+      });
+    }
+    $$(".vl-pcard", grid).forEach(function (card) {
+      var on = card.getAttribute("data-preset") === cur;
+      card.classList.toggle("selected", on);
+      var nm = card.querySelector(".vl-pname");
+      if (nm) {
+        nm.classList.toggle("sel", on);
+        var base = (VL_PRESETS || []).find(function (x) { return x.id === card.getAttribute("data-preset"); });
+        nm.textContent = (on && vlPlayingPreset ? "▶ " : "") + ((base && base.name) || "");
+      }
     });
+    if (cur !== vlSelRendered) {          /* 选中变化 → 滚动到可见（手机端随机跳转就是这个行为）*/
+      var el = grid.querySelector('.vl-pcard[data-preset="' + cur + '"]');
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+      vlSelRendered = cur;
+    }
   }
   $("#vlPGrid").addEventListener("click", function (e) {
     var card = e.target.closest(".vl-pcard");
     if (!card) return;
     var id = card.getAttribute("data-preset");
-    vlSelPreset = (vlSelPreset === id) ? null : id;
+    vlSelPreset = id;   // 手机端：点卡片就是选中，不做"再点取消"
     renderPresetCards();
     api("/api/preset", "POST", { action: "select", id: vlSelPreset }).then(function () { pollDev(); });
   });

@@ -50,6 +50,7 @@ class PresetPlayer:
         self.boost = False
         self.speed = 100          # speedControlProvider（预设速度滑轨）
         self._gen = 0             # 世代：停止/重开让旧循环必死，绝不并发
+        self._boost_prev_speed = None   # BOOST 前速度（取消时恢复，手机端 boostPrevSpeed）
         self._self_moving = False
 
     # ---- 查询 ----
@@ -111,11 +112,22 @@ class PresetPlayer:
         return {"ok": True, "state": self.state()}
 
     def toggle_boost(self) -> dict:
-        self.boost = not self.boost
+        """手机端 togglePresetBoost：激活时记住当前速度并把滑块跳到 500；取消时恢复原速。"""
+        if self.boost:
+            self.boost = False
+            if self._boost_prev_speed is not None:
+                self.speed = self._boost_prev_speed
+                self._boost_prev_speed = None
+        else:
+            self._boost_prev_speed = self.speed
+            self.boost = True
+            self.speed = BOOST_SPEED
         return {"ok": True, "state": self.state()}
 
     def set_speed(self, v: int) -> dict:
         self.speed = max(1, min(500, int(v)))
+        if self.boost:
+            self._boost_prev_speed = self.speed   # 手机端：BOOST 期间拖滑块 → 取消后恢复该值
         return {"ok": True, "state": self.state()}
 
     # ---- 循环 ----
