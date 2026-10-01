@@ -2034,6 +2034,10 @@
   function quickCmd(kind, on) {
     api("/api/quick", "POST", { kind: kind, on: !!on }).then(function (r) {
       if (!r || !r.ok) { toast("命令失败", (r && r.error) || "宿主未提供设备接口（需 1.0.57）", "err"); return; }
+      if (kind === "stop") {
+        SYNC.estopped = !!on;
+        if (on) { SYNC.on = false; SYNC.want = false; }   // 急停停了会话（I6）：不自动恢复
+      }
       pollDev();
     });
   }
@@ -2302,6 +2306,9 @@
     var psVal = Number(p.speed || 100);
     if (psEl) { psEl.style.setProperty("--a", 0); psEl.style.setProperty("--b", (psVal - 1) / 499); psEl.setAttribute("data-val", psVal); }
     if ($("#vlPresetSpeedVal")) $("#vlPresetSpeedVal").textContent = psVal;
+    /* 选中态/播放态/滚动定位都在这里：手机端 LaunchedEffect(currentId) 滚到当前行
+       同款——RANDOM 跳到哪个、用户点了哪个，都以宿主 currentPresetId 为准重画 */
+    renderPresetCards();
     renderSetDev();      // 设置页「设备」块跟着一起刷新
   }
   /* 预设速度滑轨（1..500，默认 100）——手机端 presetSpeed：
@@ -2419,20 +2426,23 @@
 
   /* ---- 脚本同步：播放进度 → 设备 ---- */
   /* 「播放视频时同步驱动设备」开关已删（手机端没有此项，视频在播即同步） */
-  var SYNC = { on: false, last: 0, path: "" };
+  var SYNC = { on: false, last: 0, path: "", estopped: false, scriptless: "", starting: false, want: false };
   var syncStartGen = 0;
   function syncStart(path) {
-    if (!DEV.connected || !path) return;
+    SYNC.want = true;               // "这个视频该联动"——设备不在也先记下，连上后看护会补起
+    if (!DEV.connected || !path || SYNC.starting) return;
+    SYNC.starting = true;
     var gen = ++syncStartGen;       // 代际丢弃：连开两个视频，慢的旧 start 响应不得回退状态
     api("/api/sync/start", "POST", { path: path }).then(function (r) {
+      SYNC.starting = false;
       if (gen !== syncStartGen) return;
       if (r && r.ok) { SYNC.on = true; SYNC.path = r.script || path; }
-      else if (r && r.error && !r.no_device) { SYNC.on = false; }
+      else if (r && r.error && !r.no_device) { SYNC.on = false; SYNC.want = false; SYNC.scriptless = path; }
     });
   }
   function syncStop() {
-    if (!SYNC.on) return;
     SYNC.on = false;
+    SYNC.want = false;              // 用户明确停联动：看护不得再自动拉起
     api("/api/sync/stop", "POST", {});
   }
   function syncTick(t) {
@@ -2465,6 +2475,16 @@
       DEV.sync = d.sync || null;                    // 设置页"脚本同步中"回显（此前从未赋值）
       vlPlayingPreset = !!(DEV.preset && DEV.preset.playing);   // 预设卡"▶"回显（此前从未赋值）
       renderDev();
+      /* 同步看护：视频在播、设备在线、该联动(want)但会话没起来 → 自动补起。
+         覆盖"先播视频加载脚本、后连设备"（syncStart 当时因未连接早退）与
+         断线重连后会话丢失。不碰的两种情况：急停（会话已按 I6 停止且不自动恢复，
+         用户重按播放/重开联动才复活）；用户自己停过联动或视频无脚本（want=false）。 */
+      var v = vlVid();
+      if (SYNC.want && DEV.connected && !DEV.quick.stop && !SYNC.estopped
+          && vlMed.path && v && !v.paused && SYNC.scriptless !== vlMed.path
+          && !SYNC.starting && (!DEV.sync || !DEV.sync.active)) {
+        syncStart(vlMed.path);
+      }
     }).catch(function () { DEV.available = false; renderDev(); });
   }
   setInterval(pollDev, 2000);

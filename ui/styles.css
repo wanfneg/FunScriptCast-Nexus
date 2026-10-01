@@ -441,6 +441,18 @@ html[data-motion="reduced"] .brand-mark{ animation-duration:24s; }
 @media (max-width:1180px){ .g3,.g4{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width:1000px){ .g2,.g2b{ grid-template-columns:1fr; } .panel-tools .input{ width:190px; } }
 
+/* 设置页：无卡片双栏板块流（用户定稿：不要卡片，板块之间用分隔线）。
+   每个板块 = .setsec，栏内首板块无线；窄屏塌成单栏。 */
+.setcols{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 48px; align-items:start; }
+.setcol{ min-width:0; }
+.setsec{ padding:20px 0 24px; border-top:1px solid var(--line); }
+.setcol > .setsec:first-child{ border-top:0; padding-top:2px; }
+.set-head{ display:flex; align-items:flex-end; gap:12px; margin-bottom:14px; }
+.set-head .eyebrow{ margin-bottom:6px; }
+.set-head h2{ margin:0; font:600 14px/1.3 var(--f-ui); letter-spacing:.01em; }
+.set-head .spacer{ margin-left:auto; display:flex; gap:8px; align-items:center; flex:none; }
+@media (max-width:1000px){ .setcols{ grid-template-columns:1fr; } }
+
 /* ---------------------------------------------------------------- 按钮 */
 .btn{
   position:relative; overflow:hidden;
