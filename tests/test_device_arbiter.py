@@ -35,14 +35,14 @@ class FakeChannel:
         self.state.connected = True
         self.max_speed = 500
         self.range_lo, self.range_hi = 0.0, 100.0
-        self.calls: list[tuple[str, float]] = []
+        self.calls: list[tuple[str, float, int | None]] = []   # (owner, percent, speed)
         self.owner = "test"
         self.on_move = None
 
     async def move_to(self, percent, speed=None, raw=False, *, bypass_estop=False):
         if not self.state.allow_move and not bypass_estop:
             return False
-        self.calls.append((self.owner, float(percent)))
+        self.calls.append((self.owner, float(percent), None if speed is None else int(speed)))
         if self.on_move:
             try:
                 self.on_move(percent, speed)
@@ -261,6 +261,22 @@ class TestBatch2(Base):
         await sync._apply(0.5)                  # 区间内正常发
         self.assertEqual(len(ch.calls), n0 + 1)
 
+    async def test_slow_segment_speed_zero_not_max(self):
+        """斜率<1%/s 的慢段：发 speed=0（设备自己爬），不是 None→max_speed 冲刺。
+        手机端 moveTo: clamp(scaledSpeed, 0, maxSpeed)；旧写法 `int(…) or None`
+        把 0 变 None → 通道取 max_speed——脚本慢段全变满速冲刺（用户报"动作异常"）。"""
+        ch, quick, preset, sync, arb = self.make_world()
+        (self.dir / "video.funscript").write_text(json.dumps({"actions": [
+            {"at": 0, "pos": 10}, {"at": 30000, "pos": 15}      # 5%/30s ≈ 0.17 %/s
+        ]}), encoding="utf-8")
+        ok, err = sync.load(str(self.dir / "video.mp4"))
+        self.assertTrue(ok, err)
+        sync.active = True
+        await sync._apply(10.0)
+        self.assertEqual(len(ch.calls), 1)
+        self.assertIsNotNone(ch.calls[0][2], "慢段速度不得为 None（None=取 max_speed）")
+        self.assertEqual(ch.calls[0][2], 0, "斜率<1%/s 应取整为 0（对齐手机端 clamp 下限）")
+
     async def test_f17_skip_idle_defaults_and_seek_semantics(self):
         ch, quick, preset, sync, arb = self.make_world()
         # 默认对齐手机端：关 / 60s
@@ -298,6 +314,37 @@ class TestBatch2(Base):
         with suppress(asyncio.CancelledError):
             await asyncio.wait_for(task, 2)
         self.assertGreaterEqual(len(ch.calls), 3, "缓动速度滑轨没生效（仍是 1s/拍？）")
+
+    async def test_slow_starts_only_after_full_idle_countdown(self):
+        """点击待机缓动后必须计满空闲秒数才开跑（手机端 startSlow→restartSlowIdle）。
+        旧版用陈旧的 _last_external 时间戳，点击瞬间就开跑（用户报"点击立马开始"）。"""
+        ch, quick = self.make_world()[:2]
+        ch.calls.clear()
+        quick.slow.idle_detect_seconds = 1
+        quick._last_external = time.time() - 999     # 陈旧时间戳：旧版会立刻开跑
+        quick.start_slow()
+        await asyncio.sleep(0.5)
+        self.assertEqual(len(ch.calls), 0, "缓动在空闲秒数未满时就开始了")
+        await asyncio.sleep(0.9)                     # 计满 1s 后应开跑
+        self.assertGreaterEqual(len(ch.calls), 1)
+        quick.stop_slow()
+
+    async def test_external_move_restarts_slow_countdown(self):
+        """缓动跑着时来外部动作：掐掉循环、重新计满（手机端 onAnyMove→restartSlowIdle）。"""
+        ch, quick = self.make_world()[:2]
+        ch.calls.clear()
+        quick.slow.idle_detect_seconds = 1
+        quick.start_slow()
+        await asyncio.sleep(1.3)                     # 第一轮已开跑
+        self.assertGreaterEqual(len(ch.calls), 1)
+        n = len(ch.calls)
+        quick._self_moving = False
+        quick._on_move(50, 100)                      # 外部动作（模拟脚本帧）
+        await asyncio.sleep(0.6)                     # 新倒计时未满：不得有新帧
+        self.assertEqual(len(ch.calls), n, "外部动作后缓动没有重新等待空闲")
+        await asyncio.sleep(0.9)                     # 计满后恢复
+        self.assertGreater(len(ch.calls), n)
+        quick.stop_slow()
 
 
 class TestBatch3(unittest.TestCase):

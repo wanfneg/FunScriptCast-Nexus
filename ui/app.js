@@ -184,6 +184,9 @@
   }
   function setTheme(t, persist) {
     document.documentElement.setAttribute("data-theme", t);
+    /* localStorage 同步留一份：下次启动靠 <head> 的内联脚本在首屏前套用，
+       不等 /api/settings 回来（否则必跳变一次） */
+    try { localStorage.setItem("nxs.theme", t); } catch (e) {}
     var label = t === "dark" ? "亮色" : "暗色";
     var tip = t === "dark" ? "切换到亮色" : "切换到暗色";
     // 图标跟着目标状态走：暗色下显示太阳（点了会变亮），反之显示月亮
@@ -202,6 +205,7 @@
   }
   function setMotion(m, persist) {
     document.documentElement.setAttribute("data-motion", m);
+    try { localStorage.setItem("nxs.motion", m); } catch (e) {}
     if (persist) api("/api/settings", "POST", { motion: m });
   }
 
@@ -1381,7 +1385,7 @@
   var vlBrowsePath = "";        // ""=根（roots 卡片）
   var vlLastBrowse = { videos: [] };   // 当前目录的视频列表（内置播放器的上一个/下一个）
   var VL_PRESETS = null, vlTab = "stroke", vlHeatScript = null, vlHeatKey = "";
-  var vlSelPreset = null, vlPlayingPreset = false, vlRandomMode = false, vlBoostMode = false;
+  var vlPlayingPreset = false, vlRandomMode = false, vlBoostMode = false;
   var vlDevState = "disconnected";   // disconnected | connecting | connected
   var VL_SPEED_MAX = 500;
 
@@ -2048,25 +2052,25 @@
   var vlArmed = null;          // 已进入告警态的按钮 id
   var vlArmTimer = 0;
   function vlInScriptLink() {
-    /* 联动模式 = 脚本同步在跑 **或** 视频在播（对齐手机端 `_script != null || _videoActive`：
-       视频在播但没脚本时，进预设同样要先确认） */
-    if (typeof SYNC !== "undefined" && SYNC.on) return true;
-    var v = vlVid();
-    return !!(vlMed.path && v && !v.paused);
+    /* 只在脚本同步真在跑时才需要二次确认——PC 是集成页，视频与预设可以共存，
+       "视频在播但没脚本"时没有可退出的联动，弹确认只会让按钮状态显得混乱。
+       （方向 B 的互斥——预设中开播视频要停预设——由宿主 arbiter 统一仲裁，不靠这里。） */
+    return !!(typeof SYNC !== "undefined" && SYNC.on);
   }
   function vlDisarm(reset) {
     clearTimeout(vlArmTimer);
     if (!vlArmed) return;
     var btn = document.getElementById(vlArmed.id);
+    vlArmed = null;
     if (btn) {
       btn.classList.remove("arm");
-      btn.textContent = vlArmed.text;
+      /* 文字/配色不回填快照：交回 renderDev 按宿主状态重画（快照可能已过时） */
+      if (typeof renderDev === "function") renderDev();
     }
-    vlArmed = null;
   }
   function vlArm(btn) {
     vlDisarm();
-    vlArmed = { id: btn.id, text: btn.textContent };
+    vlArmed = { id: btn.id };
     btn.classList.add("arm");
     btn.textContent = VL_ARM_TEXT;
     vlArmTimer = setTimeout(function () { vlDisarm(); }, 5000);   // 5 秒没再点就撤销
@@ -2220,13 +2224,9 @@
       }).catch(function () { VL_PRESETS = []; });
       return;
     }
-    /* 选中态**以宿主为准**（手机端 PhoneViewModel 的 currentPresetId）：
-       · 手动点选 → select(id)
-       · RANDOM 跳到哪个 → 宿主 selected 变哪个，这里跟着高亮并滚动到可见
-       · 没选就点播放 → 宿主兜底 normal，这里也高亮 normal */
-    var hostSel = (DEV && DEV.preset && DEV.preset.selected) ? DEV.preset.selected : null;
-    if (hostSel) vlSelPreset = hostSel;
-    var cur = vlSelPreset || "";
+    /* 选中态**只认宿主**（手机端 PresetTile：selected = currentPresetId == def.id，
+       currentId 为 null 时全部不选）——本地不留副本，否则宿主没选中时还会残留高亮 */
+    var cur = (DEV && DEV.preset && DEV.preset.selected) ? DEV.preset.selected : "";
     if (!grid.childElementCount) {
       grid.innerHTML = VL_PRESETS.map(function (pr) {
         var loopSec = presetLoopSec(pr);
@@ -2261,9 +2261,8 @@
     var card = e.target.closest(".vl-pcard");
     if (!card) return;
     var id = card.getAttribute("data-preset");
-    vlSelPreset = id;   // 手机端：点卡片就是选中，不做"再点取消"
-    renderPresetCards();
-    api("/api/preset", "POST", { action: "select", id: vlSelPreset }).then(function () { pollDev(); });
+    /* 手机端：点卡片就是选中（不做"再点取消"），选中本身不开始播放 */
+    api("/api/preset", "POST", { action: "select", id: id }).then(function () { pollDev(); });
   });
 
   /* =====================================================================
@@ -2291,8 +2290,12 @@
     $("#vqStop").textContent = q.stop ? "一键继续" : "一键急停";
     $("#vqStop").classList.toggle("filled-blue", !!q.stop);
     var p = DEV.preset || {};
-    $("#vlPresetToggle").textContent = p.playing ? "暂停预设" : "播放预设";
-    $("#vlPresetToggle").classList.toggle("filled-blue", !!p.playing);
+    /* 告警态（两段式确认）优先：轮询不得覆盖 arm 文案，否则确认被 2s 轮询冲掉，
+       用户第二次点击就落空/或直接执行——按钮状态"极其混乱"的主因 */
+    if (!(vlArmed && vlArmed.id === "vlPresetToggle")) {
+      $("#vlPresetToggle").textContent = p.playing ? "暂停预设" : "播放预设";
+      $("#vlPresetToggle").classList.toggle("filled-blue", !!p.playing);
+    }
     $("#vlRandom").classList.toggle("filled-green", !!p.random);
     $("#vlBoost").classList.toggle("filled-red", !!p.boost);
     var psEl = $("#vlPresetSpeed");                       // 预设速度回填（宿主为准）
@@ -2336,6 +2339,7 @@
         ? ("已发 " + (sy.sent || 0) + " 帧 · 空闲跳过 " + (sy.skipped || 0) + " · 延迟 " + Math.round(sy.delay_ms || 0) + "ms")
         : (on ? "播放带脚本的视频会自动开始" : "未连接设备");
     }
+    if ($("#setDelayVal")) $("#setDelayVal").textContent = Math.round(sy.delay_ms || 0) + " ms";
   }
   function saveDev(patch) {
     api("/api/device/settings", "POST", patch).then(function (r) {
@@ -2621,8 +2625,11 @@
 
   function boot() {
     bind();
-    setTheme("dark", false);
-    setMotion("full", false);
+    /* 主题/动效：默认浅色 + 用户上次的选择已由 <head> 内联脚本在首屏前套好，
+       这里只把图标/文案对齐当前值。绝不在 boot 里硬套 dark——那就是
+       "启动先深色再跳浅色"的元凶。 */
+    setTheme(document.documentElement.getAttribute("data-theme") || "light", false);
+    setMotion(document.documentElement.getAttribute("data-motion") || "full", false);
     initPointerLight();
     poll(false);
     loadSubtitleConfig();

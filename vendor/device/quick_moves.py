@@ -60,12 +60,13 @@ class QuickMoves:
     def _on_move(self, percent, speed) -> None:
         if self._self_moving:
             return
-        import time
-        self._last_external = time.time()
         if self.is_slow:
-            # 手机端 onAnyMove()：cancel 正在跑的缓动循环并重新计时，**缓动保持启用**
-            self._gen_s += 1
-            self._slow_task = None
+            # 手机端 onAnyMove → restartSlowIdle：外部动作（脚本/手动/预设）随时
+            # 重置空闲倒计时，并掐掉正在跑的缓动循环——"缓动保持启用，等下一轮空闲"。
+            self._restart_slow_idle()
+        else:
+            import time
+            self._last_external = time.time()
 
     def note_external(self) -> None:
         import time
@@ -126,8 +127,9 @@ class QuickMoves:
             self.stop_orgasm()                    # 手机端：互斥
         self.is_slow = True
         self._slow_index = 0
-        self._gen_s += 1
-        self._spawn(self._idle_watch(self._gen_s))
+        # 手机端 startSlow → restartSlowIdle()：从**点击时刻**重新计满空闲秒数，
+        # 绝不因为时间戳陈旧而立刻开跑（旧版秒启的根因）。
+        self._restart_slow_idle()
         return self.state()
 
     def stop_slow(self, reason: str = "") -> dict:
@@ -137,16 +139,23 @@ class QuickMoves:
         self._idle_task = None
         return self.state()
 
+    def _restart_slow_idle(self) -> None:
+        """手机端 restartSlowIdle：代际 +1 掐掉旧循环/旧计时，倒计时从现在重新计满。"""
+        self._gen_s += 1
+        self._slow_task = None
+        self.note_external()
+        self._spawn(self._idle_watch(self._gen_s))
+
     async def _idle_watch(self, gen: int) -> None:
         import time
-        secs = max(1, int(self.slow.idle_detect_seconds))
-        if self._last_external == 0.0:
-            self._last_external = time.time()
         try:
             while self.is_slow and gen == self._gen_s:
                 await asyncio.sleep(0.25)
                 if not self.ch.state.allow_move:
                     continue
+                # 每轮都重读设置：等待期间改"空闲判定秒数"立即生效
+                # （手机端 setSlowSettings：还在等空闲窗口就按新秒数重新计时）
+                secs = max(1, int(self.slow.idle_detect_seconds))
                 if time.time() - self._last_external >= secs and self._slow_task is None:
                     self._slow_task = True
                     self.loop.create_task(self._slow_loop(gen))   # 已在循环线程内

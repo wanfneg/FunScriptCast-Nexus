@@ -125,8 +125,13 @@ class SyncEngine:
         if self._last_pos is not None and abs(pos - self._last_pos) < 1:
             return                          # 位置没变就别刷 BLE
         self._last_pos = pos
+        # 速度钳制对齐手机端（BleDeviceService.moveTo: clamp(scaled, 0, maxSpeed)）：
+        # 慢段（斜率<1%/s）取整为 0 就发 0，让设备按自己的最低速爬行。
+        # 旧写法 `int(…) or None` 把 0 变 None → 通道取 max_speed——脚本里的慢段/平段
+        # 全变成满速冲刺，这就是"脚本模式设备动作异常"的根因。
+        sp = max(0, min(int(round(speed)), int(self.ch.max_speed)))
         try:
-            await self.ch.move_to(target, int(min(speed, self.ch.max_speed)) or None)
+            await self.ch.move_to(target, sp)
             self.sent += 1
         except Exception:
             pass

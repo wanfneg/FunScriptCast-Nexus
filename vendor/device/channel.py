@@ -267,7 +267,9 @@ class DeviceChannel:
         旧版的 force=True 同时背"跳过重映射/跳过急停/强制写"三种含义，把这道闸门吃成了死代码。"""
         if not self.state.allow_move and not bypass_estop:
             return False
-        base = self.max_speed if speed is None else int(speed)
+        # speed=None 才表示"用速度上限"（手动移动的旧语义）；显式给 0 就是 0
+        # （手机端 moveTo: clamp(scaledSpeed, 0, maxSpeed)，慢段爬行靠它）
+        base = self.max_speed if speed is None else max(0, int(speed))
         if raw:
             target = self._invert(percent)          # forceMoveToInverted：只加反转
             sp = base                              # 不改速度

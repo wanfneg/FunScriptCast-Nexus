@@ -5,6 +5,17 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>FunScriptCast-Nexus</title>
+<script>
+/* 首屏主题：在样式表生效前同步套用 localStorage 里的保存值，杜绝
+   "先深色（或先浅色）再跳到保存主题"的开屏跳变；没有保存值就保持
+   <html> 上的默认浅色。app.js 的 setTheme/setMotion 每次都会写这里。 */
+try {
+  var _t = localStorage.getItem("nxs.theme");
+  if (_t === "dark" || _t === "light") document.documentElement.setAttribute("data-theme", _t);
+  var _m = localStorage.getItem("nxs.motion");
+  if (_m === "full" || _m === "off") document.documentElement.setAttribute("data-motion", _m);
+} catch (e) {}
+</script>
 <link rel="stylesheet" href="fonts.css">
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -763,7 +774,7 @@
 
           <div class="panel card">
             <div class="panel-head">
-              <div><div class="eyebrow">Device &amp; Sync</div><h2>设备与同步</h2></div>
+              <div><div class="eyebrow">Device</div><h2>设备与同步</h2></div>
               <button class="btn ghost" id="setDevConnect">扫描并连接</button>
             </div>
             <div class="row flush">
@@ -771,26 +782,43 @@
                 <div class="sub" id="setDevInfo">硬件版本：— · 固件版本：— · 设备最大速度：—</div></div>
               <button class="btn ghost" id="setDevRefresh">刷新</button>
             </div>
-            <label class="field top-3"><span>待机缓动 · 空闲判定秒数</span>
+          </div>
+
+          <div class="panel card">
+            <div class="panel-head">
+              <div><div class="eyebrow">Idle &amp; Skip</div><h2>缓动与跳过</h2></div>
+            </div>
+            <label class="field"><span>待机缓动 · 空闲判定秒数</span>
               <input class="input num" id="setSlowIdle" type="number" min="1" max="600" step="1" value="5"></label>
             <div class="sub">设备连续无动作达到该秒数后开始轻柔往返</div>
-            <div class="row flush">
+            <div class="row flush top-3">
               <div class="grow"><div class="name">跳过无动作部分</div></div>
               <label class="switch"><input type="checkbox" id="setSkipIdle"><span class="track"></span><span class="knob"></span></label>
             </div>
             <label class="field"><span>无动作判定时长（秒）</span>
               <input class="input num" id="setIdleThreshold" type="number" min="5" max="3600" step="5" value="60"></label>
             <div class="sub">脚本的连续无动作段达到此时长跳过该段</div>
-            <label class="field top-3"><span>手动控制位置 <b id="setManualVal">50%</b></span>
+          </div>
+
+          <div class="panel card">
+            <div class="panel-head">
+              <div><div class="eyebrow">Manual</div><h2>手动控制位置</h2></div>
+              <button class="btn primary" id="setManualMove">移动</button>
+            </div>
+            <label class="field">
+              <span>目标位置 <b id="setManualVal">50%</b></span>
               <div class="vl-slider" id="setManualPos" data-single data-min="0" data-max="100" data-val="50">
                 <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
               </div></label>
-            <div class="row flush">
-              <div class="grow"><div class="sub">拖到位置后点「移动」，设备立即过去</div></div>
-              <button class="btn primary" id="setManualMove">移动</button>
+            <div class="sub">拖到位置后点「移动」，设备立即过去</div>
+          </div>
+
+          <div class="panel card">
+            <div class="panel-head">
+              <div><div class="eyebrow">Delay</div><h2>延迟调整</h2></div>
             </div>
             <div class="row flush">
-              <div class="grow"><div class="name">延迟调整</div><div class="sub">负值提前，正值滞后</div></div>
+              <div class="grow"><div class="name" id="setDelayVal">0 ms</div><div class="sub">负值提前，正值滞后</div></div>
               <div class="row gap-2">
                 <button class="btn ghost" data-delay="-100">-100</button>
                 <button class="btn ghost" data-delay="-10">-10</button>
@@ -798,7 +826,12 @@
                 <button class="btn ghost" data-delay="100">+100</button>
               </div>
             </div>
-            <div class="panel-head top-3"><div><h2>设备高级设置</h2></div></div>
+          </div>
+
+          <div class="panel card">
+            <div class="panel-head">
+              <div><div class="eyebrow">Advanced</div><h2>设备高级设置</h2></div>
+            </div>
             <div class="row flush">
               <div class="grow"><div class="name">伪装设备（VorzePiston 模式）</div>
                 <div class="sub">同款 A10 硬件换一整套 GATT 档案（UUID + 模式）</div></div>
@@ -823,7 +856,7 @@
               </div>
               <button class="btn ghost" id="setGotoSync">打开设备同步</button>
             </div>
-            <label class="field top-3">
+            <label class="field">
               <span>脚本文件夹</span>
               <div class="row flush gap-2">
                 <input class="input" id="setScriptFolder" placeholder="例如 E:\scripts">
