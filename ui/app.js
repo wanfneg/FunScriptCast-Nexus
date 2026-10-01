@@ -2027,7 +2027,8 @@
   }
   $("#vlBoost").addEventListener("click", function () { presetCmd("boost"); });
   $("#vlRandom").addEventListener("click", function () { presetCmd("random"); });
-  $("#vlPresetToggle").addEventListener("click", function () { presetCmd(DEV.preset.playing ? "stop" : "play"); });
+  /* 中间按钮 = 手机端 PresetPlayer.togglePlay()：一个按钮在播就停、没播就开始 */
+  $("#vlPresetToggle").addEventListener("click", function () { presetCmd("toggle_play"); });
 
   /* --- 预设网格（严格手机 PresetTile：两列、固定 4 个、不滚动） --- */
   function presetPoints(pr) {
@@ -2374,14 +2375,6 @@
 
   /* --- 布局自适应：⏸ 保持正圆、预设/浏览网格"正好 2 行"（草图口径） --- */
   function layoutVl() {
-    /* aspect-16-9：大框框按 16:9 定高（用户要求消除两侧黑边），并覆写网格第一行 */    var _wrap = document.querySelector(".vl-vwrap"), _frame = document.querySelector(".vl-frame");
-    if (_wrap && _frame) {
-      var _w = _wrap.clientWidth || 906;
-      var _h = Math.round(_w * 9 / 16);
-      _wrap.style.height = _h + "px";
-      var _rows = getComputedStyle(_frame).gridTemplateRows.split(" ");
-      if (_rows.length > 1) _frame.style.gridTemplateRows = _h + "px " + _rows.slice(1).join(" ");
-    }
     var row = $(".vl-btnrow"), b = $("#vlPause");
     if (row && b) {
       var s = Math.max(26, Math.min(row.clientHeight, row.clientWidth * 40 / 770));

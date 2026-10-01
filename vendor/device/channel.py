@@ -29,6 +29,7 @@ class ChannelState:
     allow_move: bool = True
     last_move: tuple = (0, 0)      # (percent, speed)
     moves: int = 0
+    recent: list = field(default_factory=list)   # 最近下发的位置（排查"乱跑"用）
 
 
 class DeviceChannel:
@@ -86,14 +87,34 @@ class DeviceChannel:
             self.reversed = bool(reversed_)
 
     # ---------- BLE ----------
-    async def scan(self, timeout: float = 6.0) -> list[dict]:
+    async def scan(self, timeout: float = 6.0, stop_on_supported: bool = True) -> list[dict]:
+        """扫描。**扫到受支持的设备就立刻返回**（手机端也是扫到即连，不是干等固定时长）——
+        之前界面点一下要等满 6 秒，就是这里在干等。"""
         from bleak import BleakScanner
-        found = await BleakScanner.discover(timeout=timeout, return_adv=True)
-        out = []
-        for addr, (dev, adv) in found.items():
+        seen: dict = {}
+        hit = asyncio.Event()
+
+        def _cb(dev, adv):  # noqa: ANN001
             toy = match_toy(dev.name)
-            out.append({"address": addr, "name": dev.name or "", "rssi": getattr(adv, "rssi", 0),
-                        "supported": bool(toy), "toy": toy.id if toy else ""})
+            seen[dev.address] = {"address": dev.address, "name": dev.name or "",
+                                 "rssi": getattr(adv, "rssi", 0),
+                                 "supported": bool(toy), "toy": toy.id if toy else ""}
+            if toy and stop_on_supported:
+                hit.set()
+
+        scanner = BleakScanner(detection_callback=_cb)
+        await scanner.start()
+        try:
+            try:
+                await asyncio.wait_for(hit.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+        finally:
+            try:
+                await scanner.stop()
+            except Exception:
+                pass
+        out = list(seen.values())
         out.sort(key=lambda x: (not x["supported"], -(x["rssi"] or 0)))
         return out
 
@@ -107,11 +128,19 @@ class DeviceChannel:
             self.state.error = ""
             try:
                 toy = self._forced_toy or (next((t for t in TOYS if t.id == toy_id), None) if toy_id else None)
+                # Windows BLE 必须先扫一次（把设备放进缓存），否则按地址直连常失败。
+                # 同时拿到**设备当前广播的身份** —— 同一台 A10 硬件在不同模式下
+                # 广播名不同（ServeU / VorzePiston），档案必须以它为准，
+                # 否则会去订阅一套根本不存在的特征（CharacteristicNotFound）。
+                # 有透传型号就不用预扫（界面刚扫过、设备在系统缓存里）——手机端也是秒连。
+                # 只有型号未知时才扫一次认身份。档案不匹配由下面的候选重试兜底。
+                advertised = None
                 if toy is None:
-                    for d in await self.scan(5.0):
+                    for d in await self.scan(3.0):
                         if d["address"].lower() == address.lower() and d["supported"]:
-                            toy = next(t for t in TOYS if t.id == d["toy"])
-                            break
+                            advertised = next((t for t in TOYS if t.id == d["toy"]), None)
+                            if advertised:
+                                toy = advertised
                 client = BleakClient(address, timeout=20.0)
                 await client.connect()
                 self._client = client
@@ -120,12 +149,33 @@ class DeviceChannel:
                 self.state.address = address
                 self.state.name = toy.name if toy else address
                 self.state.toy = toy.id if toy else ""
-                if toy:
-                    await self._start_notify(toy)
-                    await self._write(cmd_mode(self.mode_override if self.mode_override is not None else toy.a10_mode))
-                    if self.oc_mode:
-                        await self._write(cmd_oc_mode(True))
-                    await self._write(cmd_info())
+                cands = [t for t in (advertised, toy) if t]
+                for t in TOYS:
+                    if t not in cands:
+                        cands.append(t)
+                last_err = None
+                for t in cands:
+                    try:
+                        self._toy = t
+                        await self._start_notify(t)
+                        await self._write(cmd_mode(self.mode_override if self.mode_override is not None else t.a10_mode))
+                        if self.oc_mode:
+                            await self._write(cmd_oc_mode(True))
+                        self.state.name = t.name
+                        self.state.toy = t.id
+                        self.state.info = {}
+                        await self._write(cmd_info())
+                        last_err = None
+                        break
+                    except Exception as ex:
+                        last_err = ex
+                        try:
+                            if self._client:
+                                await self._client.stop_notify(t.rx)
+                        except Exception:
+                            pass
+                if last_err is not None:
+                    raise last_err
                 return {"ok": True, "state": self.state_dict()}
             except Exception as ex:
                 self.state.error = f"{type(ex).__name__}: {ex}"
@@ -199,6 +249,7 @@ class DeviceChannel:
         if ok:
             self.state.last_move = (percent, sp)
             self.state.moves += 1
+            self.state.recent = (self.state.recent + [int(target)])[-12:]
             cb = self.on_move
             if cb:
                 try:

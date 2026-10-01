@@ -2563,10 +2563,12 @@ class Handler(BaseHTTPRequestHandler):
                 p = d["preset"]
                 if act == "select":
                     res = p.select(body.get("id") or None)
-                elif act == "play":
-                    res = p.play()
-                elif act == "stop":
+                elif act in ("play", "start"):
+                    res = p.start()                       # 手机端方法名是 start()
+                elif act in ("pause", "stop"):
                     res = p.stop()
+                elif act == "toggle_play":
+                    res = p.toggle_play()
                 elif act == "random":
                     res = p.toggle_random()
                 elif act == "boost":

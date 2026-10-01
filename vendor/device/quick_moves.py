@@ -42,6 +42,8 @@ class QuickMoves:
         self._slow_task: asyncio.Task | None = None
         self._idle_task: asyncio.Task | None = None
         self._slow_index = 0
+        self._gen_o = 0        # 爆发/缓动各自世代：停止后旧循环必死（同 preset_player 的理由）
+        self._gen_s = 0
         self._last_external = 0.0
         # 设备每写一帧都会回调这里（含脚本帧）；缓动循环自己的帧不算"外部动作"
         self._self_moving = False
@@ -84,18 +86,16 @@ class QuickMoves:
         if self.is_orgasm:
             return self.state()
         self.is_orgasm = True
-        self._orgasm_task = True          # 占位：真实任务在线程安全投递后创建
-        self._spawn(self._orgasm_loop())
+        self._gen_o += 1
+        self._spawn(self._orgasm_loop(self._gen_o))
         return self.state()
 
     def stop_orgasm(self) -> dict:
         self.is_orgasm = False
-        if self._orgasm_task:
-            self._orgasm_task.cancel()
-            self._orgasm_task = None
+        self._gen_o += 1
         return self.state()
 
-    async def _orgasm_loop(self) -> None:
+    async def _orgasm_loop(self, gen: int) -> None:
         s = self.orgasm
         lo, hi = int(s.min_percent), int(s.max_percent)
         span = max(1, abs(hi - lo))
@@ -103,7 +103,7 @@ class QuickMoves:
         interval = span / float(speed)          # 手机端：每 (max-min)/maxSpeed 秒一次
         pos = lo
         try:
-            while self.is_orgasm:
+            while self.is_orgasm and gen == self._gen_o:
                 pos = hi if pos == lo else lo
                 self._self_moving = True
                 await self.ch.move_to(pos, speed, force=True, raw=True)
@@ -120,41 +120,39 @@ class QuickMoves:
             return self.state()
         self.is_slow = True
         self._slow_index = 0
-        self._idle_task = True
-        self._spawn(self._idle_watch())
+        self._gen_s += 1
+        self._spawn(self._idle_watch(self._gen_s))
         return self.state()
 
     def stop_slow(self, reason: str = "") -> dict:
         self.is_slow = False
-        for t in (self._slow_task, self._idle_task):
-            if t:
-                t.cancel()
+        self._gen_s += 1        # 空闲计时与缓动循环同时失效
         self._slow_task = None
         self._idle_task = None
         return self.state()
 
-    async def _idle_watch(self) -> None:
+    async def _idle_watch(self, gen: int) -> None:
         import time
         secs = max(1, int(self.slow.idle_detect_seconds))
         if self._last_external == 0.0:
             self._last_external = time.time()
         try:
-            while self.is_slow:
+            while self.is_slow and gen == self._gen_s:
                 await asyncio.sleep(0.25)
                 if not self.ch.state.allow_move:
                     continue
                 if time.time() - self._last_external >= secs and self._slow_task is None:
                     self._slow_task = True
-                    self.loop.create_task(self._slow_loop())   # 已在循环线程内，可直接建
+                    self.loop.create_task(self._slow_loop(gen))   # 已在循环线程内
         except asyncio.CancelledError:
             pass
 
-    async def _slow_loop(self) -> None:
+    async def _slow_loop(self, gen: int) -> None:
         s = self.slow
         lo, hi = int(s.min_percent), int(s.max_percent)
         speed = max(1, int(s.max_speed))
         try:
-            while self.is_slow:
+            while self.is_slow and gen == self._gen_s:
                 self._slow_index += 1
                 target = lo if self._slow_index % 2 else hi
                 self._self_moving = True
