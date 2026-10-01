@@ -520,6 +520,31 @@ def missing_roots(roots) -> list:
     return out
 
 
+def _clamp_video_link(vl: dict) -> dict:
+    """联动页数值夹紧（二次确认 #1）。此前零校验：range_min=90 / range_max=10 存得进去，
+    span=-80 → _scale_speed 出负值 → move_to 里 sp=max(0,…)=0，**全部动作速度静默归零**。
+    非法输入夹紧而不是 500 报错（与现有保存流一致）。"""
+    def _num(key, lo, hi, default):
+        try:
+            x = float(vl.get(key, default))
+        except (TypeError, ValueError):
+            x = float(default)
+        return max(float(lo), min(float(hi), x))
+
+    out = dict(vl)
+    for key in ("range_min", "idle_min", "burst_min"):
+        out[key] = _num(key, 0, 100, 0)
+    for key in ("range_max", "idle_max", "burst_max"):
+        out[key] = _num(key, 0, 100, 100)
+    for lo_k, hi_k in (("range_min", "range_max"), ("idle_min", "idle_max"),
+                       ("burst_min", "burst_max")):
+        if out[lo_k] > out[hi_k]:
+            out[lo_k], out[hi_k] = out[hi_k], out[lo_k]
+    for key in ("max_speed", "idle_speed", "burst_speed"):
+        out[key] = int(_num(key, 0, 500, 500))
+    return out
+
+
 def save_settings(patch: dict) -> dict:
     with _SETTINGS_LOCK:
         s = load_settings()
@@ -560,6 +585,8 @@ def save_settings(patch: dict) -> dict:
                 v = [norm_path(x) for x in v if norm_path(x)]
             elif k == "library_roots" and isinstance(v, list):
                 v = [norm_path(x) for x in v if norm_path(x)]
+            elif k == "video_link" and isinstance(v, dict):
+                v = _clamp_video_link(v)
             s[k] = v
         try:
             SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -2579,8 +2606,6 @@ class Handler(BaseHTTPRequestHandler):
                     res = d["arbiter"].start_orgasm() if kind == "orgasm" else d["arbiter"].start_slow()
                 elif kind in ("orgasm", "slow"):
                     res = q.stop_orgasm() if kind == "orgasm" else q.stop_slow()
-                elif False:
-                    pass
                 elif kind == "pause":
                     res = q.pause_for_player()
                 elif kind == "resume":
@@ -3032,7 +3057,6 @@ class HeadsetHandler(BaseHTTPRequestHandler):
     server_version = "FSHost-Headset/1.0"
     # 头显端 OkHttp 不需要 CORS（不是浏览器）；去掉 ACAO * 是安全收紧——
     # 否则任意网页都能跨域读这四个接口的响应（里面含视频路径、服务状态）。
-    _ALLOW_HEADERS = ("Content-Type", "Authorization")
 
     # ---- 工具 ----
     def _json(self, obj, code: int = 200) -> None:
@@ -3583,10 +3607,22 @@ def request_quit() -> None:
             except Exception as e:
                 log.warning("销毁窗口失败：%s", e)
         # 无窗口模式（或销毁失败）走到这里。os._exit 会**跳过** run() 的 finally，
-        # 所以必须自己把字幕服务（连同 audiocpp 孙进程，约 3GB）和 DLNA 带走：
+        # 所以必须自己把设备会话、字幕服务（连同 audiocpp 孙进程，约 3GB）和 DLNA 带走：
         # 否则它们变成孤儿，而下次启动的 reap_orphan_audiocpp 看到 8756 还开着
         # 会把它当成"在用"，于是永不回收，只能靠手动点「回收残留服务」。
-        for _step in (TRAY.stop, sub_stop, dlna_stop):
+        def _device_cleanup() -> None:
+            d = _DEV.get("obj")
+            if not d:
+                return
+            try:
+                d["arbiter"].stop_all()          # 停四个运动会话
+            except Exception:
+                pass
+            try:
+                d["ch"].submit(d["ch"].disconnect(), timeout=5)   # 断 BLE（短超时，别赖着不退）
+            except Exception:
+                pass
+        for _step in (_device_cleanup, TRAY.stop, sub_stop, dlna_stop):
             try:
                 _step()
             except Exception:
@@ -3877,11 +3913,11 @@ def _apply_device_settings() -> None:
     dev = s.get("device") or {}
     try:
         d["ch"].apply_motion(range_lo=vl.get("range_min", 0), range_hi=vl.get("range_max", 100),
-                             max_speed=vl.get("max_speed", 500), reversed_=bool(vl.get("reversed")))
+                             max_speed=vl.get("max_speed", 500))
         # 行程/限速没变就不重复下发 0x42（I3）：拖任意联动滑轨都会走到这里，每次一个
         # submit(timeout=10) 的 BLE 往返既卡 HTTP 线程又与运动帧交错
         _sig = (round(float(vl.get("range_min", 0)), 3), round(float(vl.get("range_max", 100)), 3),
-                int(vl.get("max_speed", 500) or 0), bool(vl.get("reversed")))
+                int(vl.get("max_speed", 500) or 0))
         if _sig != getattr(d["ch"], "_last_motion_sig", None):
             d["ch"]._last_motion_sig = _sig
             d["ch"].submit(d["ch"].apply_limits(), timeout=10)
@@ -3896,14 +3932,17 @@ def _apply_device_settings() -> None:
         }
         d["quick"].apply({k: v for k, v in vl_cards["orgasm"].items() if v is not None},
                          {k: v for k, v in vl_cards["slow"].items() if v is not None})
-        # 设置页只管"空闲判定秒数"，单独补上，不被卡片覆盖
+        # 设置页只管"空闲判定秒数"，单独补上，不被卡片覆盖；
+        # 有效上限夹紧 1-60（手机端 QuickMoves.kt:368 coerceIn(1,60)——UI 能填 600，实际生效 60）
         if dev.get("slow", {}).get("idle_detect_seconds") is not None:
-            d["quick"].slow.idle_detect_seconds = int(dev["slow"]["idle_detect_seconds"])
+            d["quick"].slow.idle_detect_seconds = max(1, min(60, int(dev["slow"]["idle_detect_seconds"])))
         # 设备侧偏好：重连后由 channel.connect 自动补发
         d["ch"].oc_mode = bool(dev.get("oc_mode"))
         d["ch"].reversed = bool(dev.get("reversed"))
         if dev.get("a10_mode") is not None:
-            _tp = ("vorze", "serveu")[int(dev["a10_mode"])] if int(dev["a10_mode"]) in (0, 1) else None
+            # 权威表 ServeU=0 / VorzePiston=1（DeviceProtocols.kt / protocols.py）——
+            # 旧版写成 ("vorze","serveu") 是反的：开伪装下发的是 ServeU 协议
+            _tp = ("serveu", "vorze")[int(dev["a10_mode"])] if int(dev["a10_mode"]) in (0, 1) else None
             if _tp:
                 d["ch"]._forced_toy = next((t for t in __import__("vendor.device.protocols", fromlist=["TOYS"]).TOYS if t.id == _tp), None)
         if dev.get("skip_idle") is not None:
@@ -4179,6 +4218,17 @@ def run(open_window: bool = True) -> None:
         log.error("webview.start 失败：%s", e)
         raise
     finally:
+        # 窗口模式的统一收尾：先停运动会话再断 BLE，与 request_quit 无窗口路径同款
+        _d = _DEV.get("obj")
+        if _d:
+            try:
+                _d["arbiter"].stop_all()
+            except Exception:
+                pass
+            try:
+                _d["ch"].submit(_d["ch"].disconnect(), timeout=5)
+            except Exception:
+                pass
         TRAY.stop()
         sub_stop()
         dlna_stop()

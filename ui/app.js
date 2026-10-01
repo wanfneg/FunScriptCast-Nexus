@@ -191,7 +191,7 @@
     ["themeLabel", "themeLabel2"].forEach(function (id) {
       var el = document.getElementById(id); if (el) el.textContent = label;
     });
-    ["themeToggle", "themeToggle2"].forEach(function (id) {
+    ["themeToggle"].forEach(function (id) {
       var el = document.getElementById(id);
       if (!el) return;
       el.title = tip;
@@ -202,10 +202,6 @@
   }
   function setMotion(m, persist) {
     document.documentElement.setAttribute("data-motion", m);
-    $$("#motionSeg button").forEach(function (b) {
-      b.setAttribute("aria-selected", b.getAttribute("data-motion-opt") === m ? "true" : "false");
-    });
-    if ($("#motionSeg")) placeSegThumb("motionSeg", "motionThumb", '#motionSeg button[data-motion-opt="' + m + '"]');
     if (persist) api("/api/settings", "POST", { motion: m });
   }
 
@@ -803,14 +799,10 @@
     /* 导航指示条初始位置 */
     setTimeout(function () { moveIndicator($('button[aria-current="true"]', nav)); }, 60);
 
-    /* 主题 / 动效 */
+    /* 主题 */
     $("#themeToggle").addEventListener("click", function () {
       setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark", true);
     });
-    var _t2 = $("#themeToggle2"); if (_t2) _t2.addEventListener("click", function () {
-      setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark", true);
-    });
-    if ($("#motionSeg")) initSeg("motionSeg", "motionThumb", function (b) { setMotion(b.getAttribute("data-motion-opt"), true); });
 
     /* DLNA */
     $("#dlnaStart").addEventListener("click", startDlna);
@@ -2111,7 +2103,9 @@
       var t = 0, pos = pr.segments[0][0];
       pts.push([0, pos]);
       pr.segments.forEach(function (sg) {
-        t += sg[2] || 0 || (Math.abs(sg[1] - sg[0]) * 1000 / Math.max(1, sg[2] || 1));
+        /* x 轴 = 源时间轴毫秒：段时长优先 durationMs(sg[3])，否则 行程×1000/速度。
+           旧版 `sg[2] || 0 || …` 拿到段速度(100)恒加 100ms，波形被压扁 */
+        t += (sg.length > 3 && sg[3]) ? sg[3] : (Math.abs(sg[1] - sg[0]) * 1000 / Math.max(1, sg[2] || 1));
         pos = sg[1];
         pts.push([t, pos]);
       });
@@ -2308,8 +2302,8 @@
   });
 
   /* ---- 设置页：设备与同步（M2）---- */
-  var SET_DEV = { script_sync: true, preset_speed: 100, a10_mode: null, oc_mode: false,
-                  orgasm: { max_speed: 500 }, slow: { idle_detect_seconds: 5, max_speed: 100 } };
+  var SET_DEV = { preset_speed: 100, a10_mode: null, oc_mode: false,
+                  slow: { idle_detect_seconds: 5 } };
   function renderSetDev() {
     if (!$("#setDevName")) return;
     var i = DEV.info || {}, sy = DEV.sync || {}, on = !!DEV.connected;
@@ -2338,18 +2332,13 @@
     api("/api/settings").then(function (r) {
       var d = (r && r.settings && r.settings.device) || {};
       SET_DEV = Object.assign(SET_DEV, d);
-      if (d.orgasm) SET_DEV.orgasm = Object.assign({ max_speed: 500 }, d.orgasm);
-      if (d.slow) SET_DEV.slow = Object.assign({ idle_detect_seconds: 5, max_speed: 100 }, d.slow);
-      if ($("#setScriptSync")) $("#setScriptSync").checked = d.script_sync !== false;
+      if (d.slow) SET_DEV.slow = Object.assign({ idle_detect_seconds: 5 }, d.slow);
       /* 对齐手机端：skipIdleEnabled 默认 false、阈值默认 60s（AppViewModel.kt:896/899）——
          不再用"缺键视为开"的兜底 */
       if ($("#setSkipIdle")) $("#setSkipIdle").checked = d.skip_idle === true;
       if ($("#setIdleThreshold")) $("#setIdleThreshold").value = d.idle_threshold || 60;
       if ($("#setSlowIdle")) $("#setSlowIdle").value = SET_DEV.slow.idle_detect_seconds;
-      if ($("#setSlowSpeed")) $("#setSlowSpeed").value = SET_DEV.slow.max_speed;
-      if ($("#setOrgasmSpeed")) $("#setOrgasmSpeed").value = SET_DEV.orgasm.max_speed;
       if ($("#setOcMode")) $("#setOcMode").checked = !!d.oc_mode;
-      if ($("#setSyncDelay") && DEV.sync) $("#setSyncDelay").value = DEV.sync.delay_ms || 0;
       if ($("#setScriptFolder") && r && r.settings) $("#setScriptFolder").value = r.settings.script_folder || "";
     });
   }
@@ -2394,10 +2383,6 @@
       if (on && !window.confirm("确认开启狂暴模式？\n扭矩约提升 30%，动力更强；\n若行程、限速设置不当，受伤风险将明显增加。")) { self.checked = false; return; }
       saveDev({ oc_mode: on });
     });
-    $("#setScriptSync") && $("#setScriptSync").addEventListener("change", function () { saveDev({ script_sync: this.checked }); });
-    $("#setSyncDelay") && $("#setSyncDelay").addEventListener("change", function () {
-      api("/api/sync/delay", "POST", { ms: Number(this.value) }).then(function () { toast("已保存", "", "ok"); });
-    });
     $("#setScriptFolderPick") && $("#setScriptFolderPick").addEventListener("click", function () {
       var cur = $("#setScriptFolder").value || "";
       if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
@@ -2414,10 +2399,10 @@
   loadSetDev();
 
   /* ---- 脚本同步：播放进度 → 设备 ---- */
+  /* 「播放视频时同步驱动设备」开关已删（手机端没有此项，视频在播即同步） */
   var SYNC = { on: false, last: 0, path: "" };
-  function syncEnabled() { return SET_DEV.script_sync !== false; }
   function syncStart(path) {
-    if (!DEV.connected || !syncEnabled() || !path) return;
+    if (!DEV.connected || !path) return;
     api("/api/sync/start", "POST", { path: path }).then(function (r) {
       if (r && r.ok) { SYNC.on = true; SYNC.path = r.script || path; }
       else if (r && r.error && !r.no_device) { SYNC.on = false; }
