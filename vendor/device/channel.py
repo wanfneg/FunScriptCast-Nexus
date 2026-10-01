@@ -165,9 +165,10 @@ class DeviceChannel:
                         self.state.name = t.name
                         self.state.toy = t.id
                         self.state.info = {}
-                        await self._write(cmd_info())
-                        await self.apply_limits()      # 手机端：握手后下发临时限位 0x42
-                        self._ready = True             # 握手完成，之后才允许写运动帧
+                        # 手机端握手顺序：写完 A10 模式**立刻置 ready**（不等 D0）→ 下发临时限位 → 读设备信息
+                        self._ready = True
+                        await self.apply_limits()          # 临时限位 0x42（手机端 applyLimits）
+                        await self._read_info_with_retry() # D0：最多 3 次、每次等 1s（设备刚连上响应慢）
                         last_err = None
                         break
                     except Exception as ex:
