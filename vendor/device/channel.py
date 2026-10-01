@@ -317,6 +317,24 @@ class DeviceChannel:
         except Exception as ex:
             return {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
 
+    INFO_RETRIES = 3
+    INFO_WAIT_S = 1.0
+
+    async def _read_info_with_retry(self) -> None:
+        """D0 设备信息：手机端最多重试 3 次、每次等 1 秒
+        （注释原文：部分设备刚连上时 D0 响应慢，避免设置页读不到硬件/固件版本）。"""
+        for _ in range(self.INFO_RETRIES):
+            if self.state.info:
+                return
+            await self._write(cmd_info())
+            steps = int(self.INFO_WAIT_S / 0.1)
+            for _ in range(steps):
+                await asyncio.sleep(0.1)
+                if self.state.info:
+                    return
+                if not self.state.connected:
+                    return
+
     async def apply_limits(self) -> bool:
         """下发临时限位 [0x42, min, max, speedHi, speedLo]（手机端 applyLimits）。
         行程范围/速度上限改一次就发一次；硬件 <150 会被 _write 之外的上层忽略（同手机端）。"""
