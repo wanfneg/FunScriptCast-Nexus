@@ -131,7 +131,8 @@
     content.scrollTop = 0;
     /* 分段控件与 canvas 在隐藏页里量不到尺寸（getBoundingClientRect 全是 0），
        所以每次页面显示后都要重新摆一次；等一帧让 display 生效。 */
-    requestAnimationFrame(function () { placeAllSegs(); });
+    requestAnimationFrame(function () { placeAllSegs(); });
+    requestAnimationFrame(function () { redrawPresetWaves(); });   // 切页后按新尺寸重画
   }
   nav.addEventListener("click", function (e) {
     var btn = e.target.closest("button[data-page]");
@@ -2069,8 +2070,8 @@
       pollDev();
     });
   }
-  $("#vlBoost").addEventListener("click", function () { vlPresetButton(this, function () { presetCmd("boost"); }); });
-  $("#vlRandom").addEventListener("click", function () { vlPresetButton(this, function () { presetCmd("random"); }); });
+  $("#vlBoost").addEventListener("click", function () { presetCmd("boost"); });
+  $("#vlRandom").addEventListener("click", function () { presetCmd("random"); });
   /* 中间按钮 = 手机端 PresetPlayer.togglePlay()：一个按钮在播就停、没播就开始 */
   $("#vlPresetToggle").addEventListener("click", function () { vlPresetButton(this, function () { presetCmd("toggle_play"); }); });
 
@@ -2114,12 +2115,30 @@
     }
     return travel / 100.0;   // 速度 100 时的秒数（默认配速）
   }
+  /** 按当前实际尺寸重画所有预设波形（切页/尺寸变化后调用；尺寸没变就跳过）*/
+  function redrawPresetWaves() {
+    var g = $("#vlPGrid");
+    if (!g || !g.childElementCount) return;
+    var d = window.devicePixelRatio || 1;
+    $$(".vl-wave", g).forEach(function (cv) {
+      var w = cv.clientWidth;
+      if (!w) return;
+      if (Math.abs(cv.width - Math.round(w * d)) > 2 || !cv.height || cv.height < 20) {
+        var pr = (VL_PRESETS || []).find(function (x) { return x.id === cv.getAttribute("data-preset"); });
+        if (pr) drawPresetWave(cv, pr);
+      }
+    });
+  }
   function drawPresetWave(cv, pr) {
     var dpr = window.devicePixelRatio || 1;
     var w = cv.clientWidth || 130, h = cv.clientHeight || 40;
-    var dpr = window.devicePixelRatio || 1; cv.width = Math.round((Math.round(w * dpr)) * dpr); cv.height = Math.round((Math.round(h * dpr)) * dpr); cv.style.width = ((Math.round(w * dpr))) + "px"; cv.style.height = ((Math.round(h * dpr))) + "px"; try { cv.getContext("2d").setTransform(dpr,0,0,dpr,0,0); } catch (e) {}
+    /* 清晰度按 DPR 提升：backing store = CSS 尺寸 × dpr，**CSS 尺寸保持不变**，
+       再用 setTransform(dpr…) 让绘制继续用 CSS 像素坐标。
+       （上一版把 dpr 乘了两遍还撑大元素宽度，波形只占左边 1/dpr —— 就是用户看到的「偏移」）*/
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
     var ctx = cv.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // 让下面的绘制坐标继续用 CSS 像素
     var padX = 1, padY = 2;
     var topY = padY, botY = h - padY, spanY = botY - topY;
     function yOf(pos) { return botY - spanY * Math.min(1, Math.max(0, pos / 100)); }
@@ -2456,6 +2475,15 @@
       if (bh > 0) bg.style.gridAutoRows = Math.max(118, (bh - 10) / 2) + "px";
     }
     drawHeat();
+    /* 卡片宽度变了要按新尺寸重画波形（否则沿用旧 backing，看着像只画了一半）*/
+    var _g = $("#vlPGrid");
+    if (_g) $$(".vl-wave", _g).forEach(function (cv) {
+      var _w = cv.clientWidth, _d = (window.devicePixelRatio || 1);
+      if (_w && Math.abs(cv.width - Math.round(_w * _d)) > 2) {
+        var _pr = (VL_PRESETS || []).find(function (x) { return x.id === cv.getAttribute("data-preset"); });
+        if (_pr) drawPresetWave(cv, _pr);
+      }
+    });   /* __wavesRedraw */
   }
   window.addEventListener("resize", function () { heatOffKey = ""; layoutVl(); });
 
@@ -2492,6 +2520,7 @@
   browse("");
   renderVlTabCard();
   renderDev();      // 设备/快捷动作/预设状态由 /api/device/state 轮询驱动
+  setInterval(redrawPresetWaves, 1500);   // 兜底：尺寸稳定后补画（切页/首次布局）
   renderPresetCards();
   // hash 深链（自检截图用）：#library / #library/browse=<路径> / #library/play=<路径>
   window.addEventListener("hashchange", function () { vlApplyHash(); });
