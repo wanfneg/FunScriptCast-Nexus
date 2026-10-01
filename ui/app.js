@@ -175,13 +175,6 @@
   function placeAllSegs() { segs.forEach(function (c) { c.place($('button[aria-selected="true"]', c.seg)); }); }
 
   /* ---------------------------------------------------------- 主题 / 动效 */
-  function placeSegThumb(segId, thumbId, sel) {
-    var seg = document.getElementById(segId);
-    var ctl = null;
-    for (var i = 0; i < segs.length; i++) if (segs[i].seg === seg) { ctl = segs[i]; break; }
-    var b = $(sel, seg);
-    if (ctl) ctl.place(b);
-  }
   function setTheme(t, persist) {
     document.documentElement.setAttribute("data-theme", t);
     /* localStorage 同步留一份：下次启动靠 <head> 的内联脚本在首屏前套用，
@@ -2440,6 +2433,8 @@
       api("/api/settings", "POST", { script_folder: this.value }).then(function () { toast("已保存", "", "ok"); });
     });
   }
+  bindSetDev();   /* 曾经只 load 不 bind：设置页全部监听器（高级开关/空闲秒数/手动移动/
+                     延迟按钮…）一个都没绑上——"点了没有任何反应"的根因（2026-10-01 起断链） */
   loadSetDev();
 
   /* ---- 脚本同步：播放进度 → 设备 ---- */
