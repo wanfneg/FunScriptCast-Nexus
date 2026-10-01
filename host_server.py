@@ -3959,9 +3959,16 @@ def _apply_device_settings() -> None:
         if dev.get("a10_mode") is not None:
             # 权威表 ServeU=0 / VorzePiston=1（DeviceProtocols.kt / protocols.py）——
             # 旧版写成 ("vorze","serveu") 是反的：开伪装下发的是 ServeU 协议
-            _tp = ("serveu", "vorze")[int(dev["a10_mode"])] if int(dev["a10_mode"]) in (0, 1) else None
-            if _tp:
-                d["ch"]._forced_toy = next((t for t in __import__("vendor.device.protocols", fromlist=["TOYS"]).TOYS if t.id == _tp), None)
+            try:
+                # 打包版 vendor 不是顶层包（sys.path 里是 vendor 目录本身，device 才是包）。
+                # 旧写法 __import__("vendor.device.protocols") 抛 ModuleNotFoundError，
+                # 被外层 except 吞掉 → 从这里往后的**全部设置**（伪装档案/mode_override/
+                # 跳过无动作/预设速度）静默不应用——D 盘日志整片"应用设备设置失败"的根因。
+                from device.protocols import TOYS as _TOYS   # noqa: PLC0415
+                _tp = ("serveu", "vorze")[int(dev["a10_mode"])] if int(dev["a10_mode"]) in (0, 1) else None
+                d["ch"]._forced_toy = next((t for t in _TOYS if t.id == _tp), None) if _tp else None
+            except Exception as e:
+                log.warning("伪装设备档案应用失败（不影响其余设置）：%s", e)
         if dev.get("skip_idle") is not None:
             d["sync"].skip_idle = bool(dev["skip_idle"])
         if dev.get("idle_threshold") is not None:

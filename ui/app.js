@@ -2337,9 +2337,17 @@
       ? ("硬件版本：" + (i.hardware || "—") + " · 固件版本：" + (i.software || "—") + " · 设备最大速度：" + (i.max_speed || "—"))
       : "硬件版本：— · 固件版本：— · 设备最大速度：—";
     $("#setDevConnect").textContent = on ? "断开设备" : "扫描并连接";
-    $("#setA10").checked = Number(DEV.a10_mode) === 1;
+    /* 三个设备开关的回显（对齐手机端 AppViewModel.init 的"设备侧回读"）：
+       · 伪装设备：协议无模式查询通道，只能按**当前连接档案的身份**推
+         （连上 ServeU 通道 → 关；连上 Vorze 通道 → 开）；未连接回退本机设置值
+       · 狂暴模式：从设备 D0 信息回读（motorPower==100 即开启）；未连接回退本机设置值
+       · 反转方向：纯软件坐标变换（设备不存储），本机设置即真值 */
+    $("#setA10").checked = on
+      ? String(DEV.toy || "").toLowerCase() === "vorze"
+      : Number(SET_DEV.a10_mode) === 1;
     $("#setReversed").checked = !!DEV.reversed;
-    if (document.activeElement !== $("#setOcMode")) $("#setOcMode").checked = !!SET_DEV.oc_mode;
+    var _mp = Number((DEV.info || {}).motor_power) || 0;
+    $("#setOcMode").checked = (on && _mp >= 1 && _mp <= 100) ? (_mp >= 100) : !!SET_DEV.oc_mode;
     if ($("#setSyncState")) {
       $("#setSyncState").textContent = sy.active ? ("脚本同步中 · " + (sy.script || "")) : "脚本同步待命";
       $("#setSyncSub").textContent = sy.active
@@ -2349,6 +2357,16 @@
     if ($("#setDelayVal")) $("#setDelayVal").textContent = Math.round(sy.delay_ms || 0) + " ms";
   }
   function saveDev(patch) {
+    /* 本地先认值：开关回显读 SET_DEV（未连接时的回退源），不认值会在保存后
+       被 2s 轮询拨回旧值（点了没反应/弹回的观感） */
+    Object.keys(patch || {}).forEach(function (k) {
+      var v = patch[k];
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        SET_DEV[k] = Object.assign({}, SET_DEV[k], v);
+      } else {
+        SET_DEV[k] = v;
+      }
+    });
     api("/api/device/settings", "POST", patch).then(function (r) {
       if (r && r.ok) { toast("已保存", "", "ok"); pollDev(); }
       else toast("保存失败", (r && r.error) || "宿主未提供设备接口（需 1.0.57）", "err");
@@ -2475,11 +2493,12 @@
       DEV.quick = d.quick || DEV.quick;
       DEV.preset = d.preset || DEV.preset;
       DEV.sync = d.sync || null;                    // 设置页"脚本同步中"回显（此前从未赋值）
-      /* 高级设备设置的回显（伪装设备/反转方向）：此前从未拷贝这两个键，
-         renderSetDev 读的 DEV.a10_mode / DEV.reversed 恒为 undefined →
-         设置页开关永远显示"关"，不反映设备当前状态 */
+      /* 高级设备设置的回显（伪装设备/反转方向/狂暴模式）：
+         伪装开关按"设备当前档案"推（toy），狂暴按设备回读的 motor_power——
+         与手机端 AppViewModel 的"设备侧回读"同源 */
       DEV.reversed = !!d.reversed;
       DEV.a10_mode = d.a10_mode;
+      DEV.toy = d.toy || "";
       vlPlayingPreset = !!(DEV.preset && DEV.preset.playing);   // 预设卡"▶"回显（此前从未赋值）
       renderDev();
       /* 同步看护：视频在播、设备在线、该联动(want)但会话没起来 → 自动补起。

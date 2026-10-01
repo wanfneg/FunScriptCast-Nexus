@@ -368,6 +368,77 @@ class TestBatch3(unittest.TestCase):
         self.assertEqual(out3, {"theme": "x"})
 
 
+# ---------------------------------------------------------------- 第 8 批：设备设置应用（静默异常回归）
+class TestApplyDeviceSettings(unittest.TestCase):
+    def test_a10_import_does_not_kill_following_settings(self):
+        """回归：`__import__("vendor.device.protocols")` 在打包版抛 ModuleNotFoundError
+        （vendor 不是顶层包），被 _apply_device_settings 的外层 except 吞掉 →
+        从这里往后的**全部设置**（伪装档案 / mode_override / 跳过无动作 / 预设速度）
+        静默不应用——D 盘日志整片"应用设备设置失败"的根因，也是"高级设置不反映状态"的底层。"""
+        try:
+            import host_server as hs
+        except Exception as e:
+            self.skipTest(f"host_server 需要完整运行环境：{e}")
+
+        class FakeCh:
+            _last_motion_sig = None
+
+            def __init__(self):
+                self.mode_override = None
+                self._forced_toy = None
+                self.oc_mode = False
+                self.reversed = False
+
+            def apply_motion(self, **kw):
+                pass
+
+            def apply_limits(self):
+                return None
+
+            def submit(self, coro, timeout=10):
+                return None
+
+        class FakeSlow:
+            idle_detect_seconds = 5
+
+        class FakeQuick:
+            slow = FakeSlow()
+
+            def apply(self, orgasm, slow):
+                pass
+
+        class FakeSync:
+            skip_idle = False
+            idle_threshold = 3.0
+
+        class FakePreset:
+            def __init__(self):
+                self.speed = 100
+
+            def set_speed(self, v):
+                self.speed = int(v)
+
+        fake = {"ch": FakeCh(), "quick": FakeQuick(), "sync": FakeSync(), "preset": FakePreset()}
+        old_obj = hs._DEV.get("obj")
+        old_load = hs.load_settings
+        try:
+            hs._DEV["obj"] = fake
+            hs.load_settings = lambda *a, **k: {
+                "video_link": {},
+                "device": {"a10_mode": 1, "skip_idle": True, "idle_threshold": 60,
+                           "preset_speed": 150},
+            }
+            hs._apply_device_settings()
+        finally:
+            hs.load_settings = old_load
+            hs._DEV["obj"] = old_obj
+        self.assertEqual(fake["ch"].mode_override, 1, "a10_mode 未应用（导入又炸了？）")
+        self.assertIsNotNone(fake["ch"]._forced_toy, "伪装档案未应用")
+        self.assertTrue(fake["sync"].skip_idle, "skip_idle 被前面的异常吞掉了")
+        self.assertEqual(fake["sync"].idle_threshold, 60.0)
+        self.assertEqual(fake["preset"].speed, 150)
+
+
 # ---------------------------------------------------------------- 第 6 批：爆发/缓动引擎对齐手机端
 class TestQuickMovesEngine(Base):
     async def test_raw_move_not_clamped_to_device_limit(self):
