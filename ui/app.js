@@ -2436,7 +2436,9 @@
     api("/api/sync/start", "POST", { path: path }).then(function (r) {
       SYNC.starting = false;
       if (gen !== syncStartGen) return;
-      if (r && r.ok) { SYNC.on = true; SYNC.path = r.script || path; }
+      /* deferred：爆发在跑，宿主让脚本让路（手机端 externalControl 同款）——
+         不算"同步已开"，看护会在爆发结束后自动补起 */
+      if (r && r.ok) { SYNC.on = !r.deferred; SYNC.path = r.script || path; }
       else if (r && r.error && !r.no_device) { SYNC.on = false; SYNC.want = false; SYNC.scriptless = path; }
     });
   }

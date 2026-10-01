@@ -365,6 +365,79 @@ class TestBatch3(unittest.TestCase):
         self.assertEqual(out3, {"theme": "x"})
 
 
+# ---------------------------------------------------------------- 第 6 批：爆发/缓动引擎对齐手机端
+class TestQuickMovesEngine(Base):
+    async def test_raw_move_not_clamped_to_device_limit(self):
+        """爆发/缓动帧速度**不得**按设备速度上限夹紧（手机端 forceMoveToInverted：
+        no remap/clamp）。夹紧后设备比间隔假设的慢 → 行程被截短且随抖动漂移（飘忽）。
+        脚本路径（raw=False）照旧夹紧——那是手机端 forceMoveTo 就有的语义。"""
+        from device.channel import DeviceChannel
+        from device.protocols import convert_speed
+        ch = DeviceChannel()
+        try:
+            ch._ready = True
+            ch.max_speed = 350                    # 实机值：上限低于爆发速度 500
+            ch.range_lo, ch.range_hi = 0.0, 100.0
+            sent = []
+
+            async def fake_write(payload):
+                sent.append(payload)
+                return True
+
+            ch._write = fake_write
+            await ch.move_to(100, 500, raw=True)
+            self.assertEqual(sent[-1][2], convert_speed(500),
+                             "raw 帧速度被夹到上限了（爆发行程会被截短）")
+            await ch.move_to(100, 500)
+            self.assertEqual(sent[-1][2], convert_speed(350),
+                             "脚本路径应夹紧到设备速度上限")
+        finally:
+            ch._loop.call_soon_threadsafe(ch._loop.stop)
+
+    async def test_orgasm_cadence_speed_consistent(self):
+        """帧速度与间隔同源（都是滑块 500，不再一个 500 一个 350）；
+        首帧=lo、两目标交替（对齐手机端 idx0→min）。"""
+        ch, quick = self.make_world()[:2]
+        ch.max_speed = 350                        # 上限低于爆发速度
+        quick.orgasm.max_speed = 500
+        ch.calls.clear()
+        quick.start_orgasm()
+        await asyncio.sleep(0.55)
+        quick.stop_orgasm()
+        self.assertGreaterEqual(len(ch.calls), 2)
+        self.assertEqual(ch.calls[0][1], 0.0, "首帧应为 lo（手机端 idx0→min）")
+        self.assertEqual({c[1] for c in ch.calls[:2]}, {0.0, 100.0})
+        for _, _, sp in ch.calls:
+            self.assertEqual(sp, 500, "帧速度与间隔必须同源（被夹紧→行程截短飘忽）")
+
+    async def test_orgasm_params_live_and_links(self):
+        """linkedOrgasm 语义：关联勾选实时解析（范围/速度上限），取消后回自定义值。"""
+        ch, quick = self.make_world()[:2]
+        quick.orgasm.link_percent = True
+        quick.orgasm.link_speed = True
+        ch.range_lo, ch.range_hi = 20.0, 80.0
+        ch.max_speed = 350
+        self.assertEqual(quick._orgasm_params(), (20, 80, 350))
+        quick.orgasm.link_percent = False
+        quick.orgasm.link_speed = False
+        self.assertEqual(quick._orgasm_params(), (0, 100, 500))
+
+    async def test_script_defers_while_orgasm_runs(self):
+        """手机端 setExternalControl：爆发活动期间脚本同步**让路**——不掐爆发、
+        不抢设备；爆发停止后脚本才能起来。'加载脚本把爆发顶掉'是方向反了。"""
+        ch, quick, preset, sync, arb = self.make_world()
+        vp = str(self.dir / "video.mp4")
+        arb.start_orgasm()
+        res = arb.start_script(vp)
+        self.assertTrue(res.get("ok") and res.get("deferred"))
+        self.assertTrue(quick.is_orgasm, "脚本启动把爆发掐掉了")
+        self.assertFalse(sync.active, "脚本在爆发期间抢了设备")
+        quick.stop_orgasm()
+        res = arb.start_script(vp)
+        self.assertTrue(res["ok"] and not res.get("deferred"))
+        self.assertTrue(sync.active)
+
+
 from contextlib import suppress  # noqa: E402
 
 if __name__ == "__main__":

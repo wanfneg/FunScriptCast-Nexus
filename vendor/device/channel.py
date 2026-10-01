@@ -260,8 +260,15 @@ class DeviceChannel:
 
     async def move_to(self, percent: float, speed: int | None = None, raw: bool = False,
                       *, bypass_estop: bool = False) -> bool:
-        """percent 0..100。raw=True 表示**跳过行程重映射**（只保留反转）——
-        快捷动作/预设播放用手机端 forceMoveToInverted 的语义。
+        """percent 0..100。
+
+        raw=True（爆发/缓动，手机端 forceMoveToInverted）：只加反转，**不重映射、
+        不按设备速度上限夹紧**——这两条循环的间隔按发出去的速度计算（行程÷速度），
+        帧速度一旦被夹到上限以下，设备走不完就被下一帧叫回，行程被截短且随抖动
+        漂移（用户报"飘忽"；手机端 forceMoveToInverted 明确 no clamp）。
+        raw=False（脚本/预设/手动，手机端 forceMoveTo）：重映射进行程范围、速度按
+        跨度缩放，并夹紧到设备速度上限（手机端 moveTo 同款）。
+
         急停（allow_move=False）时一律拒写；只有急停的复位路径允许 bypass_estop，
         四个运动写点（脚本/预设/爆发/缓动）和手动移动都**不传**——
         旧版的 force=True 同时背"跳过重映射/跳过急停/强制写"三种含义，把这道闸门吃成了死代码。"""
@@ -272,11 +279,10 @@ class DeviceChannel:
         base = self.max_speed if speed is None else max(0, int(speed))
         if raw:
             target = self._invert(percent)          # forceMoveToInverted：只加反转
-            sp = base                              # 不改速度
+            sp = base                              # 不 remap、不夹紧（速度上限只管硬件限位帧）
         else:
             target = self._remap(percent)           # forceMoveTo
-            sp = self._scale_speed(base)            # 速度按跨度缩放
-        sp = max(0, min(self.max_speed, sp))
+            sp = max(0, min(self.max_speed, self._scale_speed(base)))   # 缩放后夹紧
         if not self._ready:
             return False
         ok = await self._write(cmd_move(target, sp))

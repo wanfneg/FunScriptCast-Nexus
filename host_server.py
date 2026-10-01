@@ -2622,7 +2622,15 @@ class Handler(BaseHTTPRequestHandler):
                         # 预设在播：丢弃恢复旗标，不让暂停过的爆发/缓动复活抢设备（§三#7）
                         res = q.discard_resume()
                     else:
-                        res = q.resume_for_player()
+                        # 经仲裁恢复（单一写者）：爆发重新接管时脚本写帧让路；
+                        # 直连 start_orgasm 会绕过仲裁，和脚本同步两个写者抢设备
+                        want_o, want_s = q.take_resume_flags()
+                        if want_o:
+                            res = d["arbiter"].start_orgasm()
+                        elif want_s:
+                            res = d["arbiter"].start_slow()
+                        else:
+                            res = q.state()
                 else:
                     self._json({"ok": False, "error": "未知快捷动作"}, 400)
                     return

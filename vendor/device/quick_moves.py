@@ -97,23 +97,31 @@ class QuickMoves:
         self._gen_o += 1
         return self.state()
 
-    async def _orgasm_loop(self, gen: int) -> None:
+    def _orgasm_params(self) -> tuple[int, int, int]:
+        """手机端 linkedOrgasm()：**每拍实时读**（含关联解析）——播放中改范围/速度
+        立即生效；取消关联后用户自定义值不会被改写（apply() 不再回写）。"""
         s = self.orgasm
-        lo, hi = int(s.min_percent), int(s.max_percent)
-        span = max(1, abs(hi - lo))
-        speed = max(1, int(s.max_speed))
-        interval = span / float(speed)          # 手机端：每 (max-min)/maxSpeed 秒一次
-        pos = lo
+        lo = int(self.ch.range_lo) if s.link_percent else int(s.min_percent)
+        hi = int(self.ch.range_hi) if s.link_percent else int(s.max_percent)
+        speed = int(self.ch.max_speed) if s.link_speed else int(s.max_speed)
+        return lo, hi, speed
+
+    async def _orgasm_loop(self, gen: int) -> None:
+        # 逐条对齐手机端 orgasmLoop：实时参数 / idx0→min 起步 /
+        # 间隔 (max-min)*1000/speed ms 下限 50ms / 急停或速度为 0 时 1s 空转
+        idx = 0
         try:
             while self.is_orgasm and gen == self._gen_o:
-                if not self.ch.state.allow_move or speed <= 0:
-                    await asyncio.sleep(1.0)      # 手机端：急停期间 delay(1000) 空转
+                lo, hi, speed = self._orgasm_params()
+                if speed <= 0 or not self.ch.state.allow_move:
+                    await asyncio.sleep(1.0)
                     continue
-                pos = hi if pos == lo else lo
+                target = lo if idx % 2 == 0 else hi
+                idx += 1
                 self._self_moving = True
-                await self.ch.move_to(pos, speed, raw=True)
+                await self.ch.move_to(target, speed, raw=True)   # raw：不夹到速度上限
                 self._self_moving = False
-                await asyncio.sleep(max(0.05, interval))   # 手机端下限 50ms
+                await asyncio.sleep(max(0.05, (hi - lo) * 1000.0 / speed / 1000.0))
         except asyncio.CancelledError:
             pass
         finally:
@@ -162,25 +170,29 @@ class QuickMoves:
         except asyncio.CancelledError:
             pass
 
-    async def _slow_loop(self, gen: int) -> None:
+    def _slow_params(self) -> tuple[int, int, int]:
+        """手机端 linkedSlow()：每拍实时读（缓动只有范围关联，没有速度关联）。"""
         s = self.slow
-        lo, hi = int(s.min_percent), int(s.max_percent)
-        speed = max(1, int(s.max_speed))
+        lo = int(self.ch.range_lo) if s.link_percent else int(s.min_percent)
+        hi = int(self.ch.range_hi) if s.link_percent else int(s.max_percent)
+        return lo, hi, int(s.max_speed)
+
+    async def _slow_loop(self, gen: int) -> None:
+        # 逐条对齐手机端 slowLoop：实时参数 / idx0→min / 间隔下限 100ms /
+        # 急停或速度为 0 时 1s 空转
+        idx = 0
         try:
             while self.is_slow and gen == self._gen_s:
-                self._slow_index += 1
-                target = lo if self._slow_index % 2 else hi
-                if not self.ch.state.allow_move:
-                    # 纵深防御（急停正常路径已停会话）：缓动空转不写帧，等闸门开
-                    await asyncio.sleep(0.25)
+                lo, hi, speed = self._slow_params()
+                if speed <= 0 or not self.ch.state.allow_move:
+                    await asyncio.sleep(1.0)
                     continue
+                target = lo if idx % 2 == 0 else hi
+                idx += 1
                 self._self_moving = True
-                await self.ch.move_to(target, speed, raw=True)
+                await self.ch.move_to(target, speed, raw=True)   # raw：不夹到速度上限
                 self._self_moving = False
-                # 手机端 QuickMoves.kt:340：间隔 = 行程×1000/速度 ms，下限 100ms。
-                # 旧版写死 1.0s——默认值下恰好也是 1s，"运动速度"滑轨成了装饰。
-                interval_ms = abs(hi - lo) * 1000.0 / speed
-                await asyncio.sleep(max(0.1, interval_ms / 1000.0))
+                await asyncio.sleep(max(0.1, (hi - lo) * 1000.0 / speed / 1000.0))
         except asyncio.CancelledError:
             pass
         finally:
@@ -196,14 +208,14 @@ class QuickMoves:
             self.stop_slow()
         return self.state()
 
-    def resume_for_player(self) -> dict:
-        if getattr(self, "_orgasm_resume", False):
-            self._orgasm_resume = False
-            self.start_orgasm()
-        if getattr(self, "_slow_resume", False):
-            self._slow_resume = False
-            self.start_slow()
-        return self.state()
+    def take_resume_flags(self) -> tuple[bool, bool]:
+        """取走"暂停前在跑"的旗标（是否爆发、是否缓动）并清空——供宿主经仲裁恢复，
+        避免 resume 直连 start_* 绕过单一写者（脚本写帧没让路 → 两个写者抢设备）。"""
+        o = bool(getattr(self, "_orgasm_resume", False))
+        s = bool(getattr(self, "_slow_resume", False))
+        self._orgasm_resume = False
+        self._slow_resume = False
+        return o, s
 
     def discard_resume(self) -> dict:
         """丢弃暂停恢复旗标：预设接管设备时调用，否则视频再播放会把爆发/缓动
@@ -222,13 +234,8 @@ class QuickMoves:
             for k, v in slow.items():
                 if hasattr(self.slow, k) and v is not None:
                     setattr(self.slow, k, int(v) if isinstance(getattr(self.slow, k), int) else bool(v))
-        # 关联主行程/主限速（手机端 rangeProvider / maxSpeedProvider）
-        if self.orgasm.link_percent:
-            self.orgasm.min_percent, self.orgasm.max_percent = int(self.ch.range_lo), int(self.ch.range_hi)
-        if self.orgasm.link_speed:
-            self.orgasm.max_speed = int(self.ch.max_speed)
-        if self.slow.link_percent:
-            self.slow.min_percent, self.slow.max_percent = int(self.ch.range_lo), int(self.ch.range_hi)
+        # 关联（手机端 linkedOrgasm/linkedSlow）由 _orgasm_params/_slow_params **每拍实时解析**。
+        # 旧版在这里把主范围/上限写回设置对象——会毁掉用户自定义值（取消关联后拿回的是被覆盖的数）。
 
     def state(self) -> dict:
         return {

@@ -32,6 +32,18 @@ class DeviceArbiter:
 
     # ---- 会话启动（矩阵的"新会话"列）----
     def start_script(self, path: str) -> dict:
+        # 手机端 SyncEngine.setExternalControl 语义（只由**一键爆发**驱动）：
+        # 「一键爆发开启时暂停脚本同步（避免两个循环同时驱动设备）」，
+        # 爆发停止后脚本从当前进度恢复（lastIndex=-1 强制重发）。
+        # 所以爆发活动期间脚本**让路**：不掐爆发、不抢设备，只校验脚本能加载；
+        # 等爆发结束后由前端看护（pollDev）再真正 start。
+        # 缓动不走这条路：脚本继续写帧、缓动靠空闲计时自然等待（同手机端）。
+        if self.quick.is_orgasm:
+            ok, err = self.sync.load(path)
+            if not ok:
+                return {"ok": False, "error": err}
+            return {"ok": True, "deferred": True, "script": self.sync.path,
+                    "actions": len(self.sync.actions)}
         res = self.sync.start(path)          # 先校验脚本能加载，失败就不动别人
         if res.get("ok"):
             self._stop_all_except("sync")    # 清预设 + 停快捷动作；不停视频（PC 集成页口径）
