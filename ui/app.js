@@ -1571,6 +1571,8 @@
         v.addEventListener(ev, function () {
           vlSyncVlUi();
           if (ev === "pause" || ev === "ended") vlShowChrome(true);   // 暂停时常显
+          if (ev === "pause" || ev === "ended") api("/api/quick", "POST", { kind: "pause", on: true }).then(pollDev);
+          if (ev === "play") api("/api/quick", "POST", { kind: "resume", on: true }).then(pollDev);
           if (ev === "play" || ev === "pause") vlTouch();
         });
       });

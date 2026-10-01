@@ -63,7 +63,9 @@ class QuickMoves:
         import time
         self._last_external = time.time()
         if self.is_slow:
-            self.stop_slow(reason="外部动作接管")
+            # 手机端 onAnyMove()：cancel 正在跑的缓动循环并重新计时，**缓动保持启用**
+            self._gen_s += 1
+            self._slow_task = None
 
     def note_external(self) -> None:
         import time
@@ -75,16 +77,15 @@ class QuickMoves:
 
     # ---- 急停 ----
     def set_stop(self, stopped: bool) -> dict:
-        self.ch.set_allow_move(not stopped)
-        if stopped:
-            self.stop_orgasm()
-            self.stop_slow()
+        self.ch.set_allow_move(not stopped)   # 手机端：只切 allowMove，循环继续空转
         return self.state()
 
     # ---- 爆发 ----
     def start_orgasm(self) -> dict:
         if self.is_orgasm:
             return self.state()
+        if self.is_slow:
+            self.stop_slow()                      # 手机端：爆发/缓动互斥
         self.is_orgasm = True
         self._gen_o += 1
         self._spawn(self._orgasm_loop(self._gen_o))
@@ -104,11 +105,14 @@ class QuickMoves:
         pos = lo
         try:
             while self.is_orgasm and gen == self._gen_o:
+                if not self.ch.state.allow_move or speed <= 0:
+                    await asyncio.sleep(1.0)      # 手机端：急停期间 delay(1000) 空转
+                    continue
                 pos = hi if pos == lo else lo
                 self._self_moving = True
                 await self.ch.move_to(pos, speed, force=True, raw=True)
                 self._self_moving = False
-                await asyncio.sleep(max(0.02, interval))
+                await asyncio.sleep(max(0.05, interval))   # 手机端下限 50ms
         except asyncio.CancelledError:
             pass
         finally:
@@ -118,6 +122,8 @@ class QuickMoves:
     def start_slow(self) -> dict:
         if self.is_slow:
             return self.state()
+        if self.is_orgasm:
+            self.stop_orgasm()                    # 手机端：互斥
         self.is_slow = True
         self._slow_index = 0
         self._gen_s += 1
@@ -163,6 +169,25 @@ class QuickMoves:
             pass
         finally:
             self._self_moving = False
+
+    # ---- 播放器联动（手机端 pauseForPlayer / resumeForPlayer）----
+    def pause_for_player(self) -> dict:
+        if self.is_orgasm:
+            self._orgasm_resume = True
+            self.stop_orgasm()
+        if self.is_slow:
+            self._slow_resume = True
+            self.stop_slow()
+        return self.state()
+
+    def resume_for_player(self) -> dict:
+        if getattr(self, "_orgasm_resume", False):
+            self._orgasm_resume = False
+            self.start_orgasm()
+        if getattr(self, "_slow_resume", False):
+            self._slow_resume = False
+            self.start_slow()
+        return self.state()
 
     # ---- 设置 ----
     def apply(self, orgasm: dict | None, slow: dict | None) -> None:

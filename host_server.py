@@ -2553,6 +2553,10 @@ class Handler(BaseHTTPRequestHandler):
                     res = q.start_orgasm() if on else q.stop_orgasm()
                 elif kind == "slow":
                     res = q.start_slow() if on else q.stop_slow()
+                elif kind == "pause":
+                    res = q.pause_for_player()
+                elif kind == "resume":
+                    res = q.resume_for_player()
                 else:
                     self._json({"ok": False, "error": "未知快捷动作"}, 400)
                     return
