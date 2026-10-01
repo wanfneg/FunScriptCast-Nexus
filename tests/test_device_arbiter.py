@@ -129,10 +129,13 @@ class TestArbiter(Base):
         arb.start_slow()
         self.assertTrue(quick.is_slow)
         self.assertFalse(preset.playing or quick.is_orgasm or sync.active)
-        # 脚本启动 → 其余三方全停
+        # 脚本启动 → 停预设；**缓动保持"等待空闲"**（手机端 onAnyMove 语义：
+        # 脚本帧会把缓动按回去，脚本停后缓动自动开始；曾因这里停缓动造成"点一下被顶掉"）
         res = arb.start_script(vp)
         self.assertTrue(res["ok"] and sync.active)
-        self.assertFalse(preset.playing or quick.is_orgasm or quick.is_slow)
+        self.assertFalse(preset.playing or quick.is_orgasm)
+        self.assertTrue(quick.is_slow, "脚本启动不应取消缓动（只让它等待空闲）")
+        quick.stop_slow()
         # 反向：预设启动 → 清脚本 + 停快捷动作
         arb.start_preset()
         self.assertTrue(preset.playing)
@@ -436,6 +439,21 @@ class TestQuickMovesEngine(Base):
         res = arb.start_script(vp)
         self.assertTrue(res["ok"] and not res.get("deferred"))
         self.assertTrue(sync.active)
+
+    async def test_slow_survives_script_watchdog(self):
+        """回归：点待机缓动被"看护"顶掉（探针 probe_slow_cancel.py 复现过的链路）——
+        旧 start_slow 停掉脚本 → sync.active=false → 前端看护把脚本拉回来 →
+        旧 start_script 停缓动 ⇒ "点一下立马自动取消"。
+        现在：start_slow 不停脚本（看护不触发）；start_script 也不停缓动。"""
+        ch, quick, preset, sync, arb = self.make_world()
+        vp = str(self.dir / "video.mp4")
+        arb.start_script(vp)                     # 视频在播、脚本同步活跃
+        self.assertTrue(sync.active)
+        arb.start_slow()                         # 用户点"待机缓动"
+        self.assertTrue(quick.is_slow)
+        self.assertTrue(sync.active, "start_slow 停了脚本 → 看护会把它拉回来顶掉缓动")
+        res = arb.start_script(vp)               # 看护的等价调用（即使触发）
+        self.assertTrue(res["ok"] and quick.is_slow, "脚本启动把缓动取消了")
 
 
 from contextlib import suppress  # noqa: E402

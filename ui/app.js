@@ -2475,6 +2475,11 @@
       DEV.quick = d.quick || DEV.quick;
       DEV.preset = d.preset || DEV.preset;
       DEV.sync = d.sync || null;                    // 设置页"脚本同步中"回显（此前从未赋值）
+      /* 高级设备设置的回显（伪装设备/反转方向）：此前从未拷贝这两个键，
+         renderSetDev 读的 DEV.a10_mode / DEV.reversed 恒为 undefined →
+         设置页开关永远显示"关"，不反映设备当前状态 */
+      DEV.reversed = !!d.reversed;
+      DEV.a10_mode = d.a10_mode;
       vlPlayingPreset = !!(DEV.preset && DEV.preset.playing);   // 预设卡"▶"回显（此前从未赋值）
       renderDev();
       /* 同步看护：视频在播、设备在线、该联动(want)但会话没起来 → 自动补起。

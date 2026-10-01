@@ -46,7 +46,10 @@ class DeviceArbiter:
                     "actions": len(self.sync.actions)}
         res = self.sync.start(path)          # 先校验脚本能加载，失败就不动别人
         if res.get("ok"):
-            self._stop_all_except("sync")    # 清预设 + 停快捷动作；不停视频（PC 集成页口径）
+            self.preset.stop()               # 清预设（手机端：加载脚本退出预设模式）
+            # **不动缓动**：脚本帧经 onAnyMove 把缓动按在"等待空闲"（手机端同款），
+            # 脚本停后缓动自动开始。停它会和前端的同步看护形成"脚本↔缓动"互顶
+            # （看护把脚本拉回来 → 脚本停缓动 → 缓动"点一下立马自动取消"）。
         return res
 
     def start_preset(self) -> dict:
@@ -62,7 +65,11 @@ class DeviceArbiter:
         return self.quick.start_orgasm()
 
     def start_slow(self) -> dict:
-        self._stop_all_except("slow")
+        # 手机端 startSlow：只与爆发互斥（QuickMoves.start_slow 内部 stop_orgasm）。
+        # **不停脚本**：脚本继续写帧、缓动靠空闲计时等待（手机端 onAnyMove 同款），
+        # 且 sync.active 保持为真——否则前端看护会把脚本拉回来又顶掉缓动，
+        # 造成"点待机缓动立马就自动取消"。
+        self.preset.stop()                   # 预设在播则让位（单一写者）
         return self.quick.start_slow()
 
     # ---- 急停 / 断开 / 退出共用 ----
