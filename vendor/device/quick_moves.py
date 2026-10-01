@@ -168,7 +168,10 @@ class QuickMoves:
                 self._self_moving = True
                 await self.ch.move_to(target, speed, raw=True)
                 self._self_moving = False
-                await asyncio.sleep(1.0)
+                # 手机端 QuickMoves.kt:340：间隔 = 行程×1000/速度 ms，下限 100ms。
+                # 旧版写死 1.0s——默认值下恰好也是 1s，"运动速度"滑轨成了装饰。
+                interval_ms = abs(hi - lo) * 1000.0 / speed
+                await asyncio.sleep(max(0.1, interval_ms / 1000.0))
         except asyncio.CancelledError:
             pass
         finally:
@@ -191,6 +194,13 @@ class QuickMoves:
         if getattr(self, "_slow_resume", False):
             self._slow_resume = False
             self.start_slow()
+        return self.state()
+
+    def discard_resume(self) -> dict:
+        """丢弃暂停恢复旗标：预设接管设备时调用，否则视频再播放会把爆发/缓动
+        拉起来与预设抢设备（§三#7：保留自动恢复，但预设播放中不让位外的都恢复）。"""
+        self._orgasm_resume = False
+        self._slow_resume = False
         return self.state()
 
     # ---- 设置 ----

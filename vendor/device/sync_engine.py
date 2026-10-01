@@ -20,11 +20,14 @@ class SyncEngine:
         self.path = ""
         self.actions: list[list[float]] = []
         self.delay_ms = 0
-        self.skip_idle = True
-        self.idle_threshold = 3.0     # 动作点间隔超过它就算"空闲段"，不推设备
+        # 对齐手机端默认：skipIdleEnabled=false / 阈值 60s（AppViewModel.kt:896/899）。
+        # 旧默认 True/3s 会让脚本一静止 3 秒设备就停、视频照播。
+        self.skip_idle = False
+        self.idle_threshold = 60.0
         self.sent = 0
         self.skipped = 0
         self._last_pos: int | None = None
+        self._seek_to: float | None = None   # 「跳过无动作」判定出的视频快进目标（秒）
 
     # ---- 脚本 ----
     def resolve_script(self, video_path: str) -> Path | None:
@@ -78,6 +81,7 @@ class SyncEngine:
 
     def stop(self) -> dict:
         self.active = False
+        self._seek_to = None
         return {"ok": True}
 
     # ---- 进度驱动 ----
@@ -94,28 +98,29 @@ class SyncEngine:
             return
         ms = t_sec * 1000.0 - self.delay_ms
         acts = self.actions
-        if ms <= acts[0][0]:
-            target, speed = acts[0][1], 0.0
-        elif ms >= acts[-1][0]:
-            target, speed = acts[-1][1], 0.0
-        else:
-            lo, hi = 0, len(acts) - 1
-            while hi - lo > 1:
-                mid = (lo + hi) // 2
-                if acts[mid][0] <= ms:
-                    lo = mid
-                else:
-                    hi = mid
-            a, b = acts[lo], acts[hi]
-            span = max(1.0, b[0] - a[0])
-            slope = abs(b[1] - a[1]) / (span / 1000.0)
-            # 手机端 rebuildIdleGaps：斜率 < 0.01 视为"无动作段"；skipIdle 开启且段长超阈值就跳过
-            if self.skip_idle and slope < 0.01 and span / 1000.0 >= self.idle_threshold:
-                self.skipped += 1
-                return                      # 空闲段：设备不动（手机端 skip idle 同义）
-            k = (ms - a[0]) / span
-            target = a[1] + (b[1] - a[1]) * k
-            speed = abs(b[1] - a[1]) / (span / 1000.0)     # %/秒（与热力图同口径）
+        if ms <= acts[0][0] or ms >= acts[-1][0]:
+            # 播放头在首/末动作点之外：一帧不发（对齐手机端 SyncEngine.kt:285-289）。
+            # 旧实现此处 speed=0 → int(0) or None → 通道取 max_speed，变成一次满速冲刺。
+            return
+        lo, hi = 0, len(acts) - 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if acts[mid][0] <= ms:
+                lo = mid
+            else:
+                hi = mid
+        a, b = acts[lo], acts[hi]
+        span = max(1.0, b[0] - a[0])
+        slope = abs(b[1] - a[1]) / (span / 1000.0)
+        # 手机端 rebuildIdleGaps：斜率 < 0.01 视为"无动作段"；skipIdle 开启且段长超阈值，
+        # 语义跟手机端一致——**把视频快进过这段**（seek 到下一动作点），而不是只停设备
+        if self.skip_idle and slope < 0.01 and span / 1000.0 >= self.idle_threshold:
+            self.skipped += 1
+            self._seek_to = (b[0] + self.delay_ms) / 1000.0
+            return
+        k = (ms - a[0]) / span
+        target = a[1] + (b[1] - a[1]) * k
+        speed = abs(b[1] - a[1]) / (span / 1000.0)     # %/秒（与热力图同口径）
         pos = int(max(0, min(100, round(target))))
         if self._last_pos is not None and abs(pos - self._last_pos) < 1:
             return                          # 位置没变就别刷 BLE
@@ -125,6 +130,12 @@ class SyncEngine:
             self.sent += 1
         except Exception:
             pass
+
+    def pop_seek(self) -> float | None:
+        """取走待执行的视频快进目标（秒）；无则 None。经 /api/sync/tick 响应带回界面。"""
+        sk = self._seek_to
+        self._seek_to = None
+        return sk
 
     def state(self) -> dict:
         return {"active": self.active, "script": Path(self.path).name if self.path else "",

@@ -255,6 +255,9 @@ class Library:
                 "parts": [{"path": p["path"], "name": p["name"],
                            "dur": p.get("dur", 0.0), "pos": p.get("pos", 0.0),
                            "local": p["local"]} for p in parts],
+                # 浏览页按路径反查卡片用（/api/library/browse 的 dur/pos/thumb 都靠它；
+                # 旧版只读不写，恒为 None → 海报墙永远拿不到时长/进度/缩略图）
+                "paths": [p["path"] for p in parts],
                 "has_funscript": any(p["funscript"] for p in parts),
                 "duration": max(p.get("dur") or 0 for p in parts),
                 "thumb": pick.get("thumb", ""),

@@ -477,6 +477,7 @@
                     <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
                   </div>
                   <span class="val" id="vlPresetSpeedVal">100</span>
+                  <button class="btn ghost" id="vlPresetDefault" title="恢复默认配速 100（原始）">恢复默认</button>
                 </div>
         <div class="vl-pgrid" id="vlPGrid"></div>
             </div>
@@ -778,7 +779,7 @@
               <label class="switch"><input type="checkbox" id="setSkipIdle"><span class="track"></span><span class="knob"></span></label>
             </div>
             <label class="field"><span>无动作判定时长（秒）</span>
-              <input class="input num" id="setIdleThreshold" type="number" min="1" max="60" step="1" value="3"></label>
+              <input class="input num" id="setIdleThreshold" type="number" min="5" max="3600" step="5" value="60"></label>
             <div class="sub">脚本的连续无动作段达到此时长跳过该段</div>
             <label class="field top-3"><span>手动控制位置 <b id="setManualVal">50%</b></span>
               <div class="vl-slider" id="setManualPos" data-single data-min="0" data-max="100" data-val="50">

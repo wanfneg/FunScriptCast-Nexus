@@ -2471,7 +2471,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/sync/tick":
                 d = _get_device()
                 d["sync"].tick(float(body.get("t") or 0))
-                self._json({"ok": True})
+                # 「跳过无动作」：判定出静止段时把快进目标带回界面（seek 语义，Q2 裁定）
+                self._json({"ok": True, "seek_to": d["sync"].pop_seek()})
             elif path == "/api/sync/delay":
                 d = _get_device()
                 d["sync"].delay_ms = float(body.get("ms") or 0)
@@ -2583,7 +2584,11 @@ class Handler(BaseHTTPRequestHandler):
                 elif kind == "pause":
                     res = q.pause_for_player()
                 elif kind == "resume":
-                    res = q.resume_for_player()
+                    if d["preset"].playing:
+                        # 预设在播：丢弃恢复旗标，不让暂停过的爆发/缓动复活抢设备（§三#7）
+                        res = q.discard_resume()
+                    else:
+                        res = q.resume_for_player()
                 else:
                     self._json({"ok": False, "error": "未知快捷动作"}, 400)
                     return
@@ -2604,8 +2609,11 @@ class Handler(BaseHTTPRequestHandler):
                     res = p.toggle_random()
                 elif act == "boost":
                     res = p.toggle_boost()
+                    _remember_preset_speed(p.speed)   # BOOST 跳 500 / 取消恢复原速，都照手机端写回
                 elif act == "speed":
                     res = p.set_speed(int(body.get("speed") or 100))
+                    _remember_preset_speed(p.speed)   # 落盘（手机端 persistDebounced）：否则下次
+                    # 任意 /api/settings 保存都会用磁盘旧值把运行中的速度拨回去
                 else:
                     self._json({"ok": False, "error": "未知预设动作"}, 400)
                     return
@@ -3848,6 +3856,17 @@ def _bleak_ok() -> bool:
         return False
 
 
+def _remember_preset_speed(v: int) -> None:
+    """预设速度落盘（手机端 persistDebounced("presetSpeed") 同义）。"""
+    try:
+        dev = dict(load_settings().get("device") or {})
+        if int(dev.get("preset_speed") or 0) != int(v):
+            dev["preset_speed"] = int(v)
+            save_settings({"device": dev})
+    except Exception as e:
+        log.warning("预设速度落盘失败：%s", e)
+
+
 def _apply_device_settings() -> None:
     """settings → 设备层（行程范围/限速取视频联动页那张卡，快捷动作/预设取 device 段）。"""
     d = _DEV.get("obj")
@@ -3859,7 +3878,13 @@ def _apply_device_settings() -> None:
     try:
         d["ch"].apply_motion(range_lo=vl.get("range_min", 0), range_hi=vl.get("range_max", 100),
                              max_speed=vl.get("max_speed", 500), reversed_=bool(vl.get("reversed")))
-        d["ch"].submit(d["ch"].apply_limits(), timeout=10)   # 行程/限速改了立刻下发 0x42
+        # 行程/限速没变就不重复下发 0x42（I3）：拖任意联动滑轨都会走到这里，每次一个
+        # submit(timeout=10) 的 BLE 往返既卡 HTTP 线程又与运动帧交错
+        _sig = (round(float(vl.get("range_min", 0)), 3), round(float(vl.get("range_max", 100)), 3),
+                int(vl.get("max_speed", 500) or 0), bool(vl.get("reversed")))
+        if _sig != getattr(d["ch"], "_last_motion_sig", None):
+            d["ch"]._last_motion_sig = _sig
+            d["ch"].submit(d["ch"].apply_limits(), timeout=10)
         # 视频联动页那两张卡（待机缓动 / 一键爆发）才是这两个动作的主设置 ——
         # 以前它们只写进 video_link，设备层读的是 device.*，等于**完全没接上**。
         vl_cards = {

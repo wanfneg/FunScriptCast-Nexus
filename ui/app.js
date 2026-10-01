@@ -1844,6 +1844,9 @@
   var VL_TABS = ["stroke", "idle", "burst"];
   function vlCfg() { return (S.settings && S.settings.video_link) || {}; }
   function saveVl(patch) {
+    /* 本地先认值：S.settings 是 1s 轮询的快照，300ms 内连改两项时后一次 POST
+       若还读旧快照，会把前一项回滚（对齐 bindLink 的写法） */
+    if (S.settings) S.settings.video_link = Object.assign({}, vlCfg(), patch);
     api("/api/settings", "POST", { video_link: Object.assign({}, vlCfg(), patch) }).then(function (r) {
       if (!r || r.ok === false) toast("保存失败", (r && r.error) || "", "err");
     });
@@ -1874,7 +1877,15 @@
     }
     paint();
     if (el.hasAttribute("data-disabled")) return;
-    function set(which, v) {
+    /* CSS 轨道两端各内缩 7.5px、把手 15px（styles.css .vl-slider）：换算必须按
+       (clientX-7.5)/(宽-15)，按整宽算会拖不到 0 和 100（260px 容器两端各丢 ≈5.8 点） */
+    function xToVal(clientX, r) {
+      var x = Math.min(Math.max(7.5, clientX - r.left), Math.max(7.5, r.width - 7.5));
+      return min + (x - 7.5) / Math.max(1, r.width - 15) * (max - min);
+    }
+    /* live=true 表示拖动进行中：只更新显示，不触发落盘（设备限位等 pointerup 才下发，
+       否则拖一下就是一次 BLE apply_limits 往返，与运动帧交错） */
+    function set(which, v, live) {
       v = Math.round(Math.min(max, Math.max(min, v)));
       if (dual) {
         if (which === "lo" && v > hi - 1) v = hi - 1;
@@ -1883,7 +1894,7 @@
       if (which === "lo") lo = v; else hi = v;
       el.setAttribute("data-lo", lo); el.setAttribute("data-hi", hi);
       paint();
-      onChange(lo, hi);                       // 实时回调：数值文本当场跟着走
+      onChange(lo, hi, !!live);
     }
     Object.keys(thumbs).forEach(function (side) {
       var th = thumbs[side];
@@ -1892,24 +1903,23 @@
         e.preventDefault();
         try { th.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件无有效 pointerId */ }
         var move = function (ev) {
-          var r = el.getBoundingClientRect();
-          set(side, min + (ev.clientX - r.left) / r.width * (max - min));
+          set(side, xToVal(ev.clientX, el.getBoundingClientRect()), true);
         };
         var up = function () {
           th.removeEventListener("pointermove", move);
           th.removeEventListener("pointerup", up);
-          onChange(lo, hi);
+          onChange(lo, hi, false);            // 松手才落盘
         };
         th.addEventListener("pointermove", move);
         th.addEventListener("pointerup", up);
       });
     });
-    /* 点轨道也能跳（手机滑轨同款手感） */
+    /* 点轨道也能跳（手机滑轨同款手感）：单击一步到位，直接落盘 */
     el.addEventListener("pointerdown", function (e) {
       if (e.target.classList.contains("thumb")) return;
       var r = el.getBoundingClientRect();
-      var v = min + (e.clientX - r.left) / r.width * (max - min);
-      set(dual ? (Math.abs(v - lo) <= Math.abs(v - hi) ? "lo" : "hi") : "hi", v);
+      var v = xToVal(e.clientX, r);
+      set(dual ? (Math.abs(v - lo) <= Math.abs(v - hi) ? "lo" : "hi") : "hi", v, false);
     });
   }
   /* 拖动期间数值实时更新，落盘防抖 300ms（旧版只在 pointerup 存一次，
@@ -1956,32 +1966,32 @@
     }
     box.innerHTML = html;
     if (vlTab === "stroke") {
-      initSlider("vl_range", true, function (lo, hi) {
+      initSlider("vl_range", true, function (lo, hi, live) {
         $("#vl_range_val").textContent = lo + "% - " + hi + "%";
-        queueVl({ range_min: lo, range_max: hi });
+        if (!live) queueVl({ range_min: lo, range_max: hi });
       });
-      initSlider("vl_max_speed", false, function (lo, hi) {
+      initSlider("vl_max_speed", false, function (lo, hi, live) {
         $("#vl_max_speed_val").textContent = hi + " Units/s";
-        queueVl({ max_speed: hi });
+        if (!live) queueVl({ max_speed: hi });
       });
     } else if (vlTab === "idle") {
-      initSlider("vl_idle_range", true, function (lo, hi) {
+      initSlider("vl_idle_range", true, function (lo, hi, live) {
         $("#vl_idle_range_val").textContent = lo + "% - " + hi + "%";
-        queueVl({ idle_min: lo, idle_max: hi });
+        if (!live) queueVl({ idle_min: lo, idle_max: hi });
       });
-      initSlider("vl_idle_speed", false, function (lo, hi) {
+      initSlider("vl_idle_speed", false, function (lo, hi, live) {
         $("#vl_idle_speed_val").textContent = hi + " Units/s";
-        queueVl({ idle_speed: hi });
+        if (!live) queueVl({ idle_speed: hi });
       });
       bindLink("vl_idle_link", "idle_link");
     } else {
-      initSlider("vl_burst_range", true, function (lo, hi) {
+      initSlider("vl_burst_range", true, function (lo, hi, live) {
         $("#vl_burst_range_val").textContent = lo + "% - " + hi + "%";
-        queueVl({ burst_min: lo, burst_max: hi });
+        if (!live) queueVl({ burst_min: lo, burst_max: hi });
       });
-      initSlider("vl_burst_speed", false, function (lo, hi) {
+      initSlider("vl_burst_speed", false, function (lo, hi, live) {
         $("#vl_burst_speed_val").textContent = hi + " Units/s";
-        queueVl({ burst_speed: hi });
+        if (!live) queueVl({ burst_speed: hi });
       });
       bindLink("vl_burst_link", "burst_link");
       bindLink("vl_burst_speed_link", "burst_speed_link");
@@ -2031,8 +2041,11 @@
   var vlArmed = null;          // 已进入告警态的按钮 id
   var vlArmTimer = 0;
   function vlInScriptLink() {
-    /* 联动模式 = 脚本同步正在跑（宿主已接受 /api/sync/start）*/
-    return !!(typeof SYNC !== "undefined" && SYNC.on);
+    /* 联动模式 = 脚本同步在跑 **或** 视频在播（对齐手机端 `_script != null || _videoActive`：
+       视频在播但没脚本时，进预设同样要先确认） */
+    if (typeof SYNC !== "undefined" && SYNC.on) return true;
+    var v = vlVid();
+    return !!(vlMed.path && v && !v.paused);
   }
   function vlDisarm(reset) {
     clearTimeout(vlArmTimer);
@@ -2279,11 +2292,19 @@
     if ($("#vlPresetSpeedVal")) $("#vlPresetSpeedVal").textContent = psVal;
     renderSetDev();      // 设置页「设备」块跟着一起刷新
   }
-  /* 预设速度滑轨（1..500，默认 100）——手机端 presetSpeed */
-  initSlider("vlPresetSpeed", false, function (lo, hi) {
+  /* 预设速度滑轨（1..500，默认 100）——手机端 presetSpeed：
+     防抖 300ms 下发（宿主会同时落盘，见 /api/preset 的 speed 分支） */
+  var vlPresetSpeedTimer = 0;
+  initSlider("vlPresetSpeed", false, function (lo, hi, live) {
     var v = Math.max(1, Math.round(hi));
     if ($("#vlPresetSpeedVal")) $("#vlPresetSpeedVal").textContent = v;
-    presetCmd("speed", { speed: v });
+    clearTimeout(vlPresetSpeedTimer);
+    vlPresetSpeedTimer = setTimeout(function () { presetCmd("speed", { speed: v }); }, live ? 300 : 0);
+  });
+  /* 恢复默认 100（手机端 Screens.kt「恢复默认」，100 时即原始配速） */
+  $("#vlPresetDefault").addEventListener("click", function () {
+    if ($("#vlPresetSpeedVal")) $("#vlPresetSpeedVal").textContent = 100;
+    presetCmd("speed", { speed: 100 });
   });
 
   /* ---- 设置页：设备与同步（M2）---- */
@@ -2320,8 +2341,10 @@
       if (d.orgasm) SET_DEV.orgasm = Object.assign({ max_speed: 500 }, d.orgasm);
       if (d.slow) SET_DEV.slow = Object.assign({ idle_detect_seconds: 5, max_speed: 100 }, d.slow);
       if ($("#setScriptSync")) $("#setScriptSync").checked = d.script_sync !== false;
-      if ($("#setSkipIdle")) $("#setSkipIdle").checked = d.skip_idle !== false;
-      if ($("#setIdleThreshold")) $("#setIdleThreshold").value = d.idle_threshold || 3;
+      /* 对齐手机端：skipIdleEnabled 默认 false、阈值默认 60s（AppViewModel.kt:896/899）——
+         不再用"缺键视为开"的兜底 */
+      if ($("#setSkipIdle")) $("#setSkipIdle").checked = d.skip_idle === true;
+      if ($("#setIdleThreshold")) $("#setIdleThreshold").value = d.idle_threshold || 60;
       if ($("#setSlowIdle")) $("#setSlowIdle").value = SET_DEV.slow.idle_detect_seconds;
       if ($("#setSlowSpeed")) $("#setSlowSpeed").value = SET_DEV.slow.max_speed;
       if ($("#setOrgasmSpeed")) $("#setOrgasmSpeed").value = SET_DEV.orgasm.max_speed;
@@ -2350,7 +2373,9 @@
       var pct = Number(el && el.getAttribute("data-val") || 50);
       var b = el && el.style.getPropertyValue("--b");
       if (b) pct = Math.round(Number(b) * 100);
-      api("/api/device/move", "POST", { percent: pct }).then(function (r) {
+      /* speed=200：对齐手机端「移动到该位置」固定 200（Screens.kt:1835），
+         不传的话宿主落到 max_speed（500），比手机端快 2.5 倍 */
+      api("/api/device/move", "POST", { percent: pct, speed: 200 }).then(function (r) {
         toast(r && r.ok ? ("已移动到 " + pct + "%") : "移动失败（设备未连接？）", "", r && r.ok ? "ok" : "warn");
       });
     });
@@ -2405,10 +2430,19 @@
   }
   function syncTick(t) {
     if (!SYNC.on) return;
+    var v = vlVid();
+    if (v && v.paused) return;    // 暂停中（含拖进度条）不追帧：设备不被 seek 目标拖着跑
     var now = Date.now();
     if (now - SYNC.last < 180) return;
     SYNC.last = now;
-    api("/api/sync/tick", "POST", { t: t });
+    api("/api/sync/tick", "POST", { t: t }).then(function (r) {
+      /* 「跳过无动作部分」（对齐手机端 maybeSkipIdle）：宿主判定脚本静止段超过阈值时
+         让**视频快进**到下一动作点；离目标太远才跳，防 seek 环 */
+      if (r && r.ok && r.seek_to != null && isFinite(r.seek_to)) {
+        var vv = vlVid();
+        if (vv && !vv.paused && !vv.seeking && Math.abs((vv.currentTime || 0) - r.seek_to) > 1.5) vlSeekTo(r.seek_to);
+      }
+    });
   }
 
   function pollDev() {
@@ -2421,6 +2455,8 @@
       DEV.info = d.info || {};
       DEV.quick = d.quick || DEV.quick;
       DEV.preset = d.preset || DEV.preset;
+      DEV.sync = d.sync || null;                    // 设置页"脚本同步中"回显（此前从未赋值）
+      vlPlayingPreset = !!(DEV.preset && DEV.preset.playing);   // 预设卡"▶"回显（此前从未赋值）
       renderDev();
     }).catch(function () { DEV.available = false; renderDev(); });
   }

@@ -238,5 +238,69 @@ class TestSessionBoundary(Base):
         ch._loop.call_soon_threadsafe(ch._loop.stop)   # 收掉构造函数起的常驻循环
 
 
+# ---------------------------------------------------------------- 第 2 批：F14 / F16 / F17
+class TestBatch2(Base):
+    GAP_SCRIPT = {"actions": [{"at": 0, "pos": 10}, {"at": 1000, "pos": 90}, {"at": 2000, "pos": 10},
+                              {"at": 92000, "pos": 10}, {"at": 94000, "pos": 90}]}
+
+    def _load_gap_script(self, sync):
+        (self.dir / "video.funscript").write_text(json.dumps(self.GAP_SCRIPT), encoding="utf-8")
+        ok, err = sync.load(str(self.dir / "video.mp4"))
+        assert ok, err
+        sync.active = True
+
+    async def test_f16_no_frames_outside_action_range(self):
+        """播放头在首/末动作点之外：一帧不发（旧版在此发 max_speed 满速帧）。"""
+        ch, quick, preset, sync, arb = self.make_world()
+        self._load_gap_script(sync)
+        n0 = len(ch.calls)
+        await sync._apply(-1.0)                 # 首动作点之前
+        self.assertEqual(len(ch.calls), n0)
+        await sync._apply(95.0)                 # 末动作点之后
+        self.assertEqual(len(ch.calls), n0)
+        await sync._apply(0.5)                  # 区间内正常发
+        self.assertEqual(len(ch.calls), n0 + 1)
+
+    async def test_f17_skip_idle_defaults_and_seek_semantics(self):
+        ch, quick, preset, sync, arb = self.make_world()
+        # 默认对齐手机端：关 / 60s
+        self.assertFalse(sync.skip_idle)
+        self.assertEqual(sync.idle_threshold, 60.0)
+        self._load_gap_script(sync)
+        n0 = len(ch.calls)
+        await sync._apply(0.5)                  # 正常段：发帧
+        self.assertEqual(len(ch.calls), n0 + 1)
+        await sync._apply(30.0)                 # 平段（默认关）：定位一次后 dedup 静默，不 seek
+        await sync._apply(40.0)
+        self.assertEqual(len(ch.calls), n0 + 2)
+        self.assertIsNone(sync.pop_seek())
+        sync.skip_idle = True                   # 开启（用户在设置页打开才生效）
+        sync._last_pos = None
+        n1 = len(ch.calls)
+        await sync._apply(30.0)
+        self.assertEqual(len(ch.calls), n1)     # 静止段一帧不发
+        sk = sync.pop_seek()
+        self.assertIsNotNone(sk)
+        self.assertAlmostEqual(sk, 92.0, delta=0.01)   # 快进到下一动作点
+        self.assertIsNone(sync.pop_seek())      # 取走即清，防 seek 环
+
+    async def test_f14_slow_interval_follows_speed(self):
+        """缓动间隔 = 行程×1000/速度（下限 100ms），不再是写死 1s。
+        行程 20、速度 100 → 200ms/拍：0.75s 内应至少 3 拍（旧版只可能 1 拍）。"""
+        ch, quick = self.make_world()[:2]
+        quick.slow.min_percent, quick.slow.max_percent = 0, 20
+        quick.slow.max_speed = 100
+        quick.is_slow = True
+        quick._gen_s += 1
+        task = asyncio.get_running_loop().create_task(quick._slow_loop(quick._gen_s))
+        await asyncio.sleep(0.75)
+        quick.stop_slow()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        self.assertGreaterEqual(len(ch.calls), 3, "缓动速度滑轨没生效（仍是 1s/拍？）")
+
+
+from contextlib import suppress  # noqa: E402
+
 if __name__ == "__main__":
     unittest.main()
