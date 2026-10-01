@@ -103,7 +103,9 @@ class SyncEngine:
                     hi = mid
             a, b = acts[lo], acts[hi]
             span = max(1.0, b[0] - a[0])
-            if self.skip_idle and span / 1000.0 > self.idle_threshold:
+            slope = abs(b[1] - a[1]) / (span / 1000.0)
+            # 手机端 rebuildIdleGaps：斜率 < 0.01 视为"无动作段"；skipIdle 开启且段长超阈值就跳过
+            if self.skip_idle and slope < 0.01 and span / 1000.0 >= self.idle_threshold:
                 self.skipped += 1
                 return                      # 空闲段：设备不动（手机端 skip idle 同义）
             k = (ms - a[0]) / span

@@ -3832,6 +3832,7 @@ def _apply_device_settings() -> None:
     try:
         d["ch"].apply_motion(range_lo=vl.get("range_min", 0), range_hi=vl.get("range_max", 100),
                              max_speed=vl.get("max_speed", 500), reversed_=bool(vl.get("reversed")))
+        d["ch"].submit(d["ch"].apply_limits(), timeout=10)   # 行程/限速改了立刻下发 0x42
         d["quick"].apply(dev.get("orgasm"), dev.get("slow"))
         # 设备侧偏好：重连后由 channel.connect 自动补发
         d["ch"].oc_mode = bool(dev.get("oc_mode"))

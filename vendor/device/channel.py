@@ -48,6 +48,7 @@ class DeviceChannel:
         self.reversed = False
         self.mode_override: int | None = None     # 伪装设备（A10 模式）
         self.oc_mode = False                      # 狂暴模式（MotorMaxPower 75/100）
+        self._ready = False                       # 手机端同款：握手完成（含限位下发）前不写帧
         self._forced_toy = None                   # 伪装设备：强制使用的 GATT 档案
         self.on_move = None                       # 每次写帧回调（脚本同步/快捷动作用来判空闲）
 
@@ -165,6 +166,8 @@ class DeviceChannel:
                         self.state.toy = t.id
                         self.state.info = {}
                         await self._write(cmd_info())
+                        await self.apply_limits()      # 手机端：握手后下发临时限位 0x42
+                        self._ready = True             # 握手完成，之后才允许写运动帧
                         last_err = None
                         break
                     except Exception as ex:
@@ -197,6 +200,7 @@ class DeviceChannel:
             pass
         self._client = None
         self._toy = None
+        self._ready = False
         self.state.connected = False
         self.state.address = ""
         self.state.name = ""
@@ -217,6 +221,7 @@ class DeviceChannel:
     async def _write(self, payload: bytes) -> bool:
         if not (self._client and getattr(self._client, "is_connected", False)) or self._toy is None:
             return False
+        # 握手（模式/限位/信息）没走完就不写运动帧 —— 手机端 forceMoveTo 同样要求 _ready
         for i in range(0, len(payload), CHUNK):
             await self._client.write_gatt_char(self._toy.tx, payload[i:i + CHUNK], response=False)
         return True
@@ -253,6 +258,8 @@ class DeviceChannel:
             target = self._remap(percent)           # forceMoveTo
             sp = self._scale_speed(base)            # 速度按跨度缩放
         sp = max(0, min(self.max_speed, sp))
+        if not self._ready:
+            return False
         ok = await self._write(cmd_move(target, sp))
         if ok:
             self.state.last_move = (percent, sp)
@@ -309,6 +316,14 @@ class DeviceChannel:
             return {"ok": True, "toy": toy.id}
         except Exception as ex:
             return {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
+
+    async def apply_limits(self) -> bool:
+        """下发临时限位 [0x42, min, max, speedHi, speedLo]（手机端 applyLimits）。
+        行程范围/速度上限改一次就发一次；硬件 <150 会被 _write 之外的上层忽略（同手机端）。"""
+        info = self.state.info or {}
+        if info and not info.get("supports_limit", True):
+            return False
+        return await self._write(cmd_limit(int(self.range_lo), int(self.range_hi), int(self.max_speed)))
 
     async def refresh_info(self) -> dict:
         """设备信息「刷新」：重发 D0。"""
