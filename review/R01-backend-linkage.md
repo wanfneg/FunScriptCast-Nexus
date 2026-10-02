@@ -1,5 +1,11 @@
 # R01 后端链路审查：视频联动（设置 → 设备层 → 脚本同步/预设/快捷动作）
 
+> **⚠️ 第一轮审查存档**：本文是 2026-10-02 凌晨的第 1 轮审查（当时尚未以手机端为
+> 真源），**其中部分结论已被修正或推翻**——修正记录见
+> `review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
+> 实施状态以 `review/最终修复清单-R2.md` 为准。
+
+
 - 任务：task-1（owner: backend-reviewer）
 - 范围：`host_server.py`（video_link / device / sync / quick / preset 路由与 `_apply_device_settings`）、`vendor/device/*`、`vendor/player/{mpv_player,library}.py` 与联动有交集的部分、`ui/{app.js,index.html,presets.json}` 中与这些路由的契约。
 - 方法：只读源码 + **三个只读复现脚本**（不启 GUI、不启服务器、不写 `data/integrated_settings.json`）。所有复现都用假通道（`move_to` 精确复刻 `channel.py:252-253` 的 `force` 语义）投到真实事件循环线程里跑真实设备层代码。命令与输出见 §D。

@@ -1,5 +1,11 @@
 # 视频联动页 · 草图规格（从 drawio 草图逐坐标反推）
 
+> **⚠️ 时效声明（R118 / 2026-10-02 文档体检）**：本文是实现期（2026-10-01）从 drawio
+> 草图反推的布局规格。联动页**已实现，并经 12 轮装机反馈调整**（上下空白区利用、热力图
+> 下移、行高重分等）；§3 的 7 个待拍板项已全部落定（以现实现为准）。
+> 本文保留作"骨架对齐关系"参考；**现状以 `ui/index.html` / `ui/styles.css` 为准**。
+
+
 > 来源：`C:\Users\admin\Downloads\视频联动页UI草图（集成预设）.html`（drawio 内嵌 mxGraphModel，已解出为
 > `design/video-link-sketch.drawio.xml`）。
 > 本文件 = 草图的**几何真相**；视觉细节以手机端本体为准（Screens.kt Steel 组件 / ScriptHeatmap.kt / PresetTile）。

@@ -1,5 +1,11 @@
 # R04 独立验证报告（红队复核）
 
+> **⚠️ 第一轮审查存档**：本文是 2026-10-02 凌晨的第 1 轮审查（当时尚未以手机端为
+> 真源），**其中部分结论已被修正或推翻**——修正记录见
+> `review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
+> 实施状态以 `review/最终修复清单-R2.md` 为准。
+
+
 - 任务：task-4（owner: verifier）｜复核对象：`review/R01-backend-linkage.md`、`review/R02-frontend-linkage.md`、`review/R03-broad-audit.md`
 - 方法：只读源码逐条回核 + 5 个自写只读探针（`review/probes/v4_*.py|js`）+ 语法检查；**未启动 GUI/服务器、未改任何产品代码、未写任何设置文件**（探针首尾对 `data/*.json` 做 sha256 守卫，见 §6）
 - 基线（复核时的工作副本，`git HEAD = cb81b21`，工作区有未提交改动 `ui/app.js` / `version.json`）：

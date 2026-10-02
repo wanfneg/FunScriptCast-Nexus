@@ -4013,3 +4013,46 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 **部署认知**：ui 热替换后用户的应用窗口（WebView2）不会自动重载，**必须重启应用**才生效（本轮踩过一次）。
 
 **状态**：**未打包**（用户要求等后续修改批次）；D 盘 = 1.0.81 + 热替换 + 已重启应用。
+
+## R118（2026-10-02）：全库文档体检（无功能改动；未打包）
+
+**用户指令**：「检查有无过时信息和文档，整个无用的删，有用的做整理汇总。以便继续开发」。
+
+**修（过时信息对齐现状）**：
+- `README.md`：安装包大小 80MB→约 170MB（1.0.81 实测 173,235,318 B）；功能一览补「视频联动」节
+  （媒体库 / 外挂 mpv 播放器 / BLE 设备直连 / 关联项）；测试列表补 test_device_arbiter.py；
+  删「发行物不含 GPL 组件」的错误说法；加"文档地图"链接。
+- `docs/THIRD-PARTY-NOTICES.md`：补 libmpv（**GPLv2+ 构建**，见下）/ audio.cpp / bleak 相关条目；
+  runtime 包清单按实际发行重扫（29→51 个；补 av/faster-whisper 链、winrt_*、bleak）；
+  加 R118 复核段（zhconv 回装、av 链保留）。
+- `vendor/subtitle/README.md`：默认组合 Ollama→本地 llama-server（Sakura-7B / Hy-MT2-7B 按语言路由）；
+  /health 示例与字段说明按真实返回重写；配置组合表加 R98 生产档（1.7B+1.5B；1.7B+7B 同卡会爆压）；
+  验证脚本改 `tools/` 实际路径、删已不存在的 validate_asr.py；实测数据指向 dev-archive。
+- `review/里程碑后续项-总览.md`：版本链 1.0.74→1.0.81、领先 77→94 提交。
+
+**重大发现（合规回摆）**：R69 声称已移除的 **zhconv 1.4.3 实际仍在发行包内**——R69 当时只
+手删了产物、没改 `make_runtime.ps1`，之后每次重建 runtime 都被 pip 装回；且它以 **egg-info**
+形式落盘，此前 dist-info 口径的清单扫描漏记（R118 实测 import 成功才发现）。已修正：
+构建脚本不再安装 + 冒烟表达式同步删除 + dist-app 与 D 盘 runtime 均已删除（`free_translators._to_hans`
+的 ImportError 降级路径保留）。**两条教训**：①合规整改必须同时改构建脚本，否则下次重建即回归；
+②包清单扫描必须覆盖 dist-info 与 egg-info 两种元数据形式。
+
+**合规缺口（已如实记账，留待拍板）**：`vendor/mpv/libmpv-2.dll` 是 **GPL 构建**
+（zhongfly/mpv-winbuild 的 `mpv-dev-x86_64-*.7z`，非 lgpl 变体；mpv 默认 GPLv2+）。
+处置：已在 `vendor/mpv/` 落盘 GPLv2 全文 + mpv Copyright + README（来源 / 源码链接 / 说明，
+下次打包随包），台账第 1 节如实记录。可选方案待拍板：改用 `mpv-dev-lgpl-x86_64-*.7z`
+（改 fetch_mpv.ps1 一行 + `-Force` 重下 121MB；LGPL 构建对播放场景已足够）。
+
+**顶注（时效声明，防误导）**：`docs/AI-SUBTITLE-STATUS.md`（停 R45-R53；协议 / 踩坑章节仍有效）、
+`design/DESIGN_SPEC.md`（初版设计；令牌真源 = styles.css；顺带修标题错字 uunScriptCast→FunScriptCast）、
+`design/VIDEO-LINK-SKETCH-SPEC.md`（已实现）、`review/R01-R04` + `REVIEW-视频联动.md`（第 1 轮
+存档，修正见 R2 §7）、`tools/release_notes.md`（停 1.0.42，发版补齐）。
+
+**删**：`build/_readme_body.md` + `_readme_sponsor_block.txt`（无引用旧草稿，卫生审计已点名）、
+`vendor/audiocpp/-`（126B 垃圾文件，会被复制进安装包）。
+**新建**：`docs/文档地图.md`（权威文档 / 历史存档 / 开发纪律一页索引）。
+**有意不动**：`vendor/dlna/README.md`（vendored 原样）、`docs/dev-archive/`、`review/probes/`、`docs/screenshots/`。
+
+**波及构建脚本**：`build/make_runtime.ps1`（去 zhconv：pip 行 + 冒烟 + 注释提醒勿加回）。
+**未打包未推送**（仅本地提交；D 盘运行环境不受影响，zhconv 已从 D 盘 runtime 同步删除）。
+

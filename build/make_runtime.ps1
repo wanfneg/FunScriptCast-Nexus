@@ -22,7 +22,7 @@ $tmp = Join-Path $env:TEMP ("nexus-runtime-" + [guid]::NewGuid().ToString('N').S
 
 # 冒烟表达式：必须覆盖**实际安装**的全部直接依赖。半成品 runtime（pip 中途失败
 # 留下的残目录）只有跑到缺的那个 import 才会现形——"已存在"路径同样要过这一关。
-$smokeExpr = "import fastapi, uvicorn, numpy, zhconv, faster_whisper, sys; print('runtime ok', sys.version.split()[0])"
+$smokeExpr = "import fastapi, uvicorn, numpy, faster_whisper, sys; print('runtime ok', sys.version.split()[0])"
 
 if (Test-Path $OutDir) {
     Write-Host "runtime 已存在：$OutDir，先冒烟验证完整性…" -ForegroundColor Yellow
@@ -58,20 +58,23 @@ try {
     Set-Content -Path $pth.FullName -Value $pthText -Encoding ASCII
 
     # ---- 2/3. 安装字幕服务（audiocpp 模式）的运行依赖 ----
-    # fastapi/uvicorn/numpy/zhconv + faster-whisper（耳语二次识别兜底，whisper_fallback.py
+    # fastapi/uvicorn/numpy + faster-whisper（耳语二次识别兜底，whisper_fallback.py
     # 懒加载；不装也能跑主链路）。runtime 本体不需要 pip，直接 --target 装进 site-packages。
+    # ⚠️ 不要加回 zhconv：GPLv2+，R69 已定移除（free_translators._to_hans 有降级路径）。
+    # R118 教训：R69 当时只手删了产物没改本脚本，之后每次重建 runtime 都把它装回
+    # （且是 egg-info 形式，常被 dist-info 口径的清单扫描漏掉）——已再次清理。
     # NO_PROXY=*：元凶是 **Windows 系统代理**（注册表 Internet Settings，Clash 类
     # 工具会写入 127.0.0.1:7897），pip 的 urllib 通过 getproxies() 读注册表，与
     # pip.ini 无关（--isolated 也拦不住）。代理软件没开时 pip 全部请求 TLS 失败，
     # 报 "check_hostname requires server_hostname"。NO_PROXY=* 让全部主机直连。
     $venvPy = Join-Path $root '.venv\Scripts\python.exe'
     if (-not (Test-Path $venvPy)) { throw "找不到 venv Python：$venvPy" }
-    Write-Host "[2/3] 安装 fastapi / uvicorn / numpy / zhconv / faster-whisper …" -ForegroundColor Cyan
+    Write-Host "[2/3] 安装 fastapi / uvicorn / numpy / faster-whisper …" -ForegroundColor Cyan
     $sitePkgs = Join-Path $OutDir 'Lib\site-packages'
     New-Item -ItemType Directory -Path $sitePkgs -Force | Out-Null
     $env:NO_PROXY = '*'
     $env:no_proxy = '*'
-    & $venvPy -m pip install --target $sitePkgs "fastapi" "uvicorn" "numpy" "zhconv" "faster-whisper"
+    & $venvPy -m pip install --target $sitePkgs "fastapi" "uvicorn" "numpy" "faster-whisper"
 # ---- BLE 设备通道（M2）：bleak + WinRT 依赖 ----
 # 注意：本机 .venv 的 pip 21.2.3 在 TLS 下会报 "check_hostname requires server_hostname"，
 # 所以优先用离线轮子（tools\wheels\bleak\*.whl，cp310）；没有再退常规 pip。

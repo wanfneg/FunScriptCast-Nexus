@@ -1,5 +1,11 @@
 # R03 宽面审查报告：质量 / 安全 / 并发 / 工程一致性
 
+> **⚠️ 第一轮审查存档**：本文是 2026-10-02 凌晨的第 1 轮审查（当时尚未以手机端为
+> 真源），**其中部分结论已被修正或推翻**——修正记录见
+> `review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
+> 实施状态以 `review/最终修复清单-R2.md` 为准。
+
+
 - 审查员：broad-auditor（task-3）
 - 范围：`host_server.py`（4139 行）、`vendor/subtitle/*`、`vendor/dlna/*`、`vendor/player/*`、`build/*`、`installer/*`、`.gitignore`、`tests/*`、`tools/check_cross_repo_consistency.py`、`ui/app.js` + `ui/index.html`（抽查）
 - 方式：静态阅读 + grep 定点 + 只读命令复现（未启动 GUI/服务器，未改任何产品代码）

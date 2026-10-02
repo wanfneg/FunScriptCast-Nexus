@@ -1,5 +1,11 @@
 # R02 前端审查报告：视频联动（page-library）与设置页联动项
 
+> **⚠️ 第一轮审查存档**：本文是 2026-10-02 凌晨的第 1 轮审查（当时尚未以手机端为
+> 真源），**其中部分结论已被修正或推翻**——修正记录见
+> `review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
+> 实施状态以 `review/最终修复清单-R2.md` 为准。
+
+
 - 审查人：frontend-reviewer（共享任务 task-2）
 - 仓库：`E:\Development\FunScriptCast-Nexus`，基线 HEAD `cb81b21`（工作区有未提交改动：`ui/app.js`、`version.json`）
 - 审查对象：`ui/app.js`（2612 行）、`ui/index.html`（937 行）、`ui/styles.css`（993 行），旁证：`host_server.py`、`vendor/device/{preset_player,quick_moves,sync_engine,channel}.py`

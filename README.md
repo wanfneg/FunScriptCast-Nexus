@@ -12,7 +12,7 @@
 ---
 面向 VR 观影的 PC 端控制中枢：**DLNA 媒体服务 + AI 实时字幕 + 设备同步**。
 
-- 下载安装包：[Releases](https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest)（Windows 10/11 x64，约 80MB，识别运行时已内置）
+- 下载安装包：[Releases](https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest)（Windows 10/11 x64，约 170MB，识别运行时已内置）
 - 源码即本仓库（公开），构建与开发说明见文末
 
 ![仪表盘](docs/screenshots/dashboard.png)
@@ -80,6 +80,16 @@
 - 脚本（.funscript）与视频经 adb **增量同步**到 Quest / 安卓手机，
   只推新增与变更文件，进度与结果在传输日志里可查。
 
+### 视频联动（媒体库 · 播放器 · 设备直连）
+
+- **媒体库**：扫描本地与网盘挂载目录，视频海报墙带缩略图与观看进度；
+  无 ffmpeg 依赖（时长/缩略图走 libmpv 抽帧）。
+- **内置播放器**：外挂 mpv 窗口播放，与联动页脚本进度实时对齐。
+- **BLE 设备直连**：ServeU / VorzePiston 等玩具直连 PC（无需手机）——
+  脚本按**段一帧**机制与视频同步下发（与手机端同构），支持预设播放（24 预设 /
+  爆发 / 随机）、待机缓动、一键爆发、一键急停；行为与手机端逐项对齐。
+- **关联项**：输出上限、速度等设置可与预设/爆发联动。
+
 ## 常见问题
 
 | 现象 | 处置 |
@@ -101,6 +111,8 @@
 
 - 字幕服务跑的是 `vendor\subtitle` 快照：改代码后 `tools\sync_distapp.ps1` 同步；
   改 `host_server.py` 须 `build\build_exe.ps1` 重编。构建前 `adb kill-server`。
-- 运行测试：`tests\test_pipeline_unit.py`（管线 17 项）、`tests\test_merge_shards.py`（分片合并）。
-- 架构、协议与排障史：[docs/AI-SUBTITLE-STATUS.md](docs/AI-SUBTITLE-STATUS.md)。
-- 第三方组件与许可证台账：[docs/THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md)（发行物不含 GPL 组件）。
+- 运行测试：`tests\test_pipeline_unit.py`（管线 17 项）、`tests\test_merge_shards.py`（分片合并）、
+  `tests\test_device_arbiter.py`（设备单一写者仲裁 30 项）。
+- 架构、协议与排障史：[docs/AI-SUBTITLE-STATUS.md](docs/AI-SUBTITLE-STATUS.md)（注意其顶部时效说明）。
+- 文档全集、权威性与时效状态：[docs/文档地图.md](docs/文档地图.md)。
+- 第三方组件与许可证台账：[docs/THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md)（含 libmpv 等大组件说明）。
