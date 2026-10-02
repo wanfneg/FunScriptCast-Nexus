@@ -4079,3 +4079,32 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 **注意**：宿主**当前进程**内存里若已加载旧 dll 映像，新播放仍走旧版；**重启应用后生效**
 （与热替换同规矩）。下次打包时安装包含 lgpl 版。**libmpv 事项闭环。**
 
+### R118.2（2026-10-02 当日）：打包装机 1.0.84 + 安装流程自动化（静默安装）
+
+**用户指令**：「重新打包安装然后测试是否正常」；并指出安装器需要点击、"前面的工作中都是我手动点的"——要求把安装自动化补上。
+
+**打包**：`builduild_installer.ps1`（内部 build_exe 会 bump 版本）走到 **1.0.84**
+（第一次打出的 1.0.83 因下面第 1 条坑导致装机中断、废弃删除；重打含守卫的 1.0.84）。
+产物 `dist-installer\FunScriptCast-Nexus-Setup-1.0.84.exe` = 161.0 MB。
+
+**踩坑（重要教训）**：
+1. **Inno 的 [Code] MsgBox 在 /SILENT//VERYSILENT 下仍会弹出并阻塞**——`/SUPPRESSMSGBOXES`
+   只覆盖标准向导对话框，**不管 [Code]**。第一次静默安装卡在"检测到已安装 1.0.81…将升级"
+   信息框上；随后安装进程挂在 agent 任务链里被取消连带中断（D 盘未装成）。
+   **修复**：setup.iss 升级检测三处 MsgBox 全部加 `WizardSilent` 守卫——升级提示静默跳过、
+   同版本重装静默继续、降级静默拒绝（语义与各自弹窗的默认按钮一致）。
+2. **静默安装命令模板**（装完守卫后全自动、零点击）：
+   `Setup-<版本>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=<日志路径>`
+   本次实测一次性通过（ExitCode=0）。
+3. Windows PowerShell 里 `curl` 是 `Invoke-WebRequest` 的别名（此坑已在 R118.1 修 fetch_mpv.ps1）。
+
+**安装后验证（6/6 全过；用 D 盘自带 runtime 跑 = 验证安装环境自身）**：
+version.json=1.0.84 ✓；libmpv-2.dll=95.8MB（lgpl）✓；许可文本三件套随包 ✓；runtime 无 zhconv ✓；
+无 mpv_player.py 残留（升级 InstallDelete 生效）✓；**抽帧冒烟**（K1cztm.mp4：1303.4s + 缩略图）✓。
+
+**启动宿主**：进程/8791/8790 就绪、日志干净；界面截图确认浅色主题、**v1.0.84 - WebView2**、
+媒体库 307 视频/286 卡片、DLNA 与头显接口就绪。（8791 的 /health 403「未开放路径」是设计——
+该接口只对头显白名单开放，curl 属误访。）
+
+**新增工具**：`tools/verify_install.py`——安装后一键验证（版本 / dll / 许可 / zhconv / 残留 / 抽帧）。
+
