@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass, field
 
 from .protocols import (TOYS, DeviceInfo, ToyDevice, cmd_info, cmd_limit, cmd_mode,
-                        cmd_move, cmd_oc_mode, match_toy, parse_notify)
+                        cmd_move, cmd_oc_mode, kotlin_round, match_toy, parse_notify)
 
 CHUNK = 20          # TX 分片（手机端同款）
 
@@ -95,7 +95,7 @@ class DeviceChannel:
             self.reversed = bool(reversed_)
 
     # ---------- BLE ----------
-    async def scan(self, timeout: float = 6.0, stop_on_supported: bool = True) -> list[dict]:
+    async def scan(self, timeout: float = 10.0, stop_on_supported: bool = True) -> list[dict]:
         """扫描。**扫到受支持的设备就立刻返回**（手机端也是扫到即连，不是干等固定时长）——
         之前界面点一下要等满 6 秒，就是这里在干等。"""
         from bleak import BleakScanner
@@ -165,17 +165,23 @@ class DeviceChannel:
                 for t in cands:
                     try:
                         self._toy = t
-                        await self._start_notify(t)
-                        await self._write(cmd_mode(self.mode_override if self.mode_override is not None else t.a10_mode))
-                        if self.oc_mode:
-                            await self._write(cmd_oc_mode(True))
+                        await self._start_notify(t.rx)
                         self.state.name = t.name
                         self.state.toy = t.id
                         self.state.info = {}
-                        # 手机端握手顺序：写完 A10 模式**立刻置 ready**（不等 D0）→ 下发临时限位 → 读设备信息
-                        self._ready = True
+                        # 手机端 handshake 顺序（BleDeviceService.handshake，逐条对齐）：
+                        # ① D0 读设备信息（最多 3 次、重试间隔 250ms）
+                        # ② 写临时限位 0x42（applyLimits）
+                        # ③ 写 A10 模式
+                        # ④ **最后才置 ready**（ready 之前不写运动帧）
+                        # 旧版顺序是"模式 → ready → 限位 → 读信息"：ready 早于限位，
+                        # 存在"限位还没下发就允许写帧"的窗口，且与手机完全相反。
+                        # 连接时**不补发**狂暴/oc（手机端连接流程里也没有；用户切换时
+                        # setOCMode 才写设备，设备端自行持久化）。
+                        await self._read_info_with_retry() # D0：最多 3 次、每次等 1s、间隔 250ms
                         await self.apply_limits()          # 临时限位 0x42（手机端 applyLimits）
-                        await self._read_info_with_retry() # D0：最多 3 次、每次等 1s（设备刚连上响应慢）
+                        await self._write(cmd_mode(self.mode_override if self.mode_override is not None else t.a10_mode))
+                        self._ready = True
                         last_err = None
                         break
                     except Exception as ex:
@@ -242,21 +248,21 @@ class DeviceChannel:
 
     # ---------- 运动 ----------
     def _scale_speed(self, speed: float) -> int:
-        """手机端 forceMoveTo：scaledSpeed = round(speed * span/100)——速度按行程跨度缩放。"""
+        """手机端 forceMoveTo：scaledSpeed = Math.round(speed * span/100)——速度按行程跨度缩放。"""
         span = self.range_hi - self.range_lo
-        return int(round(float(speed) * span / 100.0))
+        return kotlin_round(float(speed) * span / 100.0)
 
     def _remap(self, percent: float) -> int:
         """行程范围重映射（对应手机端 moveTo：先按 range 映射，再按需反转）。"""
         span = self.range_hi - self.range_lo
-        remapped = int(round(float(percent) * span / 100.0)) + int(self.range_lo)
+        remapped = kotlin_round(float(percent) * span / 100.0) + int(self.range_lo)
         # 手机端：target = if (invert) 100 - remapped else remapped
         target = (100 - remapped) if self.reversed else remapped
         return int(max(0, min(100, target)))
 
     def _invert(self, percent: float) -> int:
         v = 100.0 - float(percent) if self.reversed else float(percent)
-        return int(max(0, min(100, round(v))))
+        return int(max(0, min(100, kotlin_round(v))))
 
     async def move_to(self, percent: float, speed: int | None = None, raw: bool = False,
                       *, bypass_estop: bool = False) -> bool:
@@ -344,21 +350,24 @@ class DeviceChannel:
 
     INFO_RETRIES = 3
     INFO_WAIT_S = 1.0
+    INFO_GAP_S = 0.25    # 手机端 handshake 重试间隔 delay(250)
 
     async def _read_info_with_retry(self) -> None:
-        """D0 设备信息：手机端最多重试 3 次、每次等 1 秒
+        """D0 设备信息：对齐手机端 handshake——最多 3 次、每次等 1 秒、重试间隔 250ms
         （注释原文：部分设备刚连上时 D0 响应慢，避免设置页读不到硬件/固件版本）。"""
-        for _ in range(self.INFO_RETRIES):
+        for attempt in range(1, self.INFO_RETRIES + 1):
             if self.state.info:
                 return
             await self._write(cmd_info())
             steps = int(self.INFO_WAIT_S / 0.1)
             for _ in range(steps):
                 await asyncio.sleep(0.1)
-                if self.state.info:
-                    return
-                if not self.state.connected:
-                    return
+                if self.state.info or not self.state.connected:
+                    break
+            if self.state.info or not self.state.connected:
+                return
+            if attempt < self.INFO_RETRIES:
+                await asyncio.sleep(self.INFO_GAP_S)
 
     async def apply_limits(self) -> bool:
         """下发临时限位 [0x42, min, max, speedHi, speedLo]（手机端 applyLimits）。

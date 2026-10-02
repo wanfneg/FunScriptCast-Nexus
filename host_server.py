@@ -2524,7 +2524,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": "缺少 bleak（BLE 依赖未安装）"})
                     return
                 try:
-                    self._json({"ok": True, "devices": d["ch"].submit(d["ch"].scan(6.0), timeout=40)})
+                    # 10s 扫描窗口（对齐手机端 SCAN_TIMEOUT_MS=10000）；扫到支持设备即刻返回
+                    self._json({"ok": True, "devices": d["ch"].submit(d["ch"].scan(10.0), timeout=50)})
                 except Exception as e:
                     self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
             elif path == "/api/device/connect":

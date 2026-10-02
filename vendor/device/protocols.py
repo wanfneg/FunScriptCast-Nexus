@@ -17,6 +17,7 @@ RX 通知：
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 SERVEU_SERVICE = "31bb1111-33e3-4f3c-a7fb-104288e7cb77"
@@ -88,6 +89,13 @@ def convert_speed(v: int) -> int:
     return 250
 
 
+def kotlin_round(x: float) -> int:
+    """Kotlin Math.round 语义（= floor(x + 0.5)，.5 向正无穷）。
+    Python 内建 round 是"银行家舍入"（.5 取偶），在 .5 边界会与手机端差 1——
+    位置/速度都要逐值一致，这里统一使用 Kotlin 口径。"""
+    return int(math.floor(float(x) + 0.5))
+
+
 def cmd_info() -> bytes:
     return b"D0"
 
@@ -104,7 +112,7 @@ def cmd_limit(min_percent: int, max_percent: int, speed: int) -> bytes:
 
 
 def cmd_move(percent: int, speed: int) -> bytes:
-    p = max(0, min(100, int(round(percent))))
+    p = max(0, min(100, kotlin_round(percent)))
     return bytes([0x01, p, max(0, min(255, convert_speed(speed)))])
 
 

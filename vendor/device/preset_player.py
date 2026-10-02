@@ -27,6 +27,8 @@ import random
 import time
 from pathlib import Path
 
+from .protocols import kotlin_round
+
 BOOST_SPEED = 500
 DEFAULT_ID = "normal"
 TICK_MS = 20
@@ -49,7 +51,7 @@ def to_segments(kfs: list) -> list[list]:
     for a, b in zip(kfs, kfs[1:]):
         dist = abs(float(b[0]) - float(a[0]))
         dur = float(b[1]) - float(a[1])
-        speed = max(1, int(round(dist * 1000.0 / dur))) if (dist > 0 and dur > 0) else 1
+        speed = max(1, kotlin_round(dist * 1000.0 / dur)) if (dist > 0 and dur > 0) else 1
         out.append([float(a[0]), float(b[0]), speed, max(0.0, dur)])
     return out
 

@@ -2465,7 +2465,7 @@
     var v = vlVid();
     if (v && v.paused) return;    // 暂停中（含拖进度条）不追帧：设备不被 seek 目标拖着跑
     var now = Date.now();
-    if (now - SYNC.last < 25) return;   // 25ms：段边界检测粒度（对齐手机端 20ms 主循环）
+    if (now - SYNC.last < 20) return;   // 20ms：严格对齐手机端主循环 LOOP_INTERVAL_MS=20
     SYNC.last = now;
     api("/api/sync/tick", "POST", { t: t, rate: rate || 1 }).then(function (r) {
       /* 「跳过无动作部分」（对齐手机端 maybeSkipIdle）：宿主判定脚本静止段超过阈值时
@@ -2477,12 +2477,12 @@
     });
   }
   /* 高频 tick 驱动：timeupdate 只有 ~250ms 且抖动，做不了"段边界发帧"的检测
-     （慢段顿挫、快段迟发）——定时器每 40ms 读一次播放器时间；timeupdate 保留作
-     后台保底（隐藏时定时器可能被节流）。rate=播放倍速，宿主按手机端乘到速度上。 */
+     （慢段顿挫、快段迟发）——定时器每 20ms 读一次播放器时间，与手机端主循环
+     同节拍；timeupdate 保留作后台保底（隐藏时定时器可能被节流）。 */
   setInterval(function () {
     var v = vlVid();
     if (v && !v.paused && !v.seeking) syncTick(v.currentTime, v.playbackRate || 1);
-  }, 40);
+  }, 20);
 
   function pollDev() {
     api("/api/device/state").then(function (r) {
@@ -2528,7 +2528,7 @@
       return;
     }
     DEV.connecting = true; renderDev();
-    toast("正在扫描设备", "BLE 扫描约 6 秒", "ok");
+    toast("正在扫描设备", "扫到支持的设备即连（最长 10 秒）", "ok");
     api("/api/device/scan", "POST", {}).then(function (r) {
       DEV.connecting = false;
       if (!r || !r.ok) { renderDev(); toast("扫描失败", (r && r.error) || "宿主未提供设备接口（需 1.0.57）", "err"); return; }

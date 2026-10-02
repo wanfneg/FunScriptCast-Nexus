@@ -19,6 +19,8 @@ import bisect
 import json
 from pathlib import Path
 
+from .protocols import kotlin_round
+
 
 class SyncEngine:
     def __init__(self, channel, loop: asyncio.AbstractEventLoop) -> None:
@@ -108,7 +110,10 @@ class SyncEngine:
             return
         if not self.ch.state.connected or not self.ch.state.allow_move:
             return
-        ms = t_sec * 1000.0 - self.delay_ms
+        # 延迟补偿方向对齐手机端：t = clock + offsetSec（offsetSec = delayMs/1000）——
+        # **正值 = 脚本坐标向前 = 设备滞后；负值 = 提前**（两侧 UI 文案均为"负值提前，正值滞后"）。
+        # 旧 PC 写法 `t*1000 - delay` 方向相反（负值反而滞后），按手机习惯调参会被坑。
+        ms = t_sec * 1000.0 + self.delay_ms
         acts, times = self.actions, self._times
         # 手机端 indexAfter：第一个 at > ms 的索引 = 当前段上界 n（t ∈ [acts[n-1], acts[n])）
         n = bisect.bisect_right(times, ms)
@@ -125,12 +130,13 @@ class SyncEngine:
             if n != self._skip_n:
                 self._skip_n = n
                 self.skipped += 1
-                self._seek_to = (b[0] + self.delay_ms) / 1000.0
+                # 脚本坐标 → 媒体时间：t = (ms - delay)/1000（与上方向修正同源）
+                self._seek_to = (b[0] - self.delay_ms) / 1000.0
             return
         if n == self._last_n:
             return                          # 段没变：手机端只在段边界发帧（n != lastIndex）
-        # 手机端 computeMove：target = 段末位置；speed = 段斜率 × 播放倍速
-        speed = int(round(slope * rate))
+        # 手机端 computeMove：target = 段末位置；speed = 段斜率 × 播放倍速（Math.round）
+        speed = kotlin_round(slope * rate)
         try:
             ok = await self.ch.move_to(b[1], speed)   # 整段行程交给设备固件按速度插值
             if ok:

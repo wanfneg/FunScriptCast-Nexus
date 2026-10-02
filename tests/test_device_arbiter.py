@@ -440,6 +440,47 @@ class TestApplyDeviceSettings(unittest.TestCase):
         self.assertEqual(fake["preset"].speed, 150)
 
 
+# ---------------------------------------------------------------- 第 11 批：逐值对齐（舍入 / delay 方向）
+class TestValueParity(Base):
+    def test_kotlin_round_boundaries(self):
+        """Math.round（floor(x+0.5)） vs Python round（银行家舍入）：.5 边界必须走 Kotlin 口径，
+        否则位置/速度会出现 ±1 的逐值偏差。"""
+        from device.protocols import kotlin_round
+        self.assertEqual(kotlin_round(0.5), 1)      # Python round(0.5) == 0
+        self.assertEqual(kotlin_round(1.5), 2)      # Python round(1.5) == 2
+        self.assertEqual(kotlin_round(2.5), 3)      # Python round(2.5) == 2（差异点）
+        self.assertEqual(kotlin_round(-0.5), 0)     # Kotlin Math.round(-0.5) == 0
+        self.assertEqual(round(2.5), 2)             # 对照：内建 round 的差异
+
+    async def test_channel_remap_scale_use_kotlin_round(self):
+        """range span=50 时 1% → 0.5，Kotlin 舍入上取 1（Python round 会下取 0）。"""
+        from device.channel import DeviceChannel
+        ch = DeviceChannel()
+        try:
+            ch.range_lo, ch.range_hi = 0.0, 50.0
+            self.assertEqual(ch._remap(1.0), 1)
+            self.assertEqual(ch._scale_speed(1), 1)
+        finally:
+            ch._loop.call_soon_threadsafe(ch._loop.stop)
+
+    async def test_delay_positive_lags_like_phone(self):
+        """延迟补偿方向（手机 t = clock + delay/1000）：正值=用更晚的脚本位置=滞后。
+        旧 PC 是 `t*1000 - delay`（方向相反）。"""
+        ch, quick, preset, sync, arb = self.make_world()
+        (self.dir / "video.funscript").write_text(json.dumps({"actions": [
+            {"at": 0, "pos": 10}, {"at": 1000, "pos": 90}, {"at": 2000, "pos": 10}
+        ]}), encoding="utf-8")
+        ok, err = sync.load(str(self.dir / "video.mp4"))
+        self.assertTrue(ok, err)
+        sync.active = True
+        ch.calls.clear()
+        sync.delay_ms = 100
+        await sync._apply(0.85)                 # ms = 850 + 100 = 950 → 仍在第 1 段
+        self.assertEqual(ch.calls[-1][1], 90.0)
+        await sync._apply(0.95)                 # ms = 950 + 100 = 1050 → 已到第 2 段（滞后）
+        self.assertEqual(ch.calls[-1][1], 10.0)
+
+
 # ---------------------------------------------------------------- 第 10 批：脚本同步"段一帧"（手机同构）
 class TestSyncSegmentFrames(Base):
     """机制级回归（"动作一顿一顿"的根因修复）：
