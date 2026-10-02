@@ -1,0 +1,4 @@
+[observer t=1s] phase='classic: 已 start()，准备 await sleep(1.0)' asyncio心跳累计=1
+[observer t=2s] phase='classic: 已 start()，准备 await sleep(1.0)' asyncio心跳累计=1
+[observer t=3s] phase='classic: 已 start()，准备 await sleep(1.0)' asyncio心跳累计=1
+[观察者判词] 4 秒内主线程始终没越过 await —— 事件循环被饿死，所有 asyncio 回调（含 wait_for 超时、HTTP 路由里的 submit）都无法执行

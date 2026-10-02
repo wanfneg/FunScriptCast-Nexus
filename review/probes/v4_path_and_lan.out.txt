@@ -1,0 +1,60 @@
+==============================================================================
+§1.2 /api/library/browse 的校验表达式（host_server.py:2308-2314 逐字复刻）
+==============================================================================
+library_roots = ['E:\\testvideo']
+  请求 path           = E:\testvideo\..\..\Windows
+  Path(bp)（不折叠 ..）= E:\testvideo\..\..\Windows
+  校验通过 startswith = True
+  os.scandir 真实目标 = E:\Windows
+  旁证：os.scandir(E:\testvideo\..) 真的列出 E:\ 的内容，前 6 项 = ['$RECYCLE.BIN', '2026_TOCC_Script.zip', 'audiocpp-portable', 'Development', 'LightFlow Studio', 'Program Files']
+  [断言] .. 未被折叠且校验通过: PASS
+同族正例对照：app.js 的返回上一级按钮自己做了 split 归一（app.js:1462-1472），宿主没有。
+根因注释（同一文件里已有的教训）见 host_server.py:2122-2124：
+  host_server.py:2120: def _file(self, rel: str) -> None:
+  host_server.py:2121: p = (UI_DIR / rel).resolve()
+  host_server.py:2122: # is_relative_to 而不是 startswith：后者不带分隔符，`/ui-backup/x` 这类
+  host_server.py:2123: # 兄弟目录前缀会被放行（目录遍历防护必须按路径组件比）。
+  host_server.py:2124: if not p.is_relative_to(UI_DIR.resolve()) or not p.is_file():
+  host_server.py:2125: self.send_error(404)
+  host_server.py:2126: return
+
+==============================================================================
+§1.3 /api/library/stream 白名单（host_server.py:2217-2222 逐字复刻）
+==============================================================================
+  请求路径 E:\testvideo-evil\x.mp4
+    startswith(root)  = True   is_relative_to(root) = False
+    sys.frozen = False -> 开发放宽后 _allowed = True
+  请求路径 C:\Windows\win.ini
+    startswith(root)  = False   is_relative_to(root) = False
+    sys.frozen = False -> 开发放宽后 _allowed = True
+[断言] 兄弟目录前缀绕过（E:\testvideo-evil\x.mp4 vs E:\testvideo）: PASS
+[断言] 开发运行（sys.frozen=False）下任意路径被放行: PASS
+
+==============================================================================
+§1.4 8756 字幕服务：绑定 / 令牌 / 开放前缀 / 云端 Key
+==============================================================================
+  运行配置 data/subtitle_config.json: host='0.0.0.0' port=8756 auth_token='' idle_release_min=15
+    translate.openai.api_key 非空 = True（长度 35，不打印明文）
+  出厂模板 vendor/subtitle/config.json: host='0.0.0.0' port=8756 auth_token='' idle_release_min=5
+    translate.openai.api_key 非空 = False（长度 0，不打印明文）
+  server_app.py 的鉴权/开放面（逐字）：
+    server_app.py:378: _LAN_OPEN_PREFIXES = ("/transcribe", "/health")
+    server_app.py:379: _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+    server_app.py:382: class _LoopbackGuard(BaseHTTPMiddleware):
+    server_app.py:385: if not path.startswith(_LAN_OPEN_PREFIXES):
+    server_app.py:390: if client not in _LOOPBACK:
+    server_app.py:407: def _auth_token() -> str:
+    server_app.py:409: return str((CFG.get("server") or {}).get("auth_token") or "")
+    server_app.py:416: if _auth_token() and request.url.path.startswith("/transcribe"):
+    server_app.py:418: if not hmac.compare_digest((request.headers.get(_AUTH_HEADER) or "").encode("utf-8"),
+    server_app.py:831: @app.post("/transcribe")
+    server_app.py:832: async def transcribe(request: Request, lang: str = "ja", video_start_ms: int = 0,
+    server_app.py:833: keep_from_ms: int = 0, translate: bool = True, partial: int = 0):
+  UI 里是否有 auth_token / 令牌开关：
+    （0 处 —— 用户在界面上无法设置令牌）
+  host_server.py 是否写 server.host / auth_token：
+    （0 处）
+[断言] 运行配置 host=0.0.0.0 且 auth_token 为空: PASS
+[断言] /transcribe 默认 translate=True（server_app.py:833）: PASS（见上）
+
+[probe done]

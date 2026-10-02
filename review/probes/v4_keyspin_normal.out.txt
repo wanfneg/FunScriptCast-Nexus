@@ -1,0 +1,5 @@
+[observer t=1s] phase='normal: 已 start()，准备 await sleep(1.0)' asyncio心跳累计=31
+RESULT {"preset": "normal", "segments": [[0, 100, 100], [100, 0, 100]], "segments_len": 2, "keyframes_len": 0, "心跳次数(1s内)": 32, "写帧数": 1, "player.playing": true}
+[断言] normal 正常返回: PASS
+Task was destroyed but it is pending!
+task: <Task pending name='Task-3' coro=<PresetPlayer._run() done, defined at E:\Development\FunScriptCast-Nexus\vendor\device\preset_player.py:139> wait_for=<Future pending cb=[Task.task_wakeup()]>>

@@ -1,0 +1,10 @@
+A3 缓动起来=是；急停后 allow_move=False；急停后 2.2s 内仍写出 2 帧 -> [(100.0, 100, True, True, 459892.625), (0.0, 100, True, True, 459893.625)]
+A3 [断言] 急停挡不住缓动（>0 帧且全部 force=True）: PASS
+A4 已急停(allow_move=False)期间，预设 'normal' 1.5s 内写出 2 帧 -> [(100.0, 100, True), (0.0, 100, True)]
+A4 [断言] 急停挡不住预设（>0 帧）: PASS
+A5 外部帧前 _gen_s=1 -> 外部帧后 _gen_s=2, is_slow=True, _slow_task=None
+A5 外部帧后 3.0s 内新帧数 = 0；is_slow 仍为 True -> 缓动确实没有重启
+A5 [断言] is_slow=True 但缓动不再恢复: PASS
+A17 idle_detect_seconds=5 但第一帧在 0.31s 就出现（应为 5s）
+A17 [断言] 抢跑（dt < 1.5s）: PASS
+[probe done]

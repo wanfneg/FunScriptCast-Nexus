@@ -1,0 +1,44 @@
+[
+  {
+    "device.reversed 杈撳叆": true,
+    "video_link.reversed 杈撳叆": null,
+    "apply_motion(reversed_=)": false,
+    ">>> ch.reversed 缁堝€?: true,
+    "鐢ㄤ緥": "璁剧疆椤靛嬀閫夊弽杞紙device.reversed=True锛?,
+    "鍒ゅ畾": "鉁?涓?device.reversed 涓€鑷达紙寮€鍏虫湁鏁堬級"
+  },
+  {
+    "device.reversed 杈撳叆": false,
+    "video_link.reversed 杈撳叆": null,
+    "apply_motion(reversed_=)": false,
+    ">>> ch.reversed 缁堝€?: false,
+    "鐢ㄤ緥": "璁剧疆椤靛彇娑堝弽杞紙device.reversed=False锛?,
+    "鍒ゅ畾": "鉁?涓?device.reversed 涓€鑷达紙寮€鍏虫湁鏁堬級"
+  },
+  {
+    "device.reversed 杈撳叆": null,
+    "video_link.reversed 杈撳叆": true,
+    "apply_motion(reversed_=)": true,
+    ">>> ch.reversed 缁堝€?: false,
+    "鐢ㄤ緥": "鍙湁 video_link.reversed=True锛圲I 鍐欎笉鍒帮級",
+    "鍒ゅ畾": "鉁?涓?device.reversed 涓€鑷达紙寮€鍏虫湁鏁堬級"
+  },
+  {
+    "device.reversed 杈撳叆": true,
+    "video_link.reversed 杈撳叆": true,
+    "apply_motion(reversed_=)": true,
+    ">>> ch.reversed 缁堝€?: true,
+    "鐢ㄤ緥": "涓よ€呴兘 True",
+    "鍒ゅ畾": "鉁?涓?device.reversed 涓€鑷达紙寮€鍏虫湁鏁堬級"
+  },
+  {
+    "device.reversed 杈撳叆": false,
+    "video_link.reversed 杈撳叆": false,
+    "apply_motion(reversed_=)": false,
+    ">>> ch.reversed 缁堝€?: false,
+    "鐢ㄤ緥": "涓よ€呴兘 False",
+    "鍒ゅ畾": "鉁?涓?device.reversed 涓€鑷达紙寮€鍏虫湁鏁堬級"
+  }
+]
+
+缁撹锛?3840 鐨?reversed_ 鏄?*姝诲弬鏁?*锛堝€肩珛鍒昏 :3858 瑕嗙洊锛夛紝浣嗙敤鎴峰紑鍏虫渶缁堟湁鏁?鈬?绗?1 杞€屽弽杞柟鍚戞棤鏁堛€嶇粨璁?*搴旀挙鍥?*锛岄檷绾т负銆屼唬鐮佸紓鍛筹細鍚屽悕鍙傛暟涓ゅ鍐欏叆锛屽墠鑰呮亽琚鐩栥€嶃€?

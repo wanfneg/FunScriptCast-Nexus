@@ -1,0 +1,185 @@
+应用设备设置失败：simulated BLE timeout (R01-A12)
+=== A) /api/quick stop 分支复现（逐字照抄 host_server.py:2551-2552） ===
+异常                = AttributeError: 'QuickMoves' object has no attribute 'is_stop'
+set_allow_move 调用 = []   (空 = 完全没走到 set_stop)
+allow_move 终值     = True
+state()['stop']     = False  (正确写法 was = not q.ch.state.allow_move -> False)
+[断言] A1: PASS
+
+=== B/C/D) _apply_device_settings 注入探针 ===
+[
+  {
+    "case": "video_link.reversed=True, device 空",
+    "apply_motion": [
+      {
+        "range_lo": 0,
+        "range_hi": 100,
+        "max_speed": 500,
+        "reversed_": true
+      }
+    ],
+    "ch.reversed_final": false,
+    "quick.apply": [
+      [
+        {},
+        {}
+      ]
+    ],
+    "quick.slow.max_speed_final": 100,
+    "quick.orgasm.max_speed_final": 500,
+    "ch.oc_mode": false,
+    "sync.skip_idle": true,
+    "sync.idle_threshold": 3.0,
+    "preset.speed_calls": [],
+    "forced_toy": null,
+    "mode_override": null
+  },
+  {
+    "case": "device.reversed=True, video_link 空",
+    "apply_motion": [
+      {
+        "range_lo": 0,
+        "range_hi": 100,
+        "max_speed": 500,
+        "reversed_": false
+      }
+    ],
+    "ch.reversed_final": true,
+    "quick.apply": [
+      [
+        {},
+        {}
+      ]
+    ],
+    "quick.slow.max_speed_final": 100,
+    "quick.orgasm.max_speed_final": 500,
+    "ch.oc_mode": false,
+    "sync.skip_idle": true,
+    "sync.idle_threshold": 3.0,
+    "preset.speed_calls": [],
+    "forced_toy": null,
+    "mode_override": null
+  },
+  {
+    "case": "联动卡 vs device.*（含 script_sync=False）",
+    "apply_motion": [
+      {
+        "range_lo": 20,
+        "range_hi": 80,
+        "max_speed": 500,
+        "reversed_": false
+      }
+    ],
+    "ch.reversed_final": false,
+    "quick.apply": [
+      [
+        {
+          "max_speed": 400
+        },
+        {
+          "max_speed": 250
+        }
+      ]
+    ],
+    "quick.slow.max_speed_final": 250,
+    "quick.orgasm.max_speed_final": 400,
+    "ch.oc_mode": true,
+    "sync.skip_idle": false,
+    "sync.idle_threshold": 7.0,
+    "preset.speed_calls": [
+      180
+    ],
+    "forced_toy": null,
+    "mode_override": null
+  },
+  {
+    "case": "submit 抛 TimeoutError -> 后续联动项是否被跳过",
+    "apply_motion": [
+      {
+        "range_lo": 10,
+        "range_hi": 90,
+        "max_speed": 500,
+        "reversed_": false
+      }
+    ],
+    "ch.reversed_final": false,
+    "quick.apply": [],
+    "quick.slow.max_speed_final": 100,
+    "quick.orgasm.max_speed_final": 500,
+    "ch.oc_mode": false,
+    "sync.skip_idle": true,
+    "sync.idle_threshold": 3.0,
+    "preset.speed_calls": [],
+    "forced_toy": null,
+    "mode_override": null
+  },
+  {
+    "case": "A6: UI 勾选 VorzePiston(a10_mode=1)",
+    "apply_motion": [
+      {
+        "range_lo": 0,
+        "range_hi": 100,
+        "max_speed": 500,
+        "reversed_": false
+      }
+    ],
+    "ch.reversed_final": false,
+    "quick.apply": [
+      [
+        {},
+        {}
+      ]
+    ],
+    "quick.slow.max_speed_final": 100,
+    "quick.orgasm.max_speed_final": 500,
+    "ch.oc_mode": false,
+    "sync.skip_idle": true,
+    "sync.idle_threshold": 3.0,
+    "preset.speed_calls": [],
+    "forced_toy": "serveu",
+    "mode_override": 1
+  },
+  {
+    "case": "A6: UI 取消(a10_mode=0)",
+    "apply_motion": [
+      {
+        "range_lo": 0,
+        "range_hi": 100,
+        "max_speed": 500,
+        "reversed_": false
+      }
+    ],
+    "ch.reversed_final": false,
+    "quick.apply": [
+      [
+        {},
+        {}
+      ]
+    ],
+    "quick.slow.max_speed_final": 100,
+    "quick.orgasm.max_speed_final": 500,
+    "ch.oc_mode": false,
+    "sync.skip_idle": true,
+    "sync.idle_threshold": 3.0,
+    "preset.speed_calls": [],
+    "forced_toy": "vorze",
+    "mode_override": 0
+  }
+]
+
+判据：
+  A9  video_link.reversed 传入 apply_motion = True 但 ch.reversed 终值 = False  -> PASS（联动键被 3858 覆盖，死读）
+  A9' device.reversed 才是生效键 = True (apply_motion 收到 False)
+  A10 idle_speed=250 覆盖 device.slow.max_speed=100 -> 250（device 段被无视）
+  A10 burst_speed=400 覆盖 device.orgasm.max_speed=300 -> 400
+  A8  device.script_sync=False 对设备层零影响（没有任何读点可观测）
+  A12 submit 抛错后：oc_mode=False skip_idle=True idle_threshold=3.0 preset.set_speed=[] -> PASS（后续联动项全被跳过）
+
+A6 档案映射（真实 _apply_device_settings 的产物）:
+  a10_mode=1（勾选 VorzePiston）-> _forced_toy=serveu  mode_override=1   PASS（倒置：应 vorze）
+  a10_mode=0（取消）           -> _forced_toy=vorze  mode_override=0   PASS（倒置：应 serveu）
+
+=== 副作用守卫（只读承诺） ===
+before: {'data\\integrated_settings.json': '01ce2abcb00f7eb9', 'data\\subtitle_config.json': '95e27827b3e0daec', 'data\\library_index.json': '414c506db16d9cfb'}
+after : {'data\\integrated_settings.json': '01ce2abcb00f7eb9', 'data\\subtitle_config.json': '95e27827b3e0daec', 'data\\library_index.json': '414c506db16d9cfb'}
+[断言] 未改动任何 data/*.json: PASS

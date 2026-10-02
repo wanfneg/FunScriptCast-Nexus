@@ -1,0 +1,5 @@
+棣栧姩浣滅偣涔嬪墠 t=0.5s          -> move_to(pos=10.0, speed鍙傛暟=None, channel瑙ｆ瀽base=500)
+鍖洪棿鍐?t=1.5s             -> move_to(pos=50.0, speed鍙傛暟=80, channel瑙ｆ瀽base=80)
+鏈姩浣滅偣涔嬪悗 t=3.0s          -> move_to(pos=90.0, speed鍙傛暟=None, channel瑙ｆ瀽base=500)
+
+鎵嬫満绔鐓?SyncEngine.kt:284-289: n<1 鎴?n>=count 鏃?setActive(false) 涓?*涓嶅啓甯?*

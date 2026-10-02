@@ -1,0 +1,126 @@
+==============================================================================
+F) 行尾体检：孤立 CR（能让 python 行号相对 git/ripgrep 漂移）
+==============================================================================
+host_server.py     LF= 4139 CRLF= 4138 孤立CR=0
+app.js             LF= 2612 CRLF= 2612 孤立CR=2
+index.html         LF=  937 CRLF=  937 孤立CR=0
+channel.py         LF=  369 CRLF=    0 孤立CR=0
+preset_player.py   LF=  177 CRLF=    0 孤立CR=0
+quick_moves.py     LF=  214 CRLF=    0 孤立CR=0
+sync_engine.py     LF=  133 CRLF=    0 孤立CR=0
+protocols.py       LF=  135 CRLF=    0 孤立CR=0
+server_app.py      LF= 1151 CRLF= 1151 孤立CR=0
+（app.js 有 2 个孤立 CR：LF 行 134 与 1616 的**行尾多一个 CR**。按 LF 分行时它们不额外占行；用 python splitlines()/PowerShell Get-Content 会把后续所有行号 +1/+2 —— 复核 R01/R02 行号时以 LF 口径为准。）
+  app.js: 孤立 CR 所在 LF 行号 = [134, 1616]
+
+==============================================================================
+A) ui/presets.json：segments / keyframes 分布（R01-A2）
+==============================================================================
+预设总数 = 24；segments 为空 = 22；segments 非空 = 2 -> ['normal', 'mw']
+空 segments 但有 keyframes = 22；两者皆空 = 0
+空 segments 的 id = ['classic', 'deep', 'tease', 'edge', 'rhythm', 'zipper', 'risingheat', 'angelbounce', 'psytrance', 'girlwants', 'cpr', 'stepclimb', 'tide', 'slopburst', 'gimmemore', 'tikthots', 'sugardaddy', 'underground', 'cyberdream', 'swallowwave', 'premiumwave', 'takeit']
+[断言] 22/24 只有 keyframes: PASS
+旁证 preset_player.py:_play_one_loop（segments 为空 ⇒ 循环体一次都不 await）：
+    preset_player.py:155: for sg in (pr.get("segments") or []):
+    preset_player.py:165: if dist > 0:
+    preset_player.py:173: await asyncio.sleep(TICK_MS / 1000.0)
+
+==============================================================================
+B) a10_mode ↔ 设备档案（R01-A6）
+==============================================================================
+权威映射（protocols.py:41-42）-> {0: 'serveu', 1: 'vorze'}   # 0=ServeU, 1=VorzePiston
+    protocols.py:38: a10_mode: int          # ServeU = 0，VorzePiston = 1
+    protocols.py:95: def cmd_mode(a10_mode: int) -> bytes:
+    protocols.py:41: SERVEU = ToyDevice("serveu", "ServeU", SERVEU_SERVICE, SERVEU_TX, SERVEU_RX, 0)
+    protocols.py:42: VORZE = ToyDevice("vorze", "VorzePiston", VORZE_SERVICE, VORZE_TX, VORZE_RX, 1)
+host_server.py 里实际用的表达式：
+    host_server.py:3860: _tp = ("vorze", "serveu")[int(dev["a10_mode"])] if int(dev["a10_mode"]) in (0, 1) else None
+  a10_mode=0 -> 代码选 [vorze]，权威应为 [serveu]  **倒置**
+  a10_mode=1 -> 代码选 [serveu]，权威应为 [vorze]  **倒置**
+[断言] 映射与权威表相反: PASS
+影响链旁证（R01 未提及的兜底：connect 会按候选档案重试，所以最终往往还能连上）：
+    channel.py:131: toy = self._forced_toy or (next((t for t in TOYS if t.id == toy_id), None) if toy_id else None)
+    channel.py:153: cands = [t for t in (advertised, toy) if t]
+    channel.py:158: for t in cands:
+    channel.py:162: await self._write(cmd_mode(self.mode_override if self.mode_override is not None else t.a10_mode))
+    channel.py:354: return await self._write(cmd_mode(self.mode_override))
+    host_server.py:3868: d["ch"].mode_override = int(dev["a10_mode"])
+
+==============================================================================
+C) settings 键写点 / 读点闭环（写侧分流：queueVl/saveVl/bindLink→video_link，saveDev→device）
+==============================================================================
+video_link.reversed        UI写点=0  host读点=1
+    host_server.py:3840: max_speed=vl.get("max_speed", 500), reversed_=bool(vl.get("reversed")))
+device.reversed            UI写点=1  host读点=1
+    app.js:2366: $("#setReversed").addEventListener("change", function () { saveDev({ reversed: this.checked }); });
+    host_server.py:3858: d["ch"].reversed = bool(dev.get("reversed"))
+device.script_sync         UI写点=1  host读点=0
+    app.js:2372: $("#setScriptSync") && $("#setScriptSync").addEventListener("change", function () { saveDev({ script_sync: this.checked 
+device.preset_speed        UI写点=0  host读点=1
+    host_server.py:3869: if dev.get("preset_speed"):
+device.skip_idle           UI写点=1  host读点=1
+    app.js:2343: $("#setSkipIdle").addEventListener("change", function () { saveDev({ skip_idle: this.checked }); });
+    host_server.py:3863: if dev.get("skip_idle") is not None:
+device.idle_threshold      UI写点=1  host读点=1
+    app.js:2344: $("#setIdleThreshold").addEventListener("change", function () { saveDev({ idle_threshold: Number(this.value) }); });
+    host_server.py:3865: if dev.get("idle_threshold") is not None:
+video_link.range_min       UI写点=1  host读点=1
+    app.js:1961: queueVl({ range_min: lo, range_max: hi });
+    host_server.py:3839: d["ch"].apply_motion(range_lo=vl.get("range_min", 0), range_hi=vl.get("range_max", 100),
+video_link.max_speed       UI写点=1  host读点=1
+    app.js:1965: queueVl({ max_speed: hi });
+    host_server.py:3840: max_speed=vl.get("max_speed", 500), reversed_=bool(vl.get("reversed")))
+video_link.idle_min        UI写点=1  host读点=1
+    app.js:1970: queueVl({ idle_min: lo, idle_max: hi });
+    host_server.py:3845: "slow": {"min_percent": vl.get("idle_min"), "max_percent": vl.get("idle_max"),
+video_link.idle_speed      UI写点=1  host读点=1
+    app.js:1974: queueVl({ idle_speed: hi });
+    host_server.py:3846: "max_speed": vl.get("idle_speed"), "link_percent": vl.get("idle_link")},
+video_link.idle_link       UI写点=1  host读点=1
+    app.js:1976: bindLink("vl_idle_link", "idle_link");
+    host_server.py:3846: "max_speed": vl.get("idle_speed"), "link_percent": vl.get("idle_link")},
+video_link.burst_min       UI写点=1  host读点=1
+    app.js:1980: queueVl({ burst_min: lo, burst_max: hi });
+    host_server.py:3847: "orgasm": {"min_percent": vl.get("burst_min"), "max_percent": vl.get("burst_max"),
+video_link.burst_speed     UI写点=1  host读点=1
+    app.js:1984: queueVl({ burst_speed: hi });
+    host_server.py:3848: "max_speed": vl.get("burst_speed"), "link_percent": vl.get("burst_link"),
+video_link.burst_speed_link UI写点=1  host读点=1
+    app.js:1987: bindLink("vl_burst_speed_link", "burst_speed_link");
+    host_server.py:3849: "link_speed": vl.get("burst_speed_link")},
+[断言] A9（video_link.reversed 零 UI 写点、host 单点读）: PASS
+[断言] A8/A10（device.script_sync 在 host 零读点）: PASS
+[断言] A10（device.orgasm 在 host 零读点）: PASS
+[断言] A11（device.preset_speed 在 UI 零写点）: PASS
+[断言] 所有键的 UI 写点数与预期一致: PASS
+
+==============================================================================
+D) QuickMoves.is_stop 是否存在（R01-A1）
+==============================================================================
+hasattr(QuickMoves, 'is_stop') = False
+QuickMoves 公开的停止接口：
+    quick_moves.py:79: def set_stop(self, stopped: bool) -> dict:
+    quick_moves.py:94: def stop_orgasm(self) -> dict:
+    quick_moves.py:133: def stop_slow(self, reason: str = "") -> dict:
+    quick_moves.py:210: def state(self) -> dict:
+状态字段（QuickMoves.__init__ 里没有 is_stop）：
+    quick_moves.py:39: self.is_orgasm = False
+    quick_moves.py:40: self.is_slow = False
+    quick_moves.py:89: self.is_orgasm = True
+    quick_moves.py:95: self.is_orgasm = False
+    quick_moves.py:127: self.is_slow = True
+    quick_moves.py:134: self.is_slow = False
+host_server.py 里 is_stop 的出现位置：
+    host_server.py:2551: was = q.is_stop
+[断言] is_stop 属性不存在: PASS
+
+==============================================================================
+E) data/integrated_settings.json 实际键（只读）
+==============================================================================
+video_link = {}
+video_link 含 reversed 键 = False
+device.reversed = <缺席>；device.script_sync = True；device.preset_speed = 180
+device.orgasm = {"min_percent": 0, "max_percent": 100, "max_speed": 500, "link_percent": false, "link_speed": false}
+device.slow = {"min_percent": 0, "max_percent": 100, "max_speed": 100, "idle_detect_seconds": 9, "link_percent": false}
+
+[probe done]

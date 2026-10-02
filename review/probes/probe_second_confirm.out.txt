@@ -1,0 +1,69 @@
+{
+  "Q1 鏁板€兼牎楠?: {
+    "鎻愪氦鐨勯潪娉曞€?: {
+      "range_min": 90,
+      "range_max": 10,
+      "max_speed": 99999
+    },
+    "save_settings 婧愮爜閲屽嚭鐜扮殑鏍￠獙鐥曡抗": {
+      "range_min": false,
+      "range_max": false,
+      "max_speed": false,
+      "coerce": false,
+      "clip": false,
+      "min(": false,
+      "max(": false
+    },
+    "鍒ゅ畾": "鉂?鏃犱换浣曢拡瀵?video_link 瀛愰敭鐨勬暟鍊兼牎楠?澶圭揣锛堝彧鍋氶敭鐧藉悕鍗?+ 璺緞瑙勬暣锛?,
+    "鐞嗚鍚庢灉": "range_min>range_max 鈫?ch.span<0 鈫?_scale_speed 鍑鸿礋鍊?鈫?sp=max(0,min(max_speed,璐?)=0 鈬?鍏ㄩ儴鍔ㄤ綔閫熷害 0"
+  },
+  "Q1b span<0 鐨勬暟瀛﹀悗鏋?: {
+    "range_lo/hi": [
+      90.0,
+      10.0
+    ],
+    "span": -80.0,
+    "_scale_speed(100)": -80,
+    "_remap(50)": 50,
+    "鍒ゅ畾": "鉁?纭锛歴pan<0 鏃?_scale_speed 杩斿洖璐熷€硷紝move_to 閲?sp=max(0,min(max_speed,璐?)=0"
+  },
+  "Q2 鏂紑椤哄簭": {
+    "婧愮爜鐗囨": [
+      "/api/device/disconnect\":",
+      "d = _get_device()",
+      "res = d[\"ch\"].submit(d[\"ch\"].disconnect(), timeout=20)",
+      "d[\"quick\"].stop_slow()",
+      "d[\"quick\"].stop_orgasm()",
+      "d[\"preset\"].stop()",
+      "d[\"sync\"].stop()",
+      "self._json(res)"
+    ],
+    "鍒ゅ畾": "鉁?纭锛歚res = d['ch'].submit(..., timeout=20)` 鍦ㄥ洓涓?stop **涔嬪墠**涓旀棤 try/finally锛泂ubmit 鎶?TimeoutError 鏃剁洿鎺ュ啋娉″埌 do_POST 鐨勫厹搴?鈫?鍥涗釜 stop 鍏ㄩ儴璺宠繃銆佷笖宸叉柇寮€杩炴帴"
+  },
+  "Q3 鐘舵€佸瓧娈甸棴鐜?: {
+    "QuickMoves.state() 瀛楁锛堟簮鐮侊級": [
+      "slow",
+      "orgasm",
+      "stop",
+      "orgasm_settings",
+      "slow_settings"
+    ],
+    "UI 璇诲彇": "DEV.sync 浠庢湭璧嬪€硷紙app.js:2251-2253 鏃?sync 閿紝pollDev 涔熶笉浼狅級",
+    "SyncEngine.state() 瀛楁锛堟簮鐮侊級": [
+      "active",
+      "script",
+      "actions",
+      "sent",
+      "skipped",
+      "delay_ms",
+      "skip_idle",
+      "idle_threshold"
+    ],
+    "鍒ゅ畾": "鉁?瀹夸富杩斿洖鐨勫瓧娈甸綈鍏紱鉂?鍓嶇婕忔帴 DEV.sync锛圧02-D5 纭锛?
+  },
+  "Q4 鎬ュ仠缁х画鐨勫浣?: {
+    "_last_pos before": 42,
+    "after reset_last_index()": null,
+    "鍒ゅ畾": "鉁?鏂规硶姝ｇ‘锛涗絾 host:2551 鐨?`q.is_stop` 鍏堟姏寮傚父 鈬?璇ヨ皟鐢ㄤ笉鍙揪锛圥0-1锛?
+  }
+}
