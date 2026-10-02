@@ -1023,3 +1023,18 @@ html[data-motion="off"] .dev-spinner, html[data-motion="reduced"] .dev-spinner{
   text-shadow:0 1px 3px rgba(0,0,0,.7);
 }
 .lc-cur:empty{ display:none; }
+/* AI 字幕面板（R123·对齐手机端 AiPanelContent）：右下浮动，选语言即启动 */
+.lc-panel{
+  position:absolute; right:14px; bottom:96px; z-index:40;
+  background:rgba(10,12,18,.94); border:1px solid rgba(255,255,255,.12);
+  border-radius:10px; padding:10px; min-width:148px;
+  display:flex; flex-direction:column; gap:4px;
+}
+.lc-panel-t{ color:#e9edf6; font-size:12px; font-weight:600; padding:2px 6px 6px; }
+.lc-opt{
+  text-align:left; background:transparent; border:0; border-radius:6px;
+  color:#c8cfdd; font-size:13px; padding:7px 10px; cursor:pointer;
+}
+.lc-opt:hover{ background:rgba(255,255,255,.07); color:#fff; }
+.lc-opt.on{ background:var(--accent-soft, rgba(76,201,240,.14)); color:var(--accent,#4cc9f0); font-weight:600; }
+.lc-panel-hint{ color:rgba(200,207,221,.55); font-size:11px; padding:6px 6px 2px; max-width:190px; line-height:1.5; }

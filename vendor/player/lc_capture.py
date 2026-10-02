@@ -24,7 +24,8 @@ LC_WINDOW_CLASS = "LiveCaptionsDesktopWindow"
 CAPTION_AID = "CaptionsTextBlock"
 LANG_AID = "SpeechModelDropDown"
 CONTINUE_AID = "ContinueButton"
-JA_NAME = "日语(日本)"
+LANG_NAMES = {"ja": "日语(日本)", "en": "英语(美国)"}
+JA_NAME = LANG_NAMES["ja"]
 
 SETTLE_SEC = 0.7        # 句尾标点出现后，静默这么久即视为定稿
 POLL_SEC = 0.12         # 抓取轮询间隔
@@ -50,9 +51,11 @@ class LiveCaptionsCapture:
         self._cur = ""            # 进行中句（原文）
         self._lines: list[dict] = []   # 定稿句 [{"ja","zh","ts"}]
         self._hide_window = True
+        self._want_lang = LANG_NAMES["ja"]
 
     # ---------------------------------------------------------------- 对外接口
-    def start(self) -> dict:
+    def start(self, lang: str = "ja") -> dict:
+        self._want_lang = LANG_NAMES.get(lang, LANG_NAMES["ja"])
         with self._lock:
             if self._running:
                 return self.state()
@@ -136,7 +139,7 @@ class LiveCaptionsCapture:
                 raise RuntimeError("Live Captions 窗口未出现")
         # 语言：需要时切日语
         try:
-            self._ensure_japanese(auto, win)
+            self._ensure_language(auto, win, self._want_lang)
         except Exception as e:
             self._log(f"[lc] 语言检查异常（继续尝试）：{e}")
         # "后台静默"：参考 LiveCaptions-Translator 的方案 SW_MINIMIZE + WS_EX_TOOLWINDOW
@@ -155,15 +158,15 @@ class LiveCaptionsCapture:
                 self._log(f"[lc] 最小化失败：{e}")
         return win
 
-    def _ensure_japanese(self, auto, win) -> None:
-        """语言不对就切：展开 SpeechModelDropDown → 点 日语(日本) → 继续。"""
+    def _ensure_language(self, auto, win, want: str) -> None:
+        """语言不对就切：展开 SpeechModelDropDown → 点目标语言项 → 继续（R123 支持 ja/en）。"""
         combo = win.ComboBoxControl(AutomationId=LANG_AID)
         if combo.Exists(1):
             try:
                 val = combo.GetValuePattern().Value or ""
             except Exception:
                 val = ""
-            if JA_NAME in val:
+            if want in val:
                 return
         # 面板未展开 → 展开（找不到 combo 时从"设置"菜单进入"更改语言"）
         if not combo.Exists(0.5):
@@ -195,7 +198,7 @@ class LiveCaptionsCapture:
                     return
                 for ch in c.GetChildren():
                     try:
-                        if ch.ControlTypeName == "ListItemControl" and (ch.Name or "") == JA_NAME:
+                        if ch.ControlTypeName == "ListItemControl" and (ch.Name or "") == want:
                             r = ch.BoundingRectangle
                             if r and r.width() > 0:
                                 target = ch
@@ -213,9 +216,9 @@ class LiveCaptionsCapture:
             cont = win.ButtonControl(AutomationId=CONTINUE_AID)
             if cont.Exists(1):
                 cont.Click()
-            self._log("[lc] 已切换识别语言 → 日语")
+            self._log(f"[lc] 已切换识别语言 → {want}")
         else:
-            self._log("[lc] 未找到日语列表项（保持现状）")
+            self._log(f"[lc] 未找到语言列表项：{want}（保持现状）")
 
     # ---------------------------------------------------------------- 抓取循环
     def _run(self) -> None:

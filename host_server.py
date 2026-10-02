@@ -2660,8 +2660,13 @@ class Handler(BaseHTTPRequestHandler):
                                             float(body.get("dur") or 0), time.time())
                 self._json({"ok": True})
             elif path == "/api/lc/start":
-                st = _get_lc().start()
-                RT.add_log("PC 直听字幕已开启（Live Captions · 日语）")
+                lang = str(body.get("lang") or "ja")
+                st = _get_lc().start(lang)
+                # 预热（R123）：后台拉一遍翻译——拉起 llama-server（8082 冷启动 15-40s）
+                # 并完成首包 prefill，让第一句字幕不必等冷启动。
+                threading.Thread(target=lambda: _lc_warm_quietly(),
+                                 daemon=True, name="lc-warm").start()
+                RT.add_log("AI 字幕已开启（Win11 实时字幕 · %s）" % ("英语" if lang == "en" else "日语"))
                 self._json({"ok": True, "lc": st})
             elif path == "/api/lc/stop":
                 st = _get_lc().stop()
@@ -4047,6 +4052,14 @@ def _lc_translate(ja: str) -> str:
     with opener.open(req, timeout=20) as r:
         d = json.loads(r.read().decode("utf-8"))
     return (d["choices"][0]["message"]["content"] or "").strip()
+
+
+def _lc_warm_quietly() -> None:
+    """预热翻译服务（R123）：触发 llama-server 拉起 + 首句 prefill；失败静默。"""
+    try:
+        _lc_translate("こんにちは")
+    except Exception as e:
+        log.info("[lc] 翻译预热未完成（首句可能稍慢）：%s", e)
 
 
 def _get_lc():

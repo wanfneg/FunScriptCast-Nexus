@@ -1529,22 +1529,38 @@
     api("/api/library/progress", "POST",
         { path: vlMed.path, pos: v.currentTime || 0, dur: v.duration });
   }
-  /* ---- PC 直听字幕（R122）：宿主侧 Live Captions 抓词级 → Sakura 句译 ----
-     start 在进入播放时调、stop 在退出播放时调；每 320ms 轮询 /api/lc/state。 */
-  var lcRunning = false, lcTimer = null, lcKey = "";
-  function lcStart() {
-    if (lcRunning) return;
-    lcRunning = true;
-    api("/api/lc/start", "POST", {}).catch(function () {});
+  /* ---- PC 直听字幕（R123·对齐手机端 AiPanelContent）----
+     交互：播放页「AI字幕」按钮 → 面板（关闭 / 日语 / 英语）——**选语言即启动**；
+     语言偏好持久化（localStorage，对齐手机端 prefs.aiSubtitleLang）；开启时按钮高亮。
+     重启进播放时若上次开着则自动恢复（对齐手机端"打开视频后自动开启"的默认体验）。 */
+  var lcActive = false;
+  var lcLang = localStorage.getItem("lcLang") || "";
+  var lcTimer = null, lcKey = "";
+  function lcRender() {
+    var btn = $("#vlAiSub"); if (btn) btn.classList.toggle("on", lcActive);
+    [["lcOff", "off"], ["lcJa", "ja"], ["lcEn", "en"]].forEach(function (pair) {
+      var el = $("#" + pair[0]); if (!el) return;
+      el.classList.toggle("on", pair[1] === "off" ? !lcActive : (lcActive && lcLang === pair[1]));
+    });
+  }
+  function lcStart(lang) {
+    lcLang = (lang === "en") ? "en" : "ja";
+    lcActive = true;
+    localStorage.setItem("lcLang", lcLang);
+    api("/api/lc/start", "POST", { lang: lcLang }).catch(function () {});
     var sub = $("#lcSub"); if (sub) sub.hidden = false;
     if (lcTimer) clearInterval(lcTimer);
     lcTimer = setInterval(lcPoll, 320);
+    lcRender();
   }
   function lcStop() {
-    lcRunning = false;
+    lcActive = false;
     if (lcTimer) { clearInterval(lcTimer); lcTimer = null; }
     var sub = $("#lcSub"); if (sub) sub.hidden = true;
+    var box = $("#lcLines"); if (box) box.innerHTML = "";
+    var cur = $("#lcCur"); if (cur) cur.textContent = "";
     api("/api/lc/stop", "POST", {}).catch(function () {});
+    lcRender();
   }
   function lcPoll() {
     api("/api/lc/state").then(function (r) {
@@ -1563,6 +1579,24 @@
       }
     }).catch(function () {});
   }
+  /* 面板交互（事件委托；旧元素被重渲染也有效） */
+  document.addEventListener("click", function (ev) {
+    var t = ev.target;
+    if (!t || !t.closest) return;
+    if (t.closest("#vlAiSub")) {
+      var p = $("#lcPanel"); if (p) { p.hidden = !p.hidden; lcRender(); }
+      return;
+    }
+    var opt = t.closest(".lc-opt");
+    if (opt) {
+      var lang = opt.getAttribute("data-lc-lang");
+      if (lang === "off") lcStop(); else lcStart(lang);
+      var p2 = $("#lcPanel"); if (p2) p2.hidden = true;
+      return;
+    }
+    var panel = $("#lcPanel");
+    if (panel && !panel.hidden && !t.closest("#lcPanel")) panel.hidden = true;
+  });
   function openVideo(path, name, list, idx) {
     reportProgress(true);                                // 切换前先保存上一个的进度
     vlMed.path = path || "";
@@ -1583,7 +1617,7 @@
       if (pr && pr.catch) pr.catch(function () { /* 自动播放被拦或解码失败，等 error 事件 */ });
     });
     vlTouch();
-    lcStart();                                   // PC 直听字幕随播放开启（R122）
+    if (lcLang) lcStart(lcLang);                 // 上次开着 AI 字幕 → 进播放自动恢复（R123）
     vlSyncVlUi();
   }
   function vlSyncVlUi() {
@@ -1677,7 +1711,7 @@
       try { v.pause(); } catch (e) {}
       v.removeAttribute("src"); v.load();
       vlMed.path = ""; vlMed.failed = false;
-      lcStop();                                    // 退出播放：停 PC 直听字幕（R122）
+      if (lcActive) lcStop();                      // 退出播放：停 AI 字幕（R123）
       vlCurPath = "";   // 离开播放态，免得轮询再走"回根"分支
       $("#vlPlayView").style.display = "none";
       $("#vlBrowse").style.display = "";

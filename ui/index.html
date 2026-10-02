@@ -424,6 +424,14 @@ try {
                   <div class="lc-lines" id="lcLines"></div>
                   <div class="lc-cur" id="lcCur"></div>
                 </div>
+                <!-- AI 字幕面板（对齐手机端 AiPanelContent：关闭/日语/英语，选语言即启动） -->
+                <div class="lc-panel" id="lcPanel" hidden>
+                  <div class="lc-panel-t">AI 字幕</div>
+                  <button class="lc-opt" id="lcOff" data-lc-lang="off">关闭</button>
+                  <button class="lc-opt" id="lcJa" data-lc-lang="ja">日语</button>
+                  <button class="lc-opt" id="lcEn" data-lc-lang="en">英语</button>
+                  <div class="lc-panel-hint">实时转写并翻译为中文；识别由 Windows 实时字幕完成（不占显存）</div>
+                </div>
                 <button class="vl-vback" id="vlVBack"><svg class="ic"><use href="#i-chevron-left"/></svg><span>返回媒体库</span></button>
                 <div class="vl-voff" id="vlVOff" hidden>
                   <div class="vl-voff-t">内置播放器打不开这个文件</div>
@@ -438,6 +446,7 @@ try {
                     <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
                   </div>
                   <span class="vl-ctime" id="vlVDur">0:00</span>
+                  <button class="vl-cbtn" id="vlAiSub" title="AI 字幕（Win11 实时字幕 · 日语→中文）"><svg class="ic"><use href="#i-captions"/></svg></button>
                   <button class="vl-cbtn" id="vlMute" title="静音"><svg class="ic"><use href="#i-volume"/></svg></button>
                   <div class="vl-slider vl-vvol" id="vlVVol" data-single="1" data-min="0" data-max="100" data-val="100">
                     <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
