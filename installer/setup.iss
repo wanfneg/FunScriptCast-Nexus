@@ -98,8 +98,8 @@ Type: files; Name: "{app}\vendor\subtitle\*.bat"
 Type: files; Name: "{app}\vendor\subtitle\config.json.bak-prompt"
 ; 外挂 mpv 播放器已整套删除（1.0.79）：升级时清掉旧版装的残留（player 目录里的
 ; dll 副本 121MB + 封装模块）。vendor\mpv\libmpv-2.dll 保留——缩略图探测仍用。
-Type: files; Name: "{app}endor\player\mpv_player.py"
-Type: files; Name: "{app}endor\player\libmpv-2.dll"
+Type: files; Name: "{app}\vendor\player\mpv_player.py"
+Type: files; Name: "{app}\vendor\player\libmpv-2.dll"
 
 [Files]
 Source: "..\dist-app\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
