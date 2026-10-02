@@ -4284,3 +4284,19 @@ code_of 番号正则 + base_of 分件基名 + _aggregate 归组），且发现 *
 
 **R122 再补记（用户观察驱动——启动闪烁修复）**：用户观察到"还是会先弹出前台窗口然后再隐藏"——去读参考项目 `LaunchLiveCaptions` 全流程：它也是"先正常启动（弹窗）→ 再最小化"，**没有做"最小化启动"**。但用户猜的方向对：用 **`CreateProcessW` + `STARTF_SPEWWINDOW` + `SW_SHOWMINNOACTIVE(7)`** 实测 **LC 启动时即为最小化态**（`IsIconic=True`，无前台闪烁）——已替换 lc_capture 的 `subprocess.Popen` 启动方式，并复测（最小化启动 + 抓取/翻译全正常）。**我们的做法比参考项目更进一步**。
 
+## R123（2026-10-03 凌晨）：PC 直听模式打包装机 1.0.87（未推送）
+
+**用户指令**："打包安装测试（不推送）"。
+
+**打包前收尾**（用户观察驱动）：①停止抓取不再"恢复 LC 窗口"（方案 A：保持最小化待命，全程无存在感）；②**"最小化启动"**：`CreateProcessW` + `STARTF_SPEWWINDOW` + `SW_SHOWMINNOACTIVE` 让 LC 一出现就是最小化态（无前台闪烁；参考项目都没做这一步）。
+
+**构建改动**：make_runtime 加装 uiautomation（+comtypes 依赖，冒烟表达式同步）；nexus.spec hiddenimports 加 "uiautomation"/"comtypes"；给 dist-app 与 D 盘 runtime 手工补装（2.0.29）。
+
+**装机验证（D 盘）**：
+- 安装 ExitCode=0；verify_install **6/6**（1.0.87 / lgpl libmpv / 许可文本 / 无 zhconv / 无残留 / 抽帧）；
+- 装后 runtime `import uiautomation, comtypes` OK；
+- **PC 直听端到端**：宿主 API start → lc_ok=True → 播 SIVR-001 → **定稿 40 条**（"それはね→那是因为——""見たい→想看""見えるかな→看得见吗？"…），**LC 全程 IsMinimized**（用户无感）。
+- 途中小坑：字幕服务空闲回收（15 分钟）退出导致 8082 翻译服务不在——**产品注意**：PC 直听模式的第一次翻译会拉 8082 冷启动（llama 加载 15-40s），首句翻译有延迟，后续正常。
+
+**状态**：1.0.87 已装 D 盘运行中；**未推送、未发布**（等用户指示）。
+
