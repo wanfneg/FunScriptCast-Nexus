@@ -1,0 +1,2 @@
+2026-10-02 21:43:52.109 lc_prefs.py[16] <module> -> Find Control Timeout(10s): {AutomationId: 'PreferencesButton', ControlType: MenuItemControl}
+2026-10-02 21:49:15.896 <string>[27] <module> -> Find Control Timeout(10s): {AutomationId: 'ReadyToCaptionTextBlock'}
