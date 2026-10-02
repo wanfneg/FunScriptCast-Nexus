@@ -165,7 +165,7 @@ class DeviceChannel:
                 for t in cands:
                     try:
                         self._toy = t
-                        await self._start_notify(t.rx)
+                        await self._start_notify(t)
                         self.state.name = t.name
                         self.state.toy = t.id
                         self.state.info = {}
