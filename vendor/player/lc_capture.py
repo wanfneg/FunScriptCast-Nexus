@@ -68,6 +68,7 @@ class LiveCaptionsCapture:
         t = self._thread
         if t and t.is_alive():
             t.join(timeout=3)
+        self._restore_window()
         with self._lock:
             self._running = False
         return self.state()
@@ -104,19 +105,33 @@ class LiveCaptionsCapture:
             self._ensure_japanese(auto, win)
         except Exception as e:
             self._log(f"[lc] 语言检查异常（继续尝试）：{e}")
-        # "后台静默"：移出屏幕外（不要用 SW_HIDE——实测隐藏后 UIA 完全失明，
-        # 元素读不到；移到屏外则窗口保持"可见"状态，UIA 正常、用户看不到）
+        # "后台静默"：参考 LiveCaptions-Translator 的方案 SW_MINIMIZE + WS_EX_TOOLWINDOW
+        # （最小化且从任务栏/Alt-Tab 消失）。实测最小化后 UIA 照读不误、字幕持续更新。
+        # ⚠️ 不要用 SW_HIDE：完全隐藏会让 UIA 对该窗口失明，元素全部读不到（R122 实测教训）。
         if self._hide_window:
             try:
                 import ctypes
-                r = win.BoundingRectangle
-                self._orig_pos = (r.left, r.top)
-                ctypes.windll.user32.SetWindowPos(
-                    win.NativeWindowHandle, 0, -3200, -3200,
-                    r.width() or 1270, r.height() or 120, 0x0010)  # SWP_NOACTIVATE
+                u = ctypes.windll.user32
+                hwnd = win.NativeWindowHandle
+                self._hwnd = hwnd
+                self._ex = u.GetWindowLongW(hwnd, -20)          # GWL_EXSTYLE
+                u.ShowWindow(hwnd, 6)                            # SW_MINIMIZE
+                u.SetWindowLongW(hwnd, -20, self._ex | 0x80)     # WS_EX_TOOLWINDOW
             except Exception as e:
-                self._log(f"[lc] 移出屏外失败：{e}")
+                self._log(f"[lc] 最小化失败：{e}")
         return win
+
+    def _restore_window(self) -> None:
+        """停止时把 LC 窗口恢复回可见状态（用户自己开的 LC 不该被我们弄没）。"""
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            hwnd = getattr(self, "_hwnd", None)
+            if hwnd:
+                u.SetWindowLongW(hwnd, -20, getattr(self, "_ex", u.GetWindowLongW(hwnd, -20)))
+                u.ShowWindow(hwnd, 9)   # SW_RESTORE
+        except Exception:
+            pass
 
     def _ensure_japanese(self, auto, win) -> None:
         """语言不对就切：展开 SpeechModelDropDown → 点 日语(日本) → 继续。"""
