@@ -3828,3 +3828,22 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 3. **内置播放器从不记进度**：`set_progress` 只由外挂 mpv 的 `_on_progress` 调用——**WebView `<video>`（主播放路径）看过的视频永远没有进度**（K1drsp 的 0.1 秒是 10-01 mpv 原型期残留）→ 前端新增 `reportProgress()`（timeupdate 节流 5s + pause/ended/切视频强制上报）+ 宿主新增 `POST /api/library/progress`。实测：Q360（内嵌播放 4 秒，无脚本避免触发联动）→ 返回列表出现进度条 14.5%。
 
 **版本**：1.0.77（缩略图）/ 1.0.78（进度条语义+上报）已装机。
+
+## R116（2026-10-02）：外挂 mpv 播放器整套清理（1.0.79→1.0.81）
+
+**用户指令**：外置播放器早已弃用，检查并清理其遗留的关联代码。
+
+**清查范围（全部删除）**：
+- 宿主：`/api/player/{state,open,toggle,stop,seek,volume,fullscreen}` 七个路由、`_get_player()`、`PLAYER` 单例、`_PLAYER_LOCK`、`_start_mpv_sync_ticker`（1.0.71 为 mpv 路径加的喂 tick 线程）、`_on_progress`（mpv 进度回调）。
+- `vendor/player/mpv_player.py` 整个文件（MpvPlayer 外挂窗口封装）——其 `ensure_dll` 为缩略图探测刚需，**搬迁进 `library.py`** 后删除。
+- 前端：`loadLibrary()`/`renderPlayState()`/`vlPlayerOpen`/`libPollTimer`/`libSeekDrag`（mpv 状态轮询及死变量）、`loadHeat` 的 mpv 分支、`vlVideoFail` 的「可点下面的按钮用外部播放器」误导文案、9 处历史注释。
+- 切页/添加目录后的「刷新」归位为真实功能：`browse(vlBrowsePath)`（原为无意义的 mpv 状态轮询）。
+
+**保留（探测刚需，不是遗留）**：`vendor/mpv/libmpv-2.dll`（121MB，缩略图/时长探测走 libmpv）、`vendor/player/mpv.py`（python-mpv 绑定）、`tools/fetch_mpv.ps1`（新机器下载）、`library._probe_local`。
+
+**连带三处工程修复**：
+1. **121MB dll 副本曾被误提交进 git**（.gitignore 只忽略了 `vendor/mpv/` 那一份，`vendor/player/` 的副本被某次全量 add 卷进去）→ 实验证明副本不被加载（改名后抽帧依旧成功）→ 删除 + gitignore 补规则。安装包 198.3→**173.2MB**。
+2. **升级安装不清理旧文件**：D 盘 player 目录残留旧 `mpv_player.py` + 121MB dll 副本 → `setup.iss` 的 [InstallDelete] 补两条规则（升级自动清；`vendor\mpv` 那份不碰）→ **装机实测：放回残留 → 安装 → 残留被自动清除** ✓。
+3. **iss 补丁事故**：heredoc 转义层把 `\v` 编译成垂直制表符（`{app}<VT>endor`），Inno 静默放行导致规则不生效 → 用 `chr(92)` 拼接重写路径（对含反斜杠的文本，此后一律用拼接或 Write 工具，不走 shell 转义）。
+
+**验证**：30/30 单测 + 缩略图探针（删副本后仍成功）+ 浏览器全流程回归（媒体库浏览 6 卡/开播/暂停/返回/切页刷新/**零 JS 错误**）。1.0.81 已装机。
