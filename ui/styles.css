@@ -65,7 +65,6 @@
   --sh-2:0 10px 30px -12px rgba(0,0,0,.7);
   --sh-glow:0 0 0 1px var(--accent-line),0 12px 36px -14px var(--accent-glow);
 
-  --rail-w:238px;
   --bar-h:52px;
 }
 
@@ -195,7 +194,8 @@ body.ptr .pointer-light{ opacity:1; }
 
 /* ------------------------------------------------------------------ 骨架 */
 .app{ position:relative; z-index:2; height:100%; display:grid; grid-template-rows:var(--bar-h) 1fr; }
-.body{ display:grid; grid-template-columns:var(--rail-w) 1fr; min-height:0; }
+.body{ display:grid; grid-template-columns:max-content 1fr; min-height:0; }
+/* 侧栏宽度 = 内容自然宽度（图标+文字，最长项为「DLNA 服务器」）——不预留固定空位 */
 
 /* ---------------------------------------------------------------- 标题栏 */
 .titlebar{
@@ -326,11 +326,6 @@ html[data-motion="reduced"] .brand-mark{ animation-duration:24s; }
 .nav button:hover{ background:var(--panel); color:var(--ink); }
 .nav button:active{ transform:scale(.99); }
 .nav button[aria-current="true"]{ background:var(--accent-soft); color:var(--ink); padding-left:17px; }
-.nav .nav-ix{
-  font:500 9.5px/1 var(--f-mono); letter-spacing:.08em; color:var(--ink-3);
-  width:16px; flex:none; transition:color var(--dur-fast);
-}
-.nav button[aria-current="true"] .nav-ix{ color:var(--accent-text); }
 .nav .ic{ width:15px; height:15px; color:var(--ink-3); transition:color var(--dur-fast); }
 .nav button:hover .ic{ color:var(--ink-2); }
 .nav button[aria-current="true"] .ic{ color:var(--accent); }
