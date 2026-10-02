@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""安装后一键验证（R118.2 起常驻工具）：对 D 盘安装版做文件层面 + 抽帧冒烟。
+r"""安装后一键验证（R118.2 起常驻工具）：对 D 盘安装版做文件层面 + 抽帧冒烟。
 
 用法（必须用 D 盘自带 runtime 跑，才是在验证"安装环境自身"）：
-    D:\FunScriptCast-Nexusuntime\python.exe toolserify_install.py
+    D:\FunScriptCast-Nexus\runtime\python.exe tools\verify_install.py
 检查项：版本号 / libmpv 为 lgpl 版 / 许可文本随包 / 无 zhconv / 无旧播放器残留 / 抽帧冒烟。
 """
 import json
@@ -21,7 +21,8 @@ def check(name, cond, detail=""):
 
 # 1) 版本
 v = json.loads((D / "version.json").read_text(encoding="utf-8"))
-check("version.json", v.get("versionName") == "1.0.84", str(v.get("versionName")))
+vn = str(v.get("versionName") or "")
+check("version.json（1.0.x）", vn.startswith("1.0."), vn)
 
 # 2) libmpv 为 lgpl 版（95.8MB，GPL 版是 121MB）
 dll = D / "vendor" / "mpv" / "libmpv-2.dll"

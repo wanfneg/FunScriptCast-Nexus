@@ -402,7 +402,7 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
 ## 五、交接说明（下一个接手人）
 
 1. **部署形态第一课**：用户跑的是 dist-app 打包版（详见 README「⚠️ 运行形态」）。
-   仓库改完必须：同步文件到 dist-appendor\subtitle → 清 dist-app\cache\subtitles →
+   仓库改完必须：同步文件到 dist-app\vendor\subtitle → 清 dist-app\cache\subtitles →
    经 POST :8791/api/subtitle/start 或界面"结束并重启"拉起。判别代码版本：
    /health 的 code_sig 或进程命令行（run_server.py=快照，-m uvicorn=仓库）
 2. **评测**：`.venv/Scripts/python.exe tests/run_eval.py --video sivr001 --start 0 --sec 1254 --tag X`
@@ -4070,7 +4070,7 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
   Recv failure 被 `--retry` 救回，7z 解压通过 = 完整）。新 dll **95.8MB**（GPL 版
   121MB，少的是 GPL-only 组件），ProductVersion `v0.41.0-1092-g3186d369f`（与旧版同日同提交）。
 - **实测**：ctypes 载入 + `mpv_client_api_version` 2.5 + create/destroy ✓；用
-  `library._probe_local` 对 `E:	estvideo\K1cztm.mp4` 真片抽帧：时长 1303.4s、
+  `library._probe_local` 对 `E:\testvideo\K1cztm.mp4` 真片抽帧：时长 1303.4s、
   缩略图 242KB ✓（解码链路完好）。
 - **已同步**：E 仓库 + dist-app + **D 盘运行版**（文件未被占用，直接替换成功）。
 - 文本落盘：`vendor/mpv/` 加 `LICENSE.LGPL-2.1.txt`（gnu.org 原文，当前适用）、保留
@@ -4083,7 +4083,7 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 
 **用户指令**：「重新打包安装然后测试是否正常」；并指出安装器需要点击、"前面的工作中都是我手动点的"——要求把安装自动化补上。
 
-**打包**：`builduild_installer.ps1`（内部 build_exe 会 bump 版本）走到 **1.0.84**
+**打包**：`build\build_installer.ps1`（内部 build_exe 会 bump 版本）走到 **1.0.84**
 （第一次打出的 1.0.83 因下面第 1 条坑导致装机中断、废弃删除；重打含守卫的 1.0.84）。
 产物 `dist-installer\FunScriptCast-Nexus-Setup-1.0.84.exe` = 161.0 MB。
 

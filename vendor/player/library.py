@@ -8,9 +8,9 @@
   （都走 libmpv 秒级开销）；网络盘只列文件名——DLNA 当年「网盘逐视频 ffprobe 必超时」
   的教训不重蹈。
 · 无 ffmpeg 依赖：时长/缩略图全走 libmpv（vo=image 抽帧）。
-· 多文件文件夹聚合：同目录同基名（去尾部分件号）的视频合并为一张卡片，缩略图取
-  最近播放的分件（用户观察：显示上一次播放的那个）。
-· funscript 配对：同目录同名 .funscript（精确 stem 匹配，含分件各自配对）。
+· 一文件一卡片：不做多文件自动归组（用户裁定 R119 删除——曾按"同基名+尾号"聚合，
+  实测会把 SIVR-001/SIVR-002 这类不同编号误并成一张卡）。
+· funscript 配对：同目录同名 .funscript（精确 stem 匹配）。
 """
 from __future__ import annotations
 
@@ -18,14 +18,11 @@ import ctypes
 import hashlib
 import json
 import os
-import re
 import threading
 import time
 from pathlib import Path
 
 VIDEO_EXTS = {".mp4", ".mkv", ".wmv", ".avi", ".mov", ".webm", ".m2ts", ".ts"}
-PART_TAIL = re.compile(r"^(?P<base>.+?)[\s._-]*(?:cd|part)?[\s._-]?\d{1,3}$", re.I)
-CODE_RE = re.compile(r"\b([A-Z]{2,6})-?(\d{2,5})\b")
 
 APP_DIR = Path(__file__).resolve().parent.parent.parent   # vendor/player → 安装目录
 DLL_DIR = APP_DIR / "vendor" / "mpv"
@@ -57,17 +54,6 @@ def drive_is_local(path: Path) -> bool:
         return ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(drive)) == 3
     except Exception:
         return False
-
-
-def code_of(name: str) -> str:
-    m = CODE_RE.search(Path(name).stem.upper())
-    return f"{m.group(1)}-{m.group(2)}" if m else ""
-
-
-def base_of(stem: str) -> str:
-    """分件基名：CRVR-194-1 / CRVR-194-2 → crvr-194（无尾部数字则原样）。"""
-    m = PART_TAIL.match(stem.strip())
-    return (m.group("base") if m else stem).strip().lower()
 
 
 class Library:
@@ -263,37 +249,30 @@ class Library:
             pass
         return dur, thumb
 
-    # ------------------------------------------------------------ 聚合
+    # ------------------------------------------------------------ 卡片组装
     def _aggregate(self, files: dict, idx: dict) -> list[dict]:
-        groups: dict[tuple, list] = {}
+        """一个文件一张卡（R119：不再做多文件自动归组——见文件头说明）。
+        卡片结构保留为单元素 parts 列表，接口/日志结构与旧版兼容。"""
+        cards = []
         for path, e in files.items():
             stem = Path(e["name"]).stem
-            gk = (e["dir"], base_of(stem))
-            groups.setdefault(gk, []).append({**e, "path": path})
-        cards = []
-        for (d, base), parts in groups.items():
-            parts.sort(key=lambda p: p["name"])
-            # 缩略图取最近播放的分件；没播过取第一件
-            parts_sorted = sorted(parts, key=lambda p: p.get("played_at") or 0, reverse=True)
-            pick = parts_sorted[0]
-            code = code_of(pick["name"]) or code_of(base)
-            last = max((p.get("played_at") or 0) for p in parts)
+            parts = [{**e, "path": path}]
+            d = e["dir"]
+            pick = parts[0]
             card = {
-                "id": hashlib.md5(f"{d}|{base}".encode("utf-8")).hexdigest()[:16],
-                "title": code or base,
-                "code": code,
+                "id": hashlib.md5(f"{d}|{stem}".encode("utf-8")).hexdigest()[:16],
+                "title": stem,
                 "folder": Path(d).name,
                 "parts": [{"path": p["path"], "name": p["name"],
                            "dur": p.get("dur", 0.0), "pos": p.get("pos", 0.0),
                            "local": p["local"]} for p in parts],
-                # 浏览页按路径反查卡片用（/api/library/browse 的 dur/pos/thumb 都靠它；
-                # 旧版只读不写，恒为 None → 海报墙永远拿不到时长/进度/缩略图）
+                # 浏览页按路径反查卡片用（/api/library/browse 的 dur/pos/thumb 都靠它）
                 "paths": [p["path"] for p in parts],
                 "has_funscript": any(p["funscript"] for p in parts),
                 "duration": max(p.get("dur") or 0 for p in parts),
                 "thumb": pick.get("thumb", ""),
                 "local": pick["local"],
-                "last_played": last,
+                "last_played": pick.get("played_at") or 0,
                 "progress": ({"path": pick["path"], "pos": pick.get("pos", 0.0),
                               "dur": pick.get("dur", 0.0)}
                              if pick.get("pos") else None),
