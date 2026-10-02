@@ -111,7 +111,10 @@
     }
     var next = document.getElementById("page-" + name);
     if (!next) return;
-    if (name === "library") browse(vlBrowsePath || "");   // 切到媒体库页刷新列表（原为外挂 mpv 状态轮询）
+    /* 切到媒体库页：仅在**未打开视频**时刷新列表。打开过视频就保持播放视图——
+       browse() 渲染会强制切回浏览视图（vlPlayView 隐藏）但 <video> 仍在播，
+       会出现"窗口没了、视频还在放"（用户实测 2026-10-02）。正在播放时什么也不动。 */
+    if (name === "library" && !vlMed.path) browse(vlBrowsePath || "");
     var cur = $(".page.active", content);
     clearTimeout(pageTimer);
     if (cur && cur !== next) {
@@ -1391,6 +1394,10 @@
   /* --- 大框框：浏览模式 --- */
   function renderBrowse(data) {
 
+    /* 切回浏览视图时，正在播放的视频必须停住——视图一隐藏 <video> 会继续播
+       （无声窗口还在出声、进度还在走），用户实测过"窗口没了视频还在放"。 */
+    var _pv = vlVid();
+    if (_pv && !_pv.paused) { try { _pv.pause(); } catch (e) {} }
     $("#vlBrowse").style.display = "";
     $("#vlPlayView").style.display = "none";
     $("#vlBack").style.display = vlBrowsePath ? "" : "none";
@@ -2322,17 +2329,19 @@
       ? ("硬件版本：" + (i.hardware || "—") + " · 固件版本：" + (i.software || "—") + " · 设备最大速度：" + (i.max_speed || "—"))
       : "硬件版本：— · 固件版本：— · 设备最大速度：—";
     $("#setDevConnect").textContent = on ? "断开设备" : "扫描并连接";
-    /* 三个设备开关的回显（对齐手机端 AppViewModel.init 的"设备侧回读"）：
-       · 伪装设备：协议无模式查询通道，只能按**当前连接档案的身份**推
-         （连上 ServeU 通道 → 关；连上 Vorze 通道 → 开）；未连接回退本机设置值
-       · 狂暴模式：从设备 D0 信息回读（motorPower==100 即开启）；未连接回退本机设置值
-       · 反转方向：纯软件坐标变换（设备不存储），本机设置即真值 */
-    $("#setA10").checked = on
-      ? String(DEV.toy || "").toLowerCase() === "vorze"
-      : Number(SET_DEV.a10_mode) === 1;
+    /* 设备高级设置（对齐手机端 DeviceSettingsPage）：
+       · 未连接 → 整组禁用变灰 + 底部提示「连接设备后可用」；
+       · 回显只认**设备真值**——伪装=当前连接通道档案（连上 Vorze 通道→开）、
+         狂暴=设备 D0 的 motorPower（100=开 / 75=关）；**不再回退本机设置**——
+         旧逻辑在设备信息缺失时显示本地值，"手机平台上已关的狂暴"在 PC 会显示成开。 */
+    ["setA10", "setReversed", "setOcMode"].forEach(function (id) {
+      var el = $("#" + id); if (el) el.disabled = !on;
+    });
+    if ($("#advHint")) $("#advHint").hidden = on;
+    $("#setA10").checked = String(DEV.toy || "").toLowerCase() === "vorze";
     $("#setReversed").checked = !!DEV.reversed;
     var _mp = Number((DEV.info || {}).motor_power) || 0;
-    $("#setOcMode").checked = (on && _mp >= 1 && _mp <= 100) ? (_mp >= 100) : !!SET_DEV.oc_mode;
+    $("#setOcMode").checked = on && _mp >= 100;   // 75=默认档（关）；100=开
     /* 手动控制位置：未连接时禁用（对齐手机端 enabled = deviceConnected）——
        滑轨用 data-disabled（CSS 已挡 pointer-events），按钮用 disabled */
     var _posEl = $("#setManualPos");

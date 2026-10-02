@@ -544,6 +544,12 @@ select.input{ appearance:none; cursor:pointer; padding-right:30px;
 .switch input:checked + .track{ background:var(--accent); border-color:var(--accent); }
 .switch input:checked ~ .knob{ transform:translateX(17px); background:var(--accent-ink); }
 .switch input:focus-visible + .track{ box-shadow:0 0 0 3px var(--accent-soft); }
+/* 禁用态（未连接设备：设备高级设置整组灰）——对齐手机端「连接设备后可用」 */
+.switch:has(input:disabled){ cursor:not-allowed; }
+.switch input:disabled{ cursor:not-allowed; }
+.switch input:disabled + .track{ opacity:.5; }
+.switch input:disabled ~ .knob{ opacity:.45; }
+.adv-hint{ margin-top:12px; font-size:12px; color:var(--ink-3); }
 
 /* 分段控件：滑块位置由 app.js 按实际尺寸摆放（读 computed padding，不写死） */
 .seg{
