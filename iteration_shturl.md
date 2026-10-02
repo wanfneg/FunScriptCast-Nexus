@@ -4204,3 +4204,21 @@ code_of 番号正则 + base_of 分件基名 + _aggregate 归组），且发现 *
 
 **产出物**：报告（dev-archive）+ 探针脚本（`E:	mp\lc_*.py`，可复现）。
 
+### R120.1（2026-10-02 深夜）：B 路线 POC 实测通过——"PCM→虚拟声卡→LC"全链路
+
+**用户拍板**：「就做这个（把 PCM 播到虚拟声卡→LC 当系统音频听），后台化静默运行，前台该怎么做就怎么做」。
+
+**本机实测（全链路走通）**：
+- 机器上**已有 VB-Audio Virtual Cable**（`CABLE Input` 播放端 {68452073-...}）；LC 重启后**自动记得日语**（"已准备好在 日语(日本) 中显示实时字幕"）。
+- **关键事实实测**：**LC 的"系统音频"= 默认输出设备的回环**——未改默认时把音频播到 CABLE **LC 完全听不到**；**用 pycaw 把默认输出切到 CABLE Input（三角色全设）后，LC 立即正常出字**（词级时间线完整，对照 srt 逐句吻合：こんにちは三上ゆあです / あなたにだけユアの秘密教えてあげるね / ライブの衣装なんだけど、かわいいですか？どう？）。
+- **程序化设备切换可行**：`pycaw`（注意 API：`SetDefaultDevice(devId, [ERole.eConsole, ERole.eMultimedia, ERole.eCommunications])`——枚举名是 eConsole/eMultimedia/eCommunications，roles 传**列表**）；切前记录旧默认（`AudioUtilities.GetSpeakers().id`）、实验后已**恢复**（soundcore Space One）。
+- **POC 脚本**：`E:	mp\lc_feed.py`（mpv→CABLE 纯音频播放）、`lc_default_switch.py set|restore`（默认设备切换/恢复）、`lc_track2.py`（词级时间线采集）。
+
+**产品化待解（下一步）**：
+1. **"用户还能听见"**：默认切走后声音只进 CABLE——两条路：①系统"侦听"（CABLE Output→扬声器，程序化要碰注册表）；②**软件回放**（python 读 CABLE Output + 同时播到真实设备——完全可控，倾向此路）。
+2. **静音问题在虚拟链路的复现与否**（默认= CABLE 时系统"静音"状态是否影响——待测）。
+3. **"静默后台化"**：LC 窗口隐藏（ShowWindow/社区同款）、LC 生命周期跟随字幕服务、默认设备切换的异常恢复（崩溃后要保证还原）。
+4. 与现有管线对接：词级增量 → diff → 翻译（现有 llama-server）→ 头显协议 partial 段。
+
+**现状**：POC 全部脚本就位、现场已还原（默认设备=耳机、LC 进程可关）。等用户指示是否立项做进宿主。
+
