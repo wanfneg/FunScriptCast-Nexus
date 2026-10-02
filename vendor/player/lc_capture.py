@@ -52,16 +52,30 @@ class LiveCaptionsCapture:
         self._lines: list[dict] = []   # 定稿句 [{"ja","zh","ts"}]
         self._hide_window = True
         self._want_lang = LANG_NAMES["ja"]
+        self._cur_lang = ""
 
     # ---------------------------------------------------------------- 对外接口
     def start(self, lang: str = "ja") -> dict:
         self._want_lang = LANG_NAMES.get(lang, LANG_NAMES["ja"])
         with self._lock:
             if self._running:
-                return self.state()
+                # 已在跑但语言不同 → 重启抓取线程让语言生效（手机端选语言即切换）
+                if self._cur_lang != self._want_lang:
+                    self._stop.set()
+                    th = self._thread
+                else:
+                    return self.state()
+            else:
+                th = None
+        if th is not None:
+            th.join(timeout=3)
+            with self._lock:
+                self._running = False
+        with self._lock:
             self._stop.clear()
             self._err = ""
             self._running = True
+            self._cur_lang = self._want_lang
             self._thread = threading.Thread(target=self._run, name="lc-capture", daemon=True)
             self._thread.start()
         return self.state()

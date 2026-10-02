@@ -1117,6 +1117,8 @@ def _port_owner_pids(port: int) -> list:
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
     except Exception:
         return []
+    if not out:
+        return []   # R124：netstat 偶发返回 None/空（窗口站分离等），别在 splitlines 上崩
     pids: list = []
     for line in out.splitlines():
         p = line.split()
@@ -2405,7 +2407,9 @@ class Handler(BaseHTTPRequestHandler):
                             "scanning": lib.scanning, "progress": lib.scan_progress,
                             "last_scan": lib.last_scan, "count": n})
             elif path == "/api/lc/state":
-                self._json({"ok": True, "lc": _get_lc().state()})
+                st = _get_lc().state()
+                st["mt_ok"] = _lc_mt_ok()
+                self._json({"ok": True, "lc": st})
             elif path == "/api/library/thumb":
                 # 缩略图：name 必须是纯文件名（防路径穿越），只服务 thumb 目录
                 from urllib.parse import parse_qs, urlparse as _up
@@ -2661,11 +2665,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             elif path == "/api/lc/start":
                 lang = str(body.get("lang") or "ja")
+                # 预热环节（R124·对齐手机端 R104）：识别模型=Qwen 时走字幕服务正常启动
+                # （它负责拉翻译+预热）；=lccapture 时字幕服务只拉翻译。没在跑就拉起。
+                # 接入正常预热环节：字幕服务没跑就按标准链路拉起（sub_start →
+                # server_app 按当前识别模型装配 backend + 拉翻译 + 预热；lccapture
+                # 模式不占显存）；已在跑则补一针翻译预热（防空闲回收后首句等冷启动）。
+                try:
+                    sub_running = RT.sub_proc and RT.sub_proc.poll() is None
+                    if not sub_running:
+                        threading.Thread(target=lambda: sub_start(),
+                                         daemon=True, name="lc-substart").start()
+                    else:
+                        threading.Thread(target=lambda: _lc_warm_quietly(),
+                                         daemon=True, name="lc-warm").start()
+                except Exception:
+                    pass
                 st = _get_lc().start(lang)
-                # 预热（R123）：后台拉一遍翻译——拉起 llama-server（8082 冷启动 15-40s）
-                # 并完成首包 prefill，让第一句字幕不必等冷启动。
-                threading.Thread(target=lambda: _lc_warm_quietly(),
-                                 daemon=True, name="lc-warm").start()
                 RT.add_log("AI 字幕已开启（Win11 实时字幕 · %s）" % ("英语" if lang == "en" else "日语"))
                 self._json({"ok": True, "lc": st})
             elif path == "/api/lc/stop":
@@ -3169,6 +3184,12 @@ def asr_models() -> dict:
     选什么存什么，引擎侧零改动。
     """
     out = []
+    # R124：「Win11 实时字幕」作为正式识别选项（用户拍板接入转录板块）——
+    # 零显存、本机播放专用；选它存 asr.audiocpp.model = "lccapture"，
+    # 字幕服务据此不加载 audiocpp、翻译链路照常（见 server_app._LcBackend）。
+    if Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "LiveCaptions.exe":
+        if (Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "LiveCaptions.exe").is_file():
+            out.append({"name": "Win11 实时字幕（本机播放 · 不占显存）", "value": "lccapture"})
     if MODELS_DIR.exists():
         for d in sorted(MODELS_DIR.iterdir()):
             if not d.is_dir() or d.name.startswith("."):
@@ -4052,6 +4073,24 @@ def _lc_translate(ja: str) -> str:
     with opener.open(req, timeout=20) as r:
         d = json.loads(r.read().decode("utf-8"))
     return (d["choices"][0]["message"]["content"] or "").strip()
+
+
+_LC_MT_PROBE = {"ts": 0.0, "ok": False}
+
+
+def _lc_mt_ok() -> bool:
+    """翻译服务（8082）就绪探测（3s 缓存；前端"等待预热"状态用）。"""
+    now = time.time()
+    if now - _LC_MT_PROBE["ts"] < 3:
+        return _LC_MT_PROBE["ok"]
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open("http://127.0.0.1:8082/health", timeout=1.5) as r:
+            _LC_MT_PROBE["ok"] = (r.status == 200)
+    except Exception:
+        _LC_MT_PROBE["ok"] = False
+    _LC_MT_PROBE["ts"] = now
+    return _LC_MT_PROBE["ok"]
 
 
 def _lc_warm_quietly() -> None:

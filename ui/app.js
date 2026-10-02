@@ -1543,18 +1543,29 @@
       el.classList.toggle("on", pair[1] === "off" ? !lcActive : (lcActive && lcLang === pair[1]));
     });
   }
+  var lcWarming = false;   // 预热中：视频暂停，双就绪（LC + 翻译）后恢复（对齐手机端 R104）
+  function lcHint(msg) {
+    var h = $("#lcHint"); if (h) h.textContent = msg || "实时转写并翻译为中文；识别由 Windows 实时字幕完成（不占显存）";
+  }
   function lcStart(lang) {
     lcLang = (lang === "en") ? "en" : "ja";
     lcActive = true;
     localStorage.setItem("lcLang", lcLang);
     api("/api/lc/start", "POST", { lang: lcLang }).catch(function () {});
     var sub = $("#lcSub"); if (sub) sub.hidden = false;
+    // 暂停视频等预热（对齐手机端：识别+翻译都就绪才恢复播放）
+    lcWarming = true;
+    var v = vlVid();
+    if (v && !v.paused) { try { v.pause(); } catch (e) {} }
+    lcHint("正在启动识别与翻译…（首次预热约 10–40 秒，就绪后自动继续播放）");
     if (lcTimer) clearInterval(lcTimer);
-    lcTimer = setInterval(lcPoll, 320);
+    lcTimer = setInterval(lcPoll, 600);
     lcRender();
   }
   function lcStop() {
     lcActive = false;
+    lcWarming = false;
+    lcHint();
     if (lcTimer) { clearInterval(lcTimer); lcTimer = null; }
     var sub = $("#lcSub"); if (sub) sub.hidden = true;
     var box = $("#lcLines"); if (box) box.innerHTML = "";
@@ -1565,6 +1576,18 @@
   function lcPoll() {
     api("/api/lc/state").then(function (r) {
       var lc = (r && r.lc) || {};
+      if (lcWarming) {
+        var ready = !!lc.lc_ok && !!lc.mt_ok;
+        if (ready) {
+          lcWarming = false;
+          lcHint();
+          var v0 = vlVid();
+          if (v0) { var p0 = v0.play(); if (p0 && p0.catch) p0.catch(function () {}); }
+        } else {
+          lcHint(!lc.lc_ok ? "正在启动 Windows 实时字幕…" : "识别已就绪，正在预热翻译…");
+          return;   // 预热期不刷字幕（也没字幕可刷）
+        }
+      }
       var key = (lc.cur || "") + "|" + ((lc.lines || []).length);
       if (key === lcKey) return;
       lcKey = key;

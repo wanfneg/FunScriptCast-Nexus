@@ -271,12 +271,43 @@ class _AsrUnavailable:
                 "error": self.error}
 
 
+class _LcBackend:
+    """识别模型 =「Win11 实时字幕」（asr.model = "lccapture"，R124 用户拍板接入转录板块）。
+
+    识别由 Windows 11 自带的实时字幕完成（只读它的界面输出，不挪用模型）——
+    **零显存占用**，专供 PC 本机播放场景（媒体库内置播放器出声 → LC 听系统音频）。
+    头显推流（/transcribe）在此模式下不可用：LC 听不到推流 PCM（虚拟声卡方案另立项），
+    返回带 error 的空结果，头显端会明确提示；头显字幕请切回 Qwen 模型。
+    翻译链路完全复用（llama-server 照常拉起与预热）——这是本模式存在的意义：
+    识别外包给 Windows，显存全留给翻译大模型。
+    """
+
+    backend_kind = "lccapture"
+    vad = None
+    use_aligner = False
+    load_s = 0.0
+    model = "lccapture"
+    error = ""
+
+    def stop_server(self) -> None:
+        pass
+
+    def transcribe(self, *args, **kwargs) -> dict:
+        return {"language": None, "segments": [], "asr_ms": 0.0, "skipped": True,
+                "error": "当前识别模型为 Win11 实时字幕，仅支持 PC 本机播放字幕；头显字幕请切换 Qwen 模型"}
+
+
 def _make_asr(cfg: dict):
     """按 asr.backend 选引擎。
 
     R66：kotoba/whisper 转录方案整体剔除（用户拍板）——识别引擎只有
     audiocpp（Qwen3-ASR，日英双语已实测）。回退链 = audiocpp → 未就绪兜底。
     """
+    # R124：识别模型选「Win11 实时字幕」→ 不加载 audiocpp（零显存），翻译链路照常。
+    # 前端「识别模型」下拉保存键是 asr.audiocpp.model（R72 既有路径），LC 选项存 "lccapture"。
+    if str((cfg.get("audiocpp") or {}).get("model", "") or "").strip() == "lccapture":
+        print("[server] ASR 后端 = lccapture（Win11 实时字幕 · 本机播放专用，零显存；头显字幕不可用）")
+        return _LcBackend()
     kind = str(cfg.get("backend", "audiocpp") or "audiocpp").lower()
     if kind not in ("audiocpp", "cpp", "ggml", "qwen3"):
         print(f"[server] ⚠️ 未知识别引擎 {kind!r}，回落 audiocpp（Qwen3）")
