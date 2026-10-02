@@ -2404,6 +2404,8 @@ class Handler(BaseHTTPRequestHandler):
                             "roots": [r for r in (load_settings().get("library_roots") or []) if r],
                             "scanning": lib.scanning, "progress": lib.scan_progress,
                             "last_scan": lib.last_scan, "count": n})
+            elif path == "/api/lc/state":
+                self._json({"ok": True, "lc": _get_lc().state()})
             elif path == "/api/library/thumb":
                 # 缩略图：name 必须是纯文件名（防路径穿越），只服务 thumb 目录
                 from urllib.parse import parse_qs, urlparse as _up
@@ -2657,6 +2659,14 @@ class Handler(BaseHTTPRequestHandler):
                 _get_library().set_progress(vp2, float(body.get("pos") or 0),
                                             float(body.get("dur") or 0), time.time())
                 self._json({"ok": True})
+            elif path == "/api/lc/start":
+                st = _get_lc().start()
+                RT.add_log("PC 直听字幕已开启（Live Captions · 日语）")
+                self._json({"ok": True, "lc": st})
+            elif path == "/api/lc/stop":
+                st = _get_lc().stop()
+                RT.add_log("PC 直听字幕已停止")
+                self._json({"ok": True, "lc": st})
             elif path == "/api/dlna/start":
                 self._json(dlna_start(body.get("port"), body.get("roots")))
             elif path == "/api/dlna/stop":
@@ -4007,6 +4017,48 @@ def _get_library():
         LIB = Library(APP_DIR / "data" / "library_index.json",
                       APP_DIR / "data" / "library_thumbs")
     return LIB
+
+
+# ---- PC 直听模式：Live Captions 词级字幕（R122；抓取模块 vendor/player/lc_capture.py）----
+_LC_CAP = None
+
+
+def _lc_translate(ja: str) -> str:
+    """定稿句 → 中文：走现有本地翻译 llama-server（地址/模型实时读 subtitle_config）。"""
+    tr = (subtitle_config() or {}).get("translate") or {}
+    local = tr.get("local") or {}
+    base = str(local.get("base_url") or "http://127.0.0.1:8082").rstrip("/")
+    model = str(local.get("alias") or "sakura-7b")
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "你是专业的实时字幕翻译器。把用户输入翻译成简体中文，只输出译文本身。"},
+            {"role": "user", "content": "将下面的日文文本翻译成中文：" + ja},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 256,
+    }
+    req = urllib.request.Request(
+        base + "/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    # 绕过系统代理（本机请求；同 main() 单实例探测的教训）
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=20) as r:
+        d = json.loads(r.read().decode("utf-8"))
+    return (d["choices"][0]["message"]["content"] or "").strip()
+
+
+def _get_lc():
+    """LC 抓取器（懒加载；首次 start 才 import/起 LC，不拖慢宿主启动）。"""
+    global _LC_CAP
+    if _LC_CAP is None:
+        sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
+        from lc_capture import LiveCaptionsCapture   # noqa: PLC0415
+
+        _LC_CAP = LiveCaptionsCapture(translate_fn=_lc_translate,
+                                      log=lambda m: log.info("%s", m))
+    return _LC_CAP
 
 
 def _library_scan_bg() -> None:

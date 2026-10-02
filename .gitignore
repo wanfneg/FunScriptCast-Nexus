@@ -79,3 +79,4 @@ vendor/mpv/libmpv-2.dll
 vendor/player/libmpv-2.dll
 build/_thumb-probe/
 build/_mpv-proto/
+@AutomationLog.txt

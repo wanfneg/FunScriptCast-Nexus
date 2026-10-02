@@ -419,6 +419,11 @@ try {
             <div id="vlPlayView" style="display:none">
               <div class="vl-vwrap" id="vlVWrap">
                 <video id="vlVideo" playsinline preload="metadata"></video>
+                <!-- PC 直听字幕层（R122）：Live Captions 词级原文 + Sakura 句译 -->
+                <div class="lc-sub" id="lcSub" hidden>
+                  <div class="lc-lines" id="lcLines"></div>
+                  <div class="lc-cur" id="lcCur"></div>
+                </div>
                 <button class="vl-vback" id="vlVBack"><svg class="ic"><use href="#i-chevron-left"/></svg><span>返回媒体库</span></button>
                 <div class="vl-voff" id="vlVOff" hidden>
                   <div class="vl-voff-t">内置播放器打不开这个文件</div>

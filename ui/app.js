@@ -1529,6 +1529,40 @@
     api("/api/library/progress", "POST",
         { path: vlMed.path, pos: v.currentTime || 0, dur: v.duration });
   }
+  /* ---- PC 直听字幕（R122）：宿主侧 Live Captions 抓词级 → Sakura 句译 ----
+     start 在进入播放时调、stop 在退出播放时调；每 320ms 轮询 /api/lc/state。 */
+  var lcRunning = false, lcTimer = null, lcKey = "";
+  function lcStart() {
+    if (lcRunning) return;
+    lcRunning = true;
+    api("/api/lc/start", "POST", {}).catch(function () {});
+    var sub = $("#lcSub"); if (sub) sub.hidden = false;
+    if (lcTimer) clearInterval(lcTimer);
+    lcTimer = setInterval(lcPoll, 320);
+  }
+  function lcStop() {
+    lcRunning = false;
+    if (lcTimer) { clearInterval(lcTimer); lcTimer = null; }
+    var sub = $("#lcSub"); if (sub) sub.hidden = true;
+    api("/api/lc/stop", "POST", {}).catch(function () {});
+  }
+  function lcPoll() {
+    api("/api/lc/state").then(function (r) {
+      var lc = (r && r.lc) || {};
+      var key = (lc.cur || "") + "|" + ((lc.lines || []).length);
+      if (key === lcKey) return;
+      lcKey = key;
+      var cur = $("#lcCur");
+      if (cur) cur.textContent = lc.cur || "";
+      var box = $("#lcLines");
+      if (box && lc.lines) {
+        box.innerHTML = lc.lines.slice(-3).map(function (ln) {
+          return '<div class="lc-line">' + esc(ln.zh || "") +
+                 '<span class="ja">' + esc(ln.ja || "") + "</span></div>";
+        }).join("");
+      }
+    }).catch(function () {});
+  }
   function openVideo(path, name, list, idx) {
     reportProgress(true);                                // 切换前先保存上一个的进度
     vlMed.path = path || "";
@@ -1549,6 +1583,7 @@
       if (pr && pr.catch) pr.catch(function () { /* 自动播放被拦或解码失败，等 error 事件 */ });
     });
     vlTouch();
+    lcStart();                                   // PC 直听字幕随播放开启（R122）
     vlSyncVlUi();
   }
   function vlSyncVlUi() {
@@ -1642,6 +1677,7 @@
       try { v.pause(); } catch (e) {}
       v.removeAttribute("src"); v.load();
       vlMed.path = ""; vlMed.failed = false;
+      lcStop();                                    // 退出播放：停 PC 直听字幕（R122）
       vlCurPath = "";   // 离开播放态，免得轮询再走"回根"分支
       $("#vlPlayView").style.display = "none";
       $("#vlBrowse").style.display = "";
