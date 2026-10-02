@@ -2228,9 +2228,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(update_check())
             elif path == "/api/models/catalog":
                 self._json(models_catalog_payload())
-            # ---------------- 桌面播放器（M1）----------------
-            elif path == "/api/player/state":
-                self._json(_get_player().state())
             elif path == "/api/library/stream":
                 # 本地直连流（内置播放器主路径）：支持 Range/206，**不经过 DLNA**。
                 # 只允许媒体库目录/DLNA 共享目录里的文件（UI API 仅监听 127.0.0.1）。
@@ -2467,30 +2464,6 @@ class Handler(BaseHTTPRequestHandler):
                 # 托盘图标可能被系统收进溢出面板、用户找不到入口，这条路始终可用。
                 TRAY.show_window()
                 self._json({"ok": True})
-            # ---------------- 桌面播放器（M1）----------------
-            elif path == "/api/player/open":
-                vp = str(body.get("path") or "")
-                pos = float(body.get("pos") or 0)
-                if not vp or not re.fullmatch(r".*\.(mp4|mkv|wmv|avi|mov|webm|m2ts|ts)",
-                                              vp, re.I) or not Path(vp).is_file():
-                    self._json({"ok": False, "error": "视频文件不存在"}, 400)
-                    return
-                self._json({"ok": True, **_get_player().open(vp, start_pos=pos)})
-            elif path == "/api/player/toggle":
-                paused = _get_player().toggle_pause()
-                self._json({"ok": True, "paused": paused})
-            elif path == "/api/player/stop":
-                _get_player().stop()
-                self._json({"ok": True})
-            elif path == "/api/player/seek":
-                _get_player().seek(float(body.get("pos") or 0))
-                self._json({"ok": True})
-            elif path == "/api/player/volume":
-                _get_player().set_volume(int(body.get("v") or 100))
-                self._json({"ok": True})
-            elif path == "/api/player/fullscreen":
-                fs = _get_player().toggle_fullscreen()
-                self._json({"ok": True, "fullscreen": fs})
             # ---------------- 媒体库（M1）----------------
             # ---------------- 脚本同步（M2） ----------------
             elif path == "/api/sync/start":
@@ -3904,7 +3877,6 @@ def _setup_file_logging() -> None:
 
 
 # ---------------------------------------------------------------- 媒体库与桌面播放器（M1）
-PLAYER = None        # MpvPlayer 单例（懒建——import mpv 需要 vendor\mpv 就绪）
 LIB = None
 
 
@@ -4017,54 +3989,9 @@ def _get_device() -> dict:
         return _DEV["obj"]
 
 
-_PLAYER_LOCK = threading.Lock()
-_MPV_TICK_STARTED = False
-
-
-def _start_mpv_sync_ticker() -> None:
-    """mpv 外挂播放器模式：宿主 ~50ms 读播放进度喂脚本同步。
-    内置 <video> 由前端高频 tick；mpv 走不了那条路（进度在宿主进程里），
-    而 1s 的存活轮询粒度做不了"段边界发帧"的检测（会漏段/迟发）。"""
-    global _MPV_TICK_STARTED
-    if _MPV_TICK_STARTED:
-        return
-    _MPV_TICK_STARTED = True
-
-    def _run() -> None:
-        while True:
-            time.sleep(0.05)
-            try:
-                d = _DEV.get("obj")
-                p = PLAYER
-                if not d or p is None or not d["sync"].active:
-                    continue
-                st = p.state()
-                if st.get("paused") or not st.get("playing"):
-                    continue
-                d["sync"].tick(float(st.get("pos") or 0), float(st.get("speed") or 1))
-            except Exception:
-                pass
-
-    threading.Thread(target=_run, daemon=True, name="mpv-sync-tick").start()
-
-
-def _get_player():
-    global PLAYER
-    if PLAYER is None:
-        with _PLAYER_LOCK:               # 双检锁：并发 /api/player/open 只建一份实例
-            if PLAYER is None:
-                sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
-                from mpv_player import MpvPlayer   # noqa: PLC0415
-
-                def _on_progress(path, pos, dur):
-                    try:
-                        LIB.set_progress(path, pos, dur, time.time())
-                    except Exception:
-                        pass
-
-                PLAYER = MpvPlayer(on_progress=_on_progress)
-                _start_mpv_sync_ticker()
-    return PLAYER
+# 外挂 mpv 播放器（MpvPlayer / /api/player/* / mpv-sync-ticker）已整套删除：
+# 播放早已全部走内置 WebView <video>（/api/library/stream + 前端 reportProgress）。
+# libmpv 本身保留——媒体库的时长/缩略图探测仍走它（vendor/player/library.py）。
 
 
 def _get_library():

@@ -27,6 +27,29 @@ VIDEO_EXTS = {".mp4", ".mkv", ".wmv", ".avi", ".mov", ".webm", ".m2ts", ".ts"}
 PART_TAIL = re.compile(r"^(?P<base>.+?)[\s._-]*(?:cd|part)?[\s._-]?\d{1,3}$", re.I)
 CODE_RE = re.compile(r"\b([A-Z]{2,6})-?(\d{2,5})\b")
 
+APP_DIR = Path(__file__).resolve().parent.parent.parent   # vendor/player → 安装目录
+DLL_DIR = APP_DIR / "vendor" / "mpv"
+_dll_ready = False
+
+
+def ensure_dll() -> None:
+    """把 vendor\\mpv 加进 DLL 搜索路径（libmpv 抽帧/探时长前必须调用一次）。
+    DLL 不在时不置就绪位：装好/补回 DLL 后下次调用还能生效。
+    （原在 mpv_player.py〔外挂 mpv 播放器封装，已随其弃用删除〕，搬到此处——
+    缩略图/时长探测仍依赖 libmpv。）"""
+    global _dll_ready
+    if _dll_ready:
+        return
+    if (DLL_DIR / "libmpv-2.dll").is_file():
+        d = str(DLL_DIR)
+        try:
+            os.add_dll_directory(d)
+        except Exception:
+            pass
+        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+        _dll_ready = True
+
+
 def drive_is_local(path: Path) -> bool:
     """固定磁盘 True；网络盘/可移动盘 False（只列文件名，不做逐文件探测）。"""
     try:
@@ -188,8 +211,7 @@ class Library:
 
     def _probe_local(self, vp: Path) -> tuple[float, str]:
         """本地盘：libmpv 探时长 + 抽缩略图（12%，全黑则 45% 重试）。"""
-        from mpv_player import ensure_dll   # noqa: PLC0415（同目录，宿主已把本目录加进 sys.path）
-        ensure_dll()
+        ensure_dll()   # vendor/mpv 加入 DLL 搜索路径（libmpv）
         dur, thumb = 0.0, ""
         try:
             import mpv   # noqa: PLC0415

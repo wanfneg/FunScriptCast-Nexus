@@ -111,7 +111,7 @@
     }
     var next = document.getElementById("page-" + name);
     if (!next) return;
-    if (name === "library") loadLibrary();
+    if (name === "library") browse(vlBrowsePath || "");   // 切到媒体库页刷新列表（原为外挂 mpv 状态轮询）
     var cur = $(".page.active", content);
     clearTimeout(pageTimer);
     if (cur && cur !== next) {
@@ -874,7 +874,7 @@
             if (!r || r.ok === false) { toast("保存失败", (r && r.error) || "", "err"); return; }
             toast("已添加 " + added + " 个媒体库目录", "正在自动扫描生成海报墙", "ok");
             libRootSig = "";   // 强制重渲染
-            api("/api/library/rescan", "POST", {}).then(function () { loadLibrary(); });
+            api("/api/library/rescan", "POST", {}).then(function () { browse(vlBrowsePath || ""); });
           });
         });
       });
@@ -1374,7 +1374,6 @@
   document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(true); });
 
   /* ---------- 视频联动（浏览⇄播放双模 + 手机端对齐卡片/热力图/预设） ---------- */
-  var libPollTimer = 0, libSeekDrag = false;
   var vlBrowsePath = "";        // ""=根（roots 卡片）
   var vlLastBrowse = { videos: [] };   // 当前目录的视频列表（内置播放器的上一个/下一个）
   var VL_PRESETS = null, vlTab = "stroke", vlHeatScript = null, vlHeatKey = "";
@@ -1445,7 +1444,7 @@
     var card = e.target.closest(".lib-card");
     if (!card || !card.getAttribute("data-vpath")) return;
     var vp = decodeURIComponent(card.getAttribute("data-vpath"));
-    /* 内置播放：直接在大框框里放，不再拉起外挂 mpv（外挂仍保留为兜底按钮） */
+    /* 内置播放：直接在大框框里放（外挂 mpv 已弃用删除） */
     var list = (vlLastBrowse.videos || []).map(function (v) { return { path: v.path, name: v.name }; });
     var idx = 0;
     list.forEach(function (it, i) { if (it.path === vp) idx = i; });
@@ -1469,9 +1468,9 @@
   });
 
   /* =====================================================================
-     内置播放器：HTML5 <video> 直接在大框框里播（用户明确要求，不再外挂 mpv）
+     内置播放器：HTML5 <video> 直接在大框框里播
      流地址优先级：① 宿主 /api/library/stream（1.0.56+）② DLNA /media/<key>
-     （DLNA 服务器已支持 Range 206，1.0.55 就能用；外挂 mpv 只作兜底）
+     （DLNA 服务器已支持 Range 206）
      ===================================================================== */
   var VL_STREAM = { api: null };          // null=未探测 / true=宿主有流接口 / false=走 DLNA
   var vlMed = { list: [], idx: -1, path: "", name: "", failed: false };
@@ -1517,7 +1516,7 @@
     var v = vlVid();
     if (!v || !vlMed.path || vlMed.failed) return;
     var now = Date.now();
-    if (!force && now - libProgLast < 5000) return;      // 节流 5s（与 mpv 轮询同频）
+    if (!force && now - libProgLast < 5000) return;      // 节流 5s
     if (!isFinite(v.duration) || v.duration <= 0) return;
     libProgLast = now;
     api("/api/library/progress", "POST",
@@ -1536,7 +1535,7 @@
     var v = vlVid();
     v.style.display = "";
     vlStreamUrl(vlMed.path, function (url) {
-      if (!url) { vlVideoFail("这个文件不在 DLNA 共享目录里，无法内置播放；可点下面的按钮用外部播放器。"); return; }
+      if (!url) { vlVideoFail("这个文件不在 DLNA 共享目录里，无法内置播放。"); return; }
       v.src = url;
       v.load();
       var pr = v.play();
@@ -1624,7 +1623,7 @@
       toast("没有正在播放的视频", "先在媒体库里点一个视频", "warn");
     });
     $("#vlVBack").addEventListener("click", function () {
-      /* 回到媒体库（暂停并释放流，时间轴交回 mpv 轮询口径） */
+      /* 回到媒体库（暂停并释放流） */
       /* 先退全屏再动 DOM：虽然现在全屏元素是文档根、隐藏子容器已经安全，
          但退出动作放前面更稳（这里就是"全屏后点返回直接卡死"的现场）。 */
       try {
@@ -1678,7 +1677,7 @@
     });
   }
 
-  /* --- 大框框：播放模式（外挂 mpv 的页内镜像） --- */
+  /* --- 大框框：播放模式（内置播放器） --- */
   var vlCurPath = "";
   function showPlayView(path) {
     vlCurPath = path || vlCurPath;
@@ -1688,25 +1687,7 @@
     if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
   }
 
-  /* --- 播放状态轮询（驱动播放视图/时间轴） --- */
-  var vlPlayerOpen = false;
-  function renderPlayState(p) {
-    /* 视频联动页只用内置播放器：不再镜像外部 mpv 的播放状态 */
-    vlPlayerOpen = !!(p && p.open);
-  }
-  function loadLibrary() {
-    api("/api/player/state").then(function (p) {
-      renderPlayState(p);
-      if (p && p.open) {
-        if ($("#vlPlayView").style.display === "none") showPlayView(p.path);
-        clearTimeout(libPollTimer);
-        libPollTimer = setTimeout(loadLibrary, 1000);
-      } else {
-        clearTimeout(libPollTimer);
-        libPollTimer = setTimeout(loadLibrary, 8000);
-      }
-    });
-  }
+  /* 播放状态轮询已删除：外挂 mpv 弃用后由内置播放器状态直接驱动（vlMed/vlVid） */
 
   /* --- 脚本热力图（手机 ScriptHeatmap.kt 同构：7 档色带/速度窗 50/位置分位窗 15/间隙 5s 重置） --- */
   var HEAT_STOPS = [[0, 0, 0], [30, 144, 255], [34, 139, 34], [255, 215, 0], [220, 20, 60], [147, 112, 219], [37, 22, 122]];
@@ -1811,7 +1792,7 @@
     var frac = (e.clientX - rect.left) / rect.width;
     var sc = vlHeatScript;
     var scriptEnd = (sc && sc.actions && sc.actions.length) ? sc.actions[sc.actions.length - 1][0] / 1000 : 0;
-    /* 内置播放器在放 → 直接 seek 视频；否则走 mpv 接口 */
+    /* 内置播放器在放 → 直接 seek 视频 */
     if (vlMed.path && !vlMed.failed) {
       var v = vlVid();
       var d = (v && isFinite(v.duration)) ? v.duration : 0;
@@ -1819,11 +1800,11 @@
       if (end > 0) vlSeekTo(frac * end);
       return;
     }
-    /* 没有内置播放时什么都不做（本页不再操作外部播放器） */
+    /* 没有内置播放时什么都不做 */
   });
   function loadHeat() {
     if (!document.querySelector("#page-library.active")) return;
-    /* 内置播放器在放：时间轴跟视频走，不再轮询 mpv */
+    /* 内置播放器在放：时间轴跟视频走 */
     if (vlMed.path && !vlMed.failed) {
       var v = vlVid();
       if (vlHeatKey !== vlMed.path || !vlHeatScript) {
@@ -1837,16 +1818,8 @@
       }
       return;
     }
-    api("/api/player/state").then(function (p) {
-      if (!p || !p.open) { vlHeatScript = null; vlHeatKey = ""; drawHeat(); return; }
-      var want = p.path;
-      if (vlHeatKey === want && vlHeatScript) { drawHeat(p.pos, p.dur); return; }
-      api("/api/library/script?path=" + encodeURIComponent(p.path)).then(function (r) {
-        vlHeatKey = want;
-        vlHeatScript = (r && r.ok) ? r : null;
-        drawHeat(p.pos, p.dur);
-      });
-    });
+    /* 没有内置播放（外挂 mpv 已删除）→ 无热力图 */
+    vlHeatScript = null; vlHeatKey = ""; drawHeat();
   }
   setInterval(loadHeat, 1000);
 
@@ -2654,7 +2627,7 @@
     } else if (h.indexOf("#library/play=") === 0) {
       showPage("library");
       var vp = h.slice("#library/play=".length);
-      /* 深链直接进内置播放器（原来这里会拉起外部 mpv） */
+      /* 深链直接进内置播放器 */
       openVideo(vp, String(vp).split(/[\\/]/).pop(), [], 0);
     } else if (h === "#library") {
       showPage("library");
