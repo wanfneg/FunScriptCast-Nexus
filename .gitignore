@@ -78,3 +78,4 @@ vendor/mpv/libmpv-2.dll
 # player 目录里的同名副本（外挂播放器弃用后已删；曾漏忽略被误提交 121MB）
 vendor/player/libmpv-2.dll
 build/_thumb-probe/
+build/_mpv-proto/
