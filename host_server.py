@@ -1477,8 +1477,11 @@ MODELS_CATALOG = [
         "dest_dir": APP_DIR / "vendor" / "llama",
         "size_gb": 0.8,
         "files": [
+            # R119.1：固定资源页（tag=runtime-assets，标记 Pre-release 所以不占 Releases 的
+            # Latest 位）。之前用 releases/latest/download/* ⇒ 每次发版必须把大包重传到新
+            # release（约 1.8GB/次）；固定后发版只传安装包 exe。
             {"rel": "llama-runtime-windows.zip",
-             "url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest/download/llama-runtime-windows.zip"},
+             "url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/download/runtime-assets/llama-runtime-windows.zip"},
         ],
     },
     {
@@ -1495,8 +1498,9 @@ MODELS_CATALOG = [
         "dest_dir": APP_DIR / "vendor" / "audiocpp",
         "size_gb": 1.1,
         "files": [
+            # R119.1：同 llama-runtime——固定资源页，发版不再搬家大包。
             {"rel": "audiocpp-runtime-windows-cuda.zip",
-             "url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/latest/download/audiocpp-runtime-windows-cuda.zip"},
+             "url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/download/runtime-assets/audiocpp-runtime-windows-cuda.zip"},
         ],
     },
     {
