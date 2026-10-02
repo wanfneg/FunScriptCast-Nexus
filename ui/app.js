@@ -1966,7 +1966,7 @@
         dualSliderHtml("vl_burst_range", 0, 100, bLo, bHi, "运动范围", bTxt, bLink) +
         linkBoxHtml("vl_burst_link", bLink) +
         sliderRowHtml("运动速度", bSpdTxt, "vl_burst_speed", 0, VL_SPEED_MAX, bSpd, !bSpeedLink) +
-        linkBoxHtml("vl_burst_speed_link", bSpeedLink, "关联上限") + '</div>';
+        linkBoxHtml("vl_burst_speed_link", bSpeedLink) + '</div>';
     }
     box.innerHTML = html;
     if (vlTab === "stroke") {
@@ -2341,13 +2341,20 @@
     $("#setReversed").checked = !!DEV.reversed;
     var _mp = Number((DEV.info || {}).motor_power) || 0;
     $("#setOcMode").checked = (on && _mp >= 1 && _mp <= 100) ? (_mp >= 100) : !!SET_DEV.oc_mode;
+    /* 手动控制位置：未连接时禁用（对齐手机端 enabled = deviceConnected）——
+       滑轨用 data-disabled（CSS 已挡 pointer-events），按钮用 disabled */
+    var _posEl = $("#setManualPos");
+    if (_posEl) { if (on) _posEl.removeAttribute("data-disabled"); else _posEl.setAttribute("data-disabled", "1"); }
+    var _moveEl = $("#setManualMove");
+    if (_moveEl) _moveEl.disabled = !on;
     if ($("#setSyncState")) {
       $("#setSyncState").textContent = sy.active ? ("脚本同步中 · " + (sy.script || "")) : "脚本同步待命";
       $("#setSyncSub").textContent = sy.active
         ? ("已发 " + (sy.sent || 0) + " 帧 · 空闲跳过 " + (sy.skipped || 0) + " · 延迟 " + Math.round(sy.delay_ms || 0) + "ms")
         : (on ? "播放带脚本的视频会自动开始" : "未连接设备");
     }
-    if ($("#setDelayVal")) $("#setDelayVal").textContent = Math.round(sy.delay_ms || 0) + " ms";
+    /* 延迟数值：手机端显示秒（"%.2fs"），不是毫秒 */
+    if ($("#setDelayVal")) $("#setDelayVal").textContent = ((Number(sy.delay_ms) || 0) / 1000).toFixed(2) + "s";
   }
   function saveDev(patch) {
     /* 本地先认值：开关回显读 SET_DEV（未连接时的回退源），不认值会在保存后
@@ -2408,9 +2415,12 @@
     Array.prototype.forEach.call(document.querySelectorAll("[data-delay]"), function (btn) {
       btn.addEventListener("click", function () {
         var cur = Number((DEV.sync && DEV.sync.delay_ms) || 0);
+        /* 不做夹紧：手机端 setSyncDelay(delayMs ± delta) 无任何上下限（点击即 ±） */
         var next = cur + Number(btn.getAttribute("data-delay"));
-        next = Math.max(-2000, Math.min(2000, next));
-        api("/api/sync/delay", "POST", { ms: next }).then(function () { pollDev(); toast("延迟 " + (next > 0 ? "+" : "") + next + " ms", "负值提前，正值滞后", "ok"); });
+        api("/api/sync/delay", "POST", { ms: next }).then(function () {
+          pollDev();
+          toast("延迟 " + (next / 1000).toFixed(2) + "s", "负值提前，正值滞后", "ok");
+        });
       });
     });
     $("#setA10").addEventListener("change", function () { saveDev({ a10_mode: this.checked ? 1 : 0 }); });
