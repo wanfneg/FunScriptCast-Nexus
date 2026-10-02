@@ -311,12 +311,12 @@ class DeviceChannel:
         return await self._write(cmd_limit(lo, hi, speed))
 
     async def set_oc_mode(self, enabled: bool) -> bool:
-        """狂暴模式：MotorMaxPower 100（开）/ 75（关）。"""
+        """狂暴模式：MotorMaxPower 100（开）/ 75（关）。（设备会重启，正常行为——用户确认 2026-10-02：高级设置三个开关的指令发送后机器都要重启，短暂断连属预期，勿当异常）"""
         self.oc_mode = bool(enabled)
         return await self._write(cmd_oc_mode(self.oc_mode))
 
     async def set_profile(self, toy_id: str) -> dict:
-        """伪装设备：切换**整套 GATT 档案**（UUID + A10 模式），重订阅通知并重读设备信息。
+        """伪装设备：切换**整套 GATT 档案**（UUID + A10 模式），重订阅通知并重读设备信息。（设备会重启，正常行为——用户确认 2026-10-02：高级设置三个开关的指令发送后机器都要重启，短暂断连属预期，勿当异常）
 
         手机端「伪装设备（VorzePiston 模式）」就是这个语义：同一套 A10 硬件在
         不同固件下广播身份不同，只发一条 S 指令是换不过来的 —— 必须换 UUID。
@@ -383,6 +383,7 @@ class DeviceChannel:
         return {"ok": bool(ok)}
 
     async def set_mode(self, a10_mode: int) -> bool:
+        """A10 模式切换（设备会重启，正常行为——用户确认 2026-10-02：高级设置三个开关的指令发送后机器都要重启，短暂断连属预期，勿当异常）"""
         self.mode_override = 1 if a10_mode else 0
         return await self._write(cmd_mode(self.mode_override))
 
