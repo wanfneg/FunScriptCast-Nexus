@@ -234,8 +234,13 @@ begin
 
   if rc > 0 then
   begin
-    { 已装的比本安装包更新 → 默认不降级（默认按钮落在"否"） }
-    if MsgBox('检测到已安装【更新】的版本：' + PrevVersion + NL +
+    { 已装的比本安装包更新 → 默认不降级。
+      无人值守安装（R118.2 教训）：Inno 的 [Code] MsgBox 在 /SILENT//VERYSILENT 下
+      仍会弹出并阻塞（/SUPPRESSMSGBOXES 只管标准向导对话框），故对静默安装显式
+      给"不降级"的默认——语义与弹窗的默认按钮（否）一致。 }
+    if WizardSilent then
+      Result := False
+    else if MsgBox('检测到已安装【更新】的版本：' + PrevVersion + NL +
               '本安装包是较旧的 {#MyAppVersion}。' + NL + NL +
               '继续会用旧版程序文件覆盖当前安装（你的数据与已下载的模型不受影响），' +
               '通常不是你想要的。' + NL + NL + msg + '仍要降级安装吗？',
@@ -244,15 +249,19 @@ begin
   end
   else if rc = 0 then
   begin
-    if MsgBox('检测到已安装同版本（' + PrevVersion + '）。' + NL + NL +
+    { 同版本重装：静默安装直接继续（语义与默认按钮"是"一致），不弹窗。 }
+    if (not WizardSilent) and
+       (MsgBox('检测到已安装同版本（' + PrevVersion + '）。' + NL + NL +
               '继续将重新覆盖程序文件（可用于修复损坏的安装）；' +
               '你的数据（data\）与已下载的模型会保留。' + NL + NL + msg +
-              '要重新安装吗？', mbConfirmation, MB_YESNO) <> IDYES then
+              '要重新安装吗？', mbConfirmation, MB_YESNO) <> IDYES) then
       Result := False;
   end
   else
   begin
-    MsgBox('检测到已安装 {#MyAppVersion} 之前的版本：' + PrevVersion + NL +
+    { 升级（纯信息提示）：静默安装跳过弹窗直接继续。 }
+    if not WizardSilent then
+      MsgBox('检测到已安装 {#MyAppVersion} 之前的版本：' + PrevVersion + NL +
            '将升级到 {#MyAppVersion}。' + NL + NL +
            '· 只覆盖程序文件，不会重新下载模型' + NL +
            '· 你的数据保留：data\（云端 Key / DLNA 共享目录）' + NL +
