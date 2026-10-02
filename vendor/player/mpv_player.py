@@ -169,10 +169,14 @@ class MpvPlayer:
             pos = m.time_pos or 0.0
             dur = m.duration or 0.0
             paused = bool(m.pause)
+            try:
+                speed = float(m.speed or 1.0)
+            except Exception:
+                speed = 1.0
             return {"open": True, "playing": not paused and dur > 0,
                     "path": self._path, "title": self._title,
                     "pos": round(float(pos), 2), "dur": round(float(dur), 2),
-                    "paused": paused}
+                    "paused": paused, "speed": speed}
 
     def _save_progress_now(self) -> None:
         m = self._mpv

@@ -1,13 +1,21 @@
 """脚本同步（对应手机端 sync/SyncEngine.kt 的核心职责）。
 
-手机端是自己跑循环、从播放器拿进度；PC 侧播放器在 WebView 里，所以由界面把
-当前进度 tick 过来（内置播放器 5Hz；mpv 由宿主的 1s 轮询带）。这里只做：
-  进度 → 在 funscript 动作点之间插值出 (位置, 斜率速度) → 下发设备。
-让路规则与手机一致：设备侧统一处理行程范围/速度上限/反转；allow_move=false（急停）时不发。
+**帧语义与手机端逐条对齐**（本次机制级修复，"动作一顿一顿"的根因）：
+  · 手机端主循环 20ms 跑一圈，用本地时钟外推播放进度、只在**段边界**发帧；
+  · 发帧条件：t 落入新动作段（`n != lastIndex`）——**每段只发一帧**；
+  · 帧内容 = **段末位置 + 段速度**（computeMove：target = keyframes[n]，
+    speed = 段斜率 × 播放倍速），之后的**整段行程由设备固件按速度插值走完**；
+  · 首/末动作点之外一帧不发；急停（allowMove）不发；发送失败不推进段索引（下拍重试）。
+
+PC 早期实现是"每 250ms 发一次**当前插值位置**"——帧率低且抖动（浏览器 timeupdate +
+BLE 写入延迟）时，设备每帧只被喂一小步、走到就停等下一帧，必然走走停停
+（慢段还叠加"位移<1% 不发"的去重，最慢；快段段边界迟发；倍速无补偿）。
+改为手机同构后每帧都给足整段行程，运动才连续。
 """
 from __future__ import annotations
 
 import asyncio
+import bisect
 import json
 from pathlib import Path
 
@@ -19,14 +27,15 @@ class SyncEngine:
         self.active = False
         self.path = ""
         self.actions: list[list[float]] = []
+        self._times: list[float] = []        # actions 时间轴缓存（bisect 用）
         self.delay_ms = 0
         # 对齐手机端默认：skipIdleEnabled=false / 阈值 60s（AppViewModel.kt:896/899）。
-        # 旧默认 True/3s 会让脚本一静止 3 秒设备就停、视频照播。
         self.skip_idle = False
         self.idle_threshold = 60.0
         self.sent = 0
         self.skipped = 0
-        self._last_pos: int | None = None
+        self._last_n: int | None = None      # 已发送的段索引（手机端 lastIndex）
+        self._skip_n: int | None = None      # 已判定过"静止段跳播"的段索引（防重复 seek）
         self._seek_to: float | None = None   # 「跳过无动作」判定出的视频快进目标（秒）
 
     # ---- 脚本 ----
@@ -60,8 +69,10 @@ class SyncEngine:
         if len(acts) < 2:
             return False, "脚本动作点不足"
         self.actions = acts
+        self._times = [a[0] for a in acts]
         self.path = str(sp)
-        self._last_pos = None
+        self._last_n = None
+        self._skip_n = None
         return True, ""
 
     def start(self, video_path: str) -> dict:
@@ -77,7 +88,7 @@ class SyncEngine:
     def reset_last_index(self) -> None:
         """手机端 SyncEngine.resetLastIndex()：任何"急停 → 继续"都强制重发当前段目标帧，
         否则同一段内位置没变（<1% 不刷）会一直不发，设备停在半路。"""
-        self._last_pos = None
+        self._last_n = None
 
     def stop(self) -> dict:
         self.active = False
@@ -85,54 +96,46 @@ class SyncEngine:
         return {"ok": True}
 
     # ---- 进度驱动 ----
-    def tick(self, t_sec: float) -> None:
-        """HTTP 线程调用：投递到 BLE 事件循环，不阻塞请求。"""
+    def tick(self, t_sec: float, rate: float = 1.0) -> None:
+        """HTTP 线程调用：投递到 BLE 事件循环，不阻塞请求。
+        rate = 播放倍速（手机端 computeMove 的 playbackRate，速度要乘它）。"""
         if not self.active:
             return
-        asyncio.run_coroutine_threadsafe(self._apply(float(t_sec)), self.loop)
+        asyncio.run_coroutine_threadsafe(self._apply(float(t_sec), float(rate or 1.0)), self.loop)
 
-    async def _apply(self, t_sec: float) -> None:
+    async def _apply(self, t_sec: float, rate: float = 1.0) -> None:
         if not self.active or not self.actions:
             return
         if not self.ch.state.connected or not self.ch.state.allow_move:
             return
         ms = t_sec * 1000.0 - self.delay_ms
-        acts = self.actions
-        if ms <= acts[0][0] or ms >= acts[-1][0]:
-            # 播放头在首/末动作点之外：一帧不发（对齐手机端 SyncEngine.kt:285-289）。
-            # 旧实现此处 speed=0 → int(0) or None → 通道取 max_speed，变成一次满速冲刺。
+        acts, times = self.actions, self._times
+        # 手机端 indexAfter：第一个 at > ms 的索引 = 当前段上界 n（t ∈ [acts[n-1], acts[n])）
+        n = bisect.bisect_right(times, ms)
+        if n < 1 or n >= len(acts):
+            return                          # 首/末动作点之外：一帧不发（对齐 SyncEngine.kt:285-289）
+        a, b = acts[n - 1], acts[n]
+        dt_s = max(0.001, (b[0] - a[0]) / 1000.0)
+        dist = abs(b[1] - a[1])
+        slope = dist / dt_s                 # %/秒
+        if self.skip_idle and slope < 1.0 and dt_s >= self.idle_threshold:
+            # 手机端 rebuildIdleGaps 口径：|Δval|/dt < 0.01（value 0..1 域）= 1 %/秒；
+            # 段长超阈值 → 跳过该段，让前端把视频快进到段末（Q2 裁定：seek 语义）。
+            # 判定**独立于段去重**（手机端 maybeSkipIdle 每一拍都判）；每段只发布一次 seek。
+            if n != self._skip_n:
+                self._skip_n = n
+                self.skipped += 1
+                self._seek_to = (b[0] + self.delay_ms) / 1000.0
             return
-        lo, hi = 0, len(acts) - 1
-        while hi - lo > 1:
-            mid = (lo + hi) // 2
-            if acts[mid][0] <= ms:
-                lo = mid
-            else:
-                hi = mid
-        a, b = acts[lo], acts[hi]
-        span = max(1.0, b[0] - a[0])
-        slope = abs(b[1] - a[1]) / (span / 1000.0)
-        # 手机端 rebuildIdleGaps：斜率 < 0.01 视为"无动作段"；skipIdle 开启且段长超阈值，
-        # 语义跟手机端一致——**把视频快进过这段**（seek 到下一动作点），而不是只停设备
-        if self.skip_idle and slope < 0.01 and span / 1000.0 >= self.idle_threshold:
-            self.skipped += 1
-            self._seek_to = (b[0] + self.delay_ms) / 1000.0
-            return
-        k = (ms - a[0]) / span
-        target = a[1] + (b[1] - a[1]) * k
-        speed = abs(b[1] - a[1]) / (span / 1000.0)     # %/秒（与热力图同口径）
-        pos = int(max(0, min(100, round(target))))
-        if self._last_pos is not None and abs(pos - self._last_pos) < 1:
-            return                          # 位置没变就别刷 BLE
-        self._last_pos = pos
-        # 速度钳制对齐手机端（BleDeviceService.moveTo: clamp(scaled, 0, maxSpeed)）：
-        # 慢段（斜率<1%/s）取整为 0 就发 0，让设备按自己的最低速爬行。
-        # 旧写法 `int(…) or None` 把 0 变 None → 通道取 max_speed——脚本里的慢段/平段
-        # 全变成满速冲刺，这就是"脚本模式设备动作异常"的根因。
-        sp = max(0, min(int(round(speed)), int(self.ch.max_speed)))
+        if n == self._last_n:
+            return                          # 段没变：手机端只在段边界发帧（n != lastIndex）
+        # 手机端 computeMove：target = 段末位置；speed = 段斜率 × 播放倍速
+        speed = int(round(slope * rate))
         try:
-            await self.ch.move_to(target, sp)
-            self.sent += 1
+            ok = await self.ch.move_to(b[1], speed)   # 整段行程交给设备固件按速度插值
+            if ok:
+                self.sent += 1
+                self._last_n = n            # 手机端：仅发送成功才推进 lastIndex（失败下拍重试）
         except Exception:
             pass
 

@@ -294,7 +294,7 @@ class TestBatch2(Base):
         self.assertEqual(len(ch.calls), n0 + 2)
         self.assertIsNone(sync.pop_seek())
         sync.skip_idle = True                   # 开启（用户在设置页打开才生效）
-        sync._last_pos = None
+        sync._last_n = None
         n1 = len(ch.calls)
         await sync._apply(30.0)
         self.assertEqual(len(ch.calls), n1)     # 静止段一帧不发
@@ -302,6 +302,7 @@ class TestBatch2(Base):
         self.assertIsNotNone(sk)
         self.assertAlmostEqual(sk, 92.0, delta=0.01)   # 快进到下一动作点
         self.assertIsNone(sync.pop_seek())      # 取走即清，防 seek 环
+        self.assertEqual(sync.skipped, 1)       # 每段只发布一次（多拍不重复计数）
 
     async def test_f14_slow_interval_follows_speed(self):
         """缓动间隔 = 行程×1000/速度（下限 100ms），不再是写死 1s。
@@ -437,6 +438,70 @@ class TestApplyDeviceSettings(unittest.TestCase):
         self.assertTrue(fake["sync"].skip_idle, "skip_idle 被前面的异常吞掉了")
         self.assertEqual(fake["sync"].idle_threshold, 60.0)
         self.assertEqual(fake["preset"].speed, 150)
+
+
+# ---------------------------------------------------------------- 第 10 批：脚本同步"段一帧"（手机同构）
+class TestSyncSegmentFrames(Base):
+    """机制级回归（"动作一顿一顿"的根因修复）：
+    PC 旧实现每 ~250ms 发一次**当前位置**，设备到位等下一帧 → 走走停停；
+    手机端（SyncEngine.kt）是 **20ms 主循环 + 段边界发一帧**：
+    帧内容 = 段末位置 + 段斜率×倍速，整段行程由设备固件插值走完。"""
+
+    SCRIPT = {"actions": [{"at": 0, "pos": 10}, {"at": 500, "pos": 90},
+                          {"at": 1000, "pos": 10}, {"at": 1500, "pos": 90},
+                          {"at": 2000, "pos": 10}]}
+
+    def _load(self, sync):
+        (self.dir / "video.funscript").write_text(json.dumps(self.SCRIPT), encoding="utf-8")
+        ok, err = sync.load(str(self.dir / "video.mp4"))
+        assert ok, err
+        sync.active = True
+
+    async def test_segment_boundary_frames(self):
+        """25ms 步进跑 2.2s：每段恰好一帧、目标=段末、速度=段斜率（%/s）。"""
+        ch, quick, preset, sync, arb = self.make_world()
+        self._load(sync)
+        ch.calls.clear()
+        t = 0.0
+        while t < 2.2:
+            await sync._apply(t, 1.0)
+            t += 0.025
+        # 帧数 = 段数（4 段，末动作点后不发）；目标 = 各段末位置；速度 = |Δ|/dt = 80/0.5 = 160
+        self.assertEqual([c[1] for c in ch.calls], [90.0, 10.0, 90.0, 10.0])
+        self.assertEqual([c[2] for c in ch.calls], [160, 160, 160, 160])
+        self.assertEqual(sync.sent, 4)
+
+    async def test_dedup_within_segment(self):
+        """同一段里连续 tick 只发一帧（手机端 n != lastIndex 语义）。"""
+        ch, quick, preset, sync, arb = self.make_world()
+        self._load(sync)
+        ch.calls.clear()
+        for dt in (0.01, 0.1, 0.2, 0.3, 0.4, 0.49):   # 全在第 1 段（0..0.5s）
+            await sync._apply(dt, 1.0)
+        self.assertEqual(len(ch.calls), 1)
+        await sync._apply(0.55, 1.0)                   # 进第 2 段 → 再发一帧
+        self.assertEqual(len(ch.calls), 2)
+
+    async def test_rate_scales_speed(self):
+        """播放倍速：速度 ×rate（手机端 computeMove 的 playbackRate）。"""
+        ch, quick, preset, sync, arb = self.make_world()
+        self._load(sync)
+        ch.calls.clear()
+        await sync._apply(0.1, 2.0)
+        self.assertEqual(ch.calls[0][2], 320)          # 160 × 2
+
+    async def test_reset_resends_current_segment(self):
+        """急停→继续：reset_last_index 强制重发当前段（手机端 resetLastIndex 同款）。"""
+        ch, quick, preset, sync, arb = self.make_world()
+        self._load(sync)
+        ch.calls.clear()
+        await sync._apply(0.1, 1.0)
+        self.assertEqual(len(ch.calls), 1)
+        await sync._apply(0.2, 1.0)                    # 同段 → 不发
+        self.assertEqual(len(ch.calls), 1)
+        sync.reset_last_index()
+        await sync._apply(0.3, 1.0)                    # 强制重发
+        self.assertEqual(len(ch.calls), 2)
 
 
 # ---------------------------------------------------------------- 第 6 批：爆发/缓动引擎对齐手机端

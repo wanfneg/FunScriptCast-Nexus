@@ -2460,14 +2460,14 @@
     SYNC.want = false;              // 用户明确停联动：看护不得再自动拉起
     api("/api/sync/stop", "POST", {});
   }
-  function syncTick(t) {
+  function syncTick(t, rate) {
     if (!SYNC.on) return;
     var v = vlVid();
     if (v && v.paused) return;    // 暂停中（含拖进度条）不追帧：设备不被 seek 目标拖着跑
     var now = Date.now();
-    if (now - SYNC.last < 180) return;
+    if (now - SYNC.last < 25) return;   // 25ms：段边界检测粒度（对齐手机端 20ms 主循环）
     SYNC.last = now;
-    api("/api/sync/tick", "POST", { t: t }).then(function (r) {
+    api("/api/sync/tick", "POST", { t: t, rate: rate || 1 }).then(function (r) {
       /* 「跳过无动作部分」（对齐手机端 maybeSkipIdle）：宿主判定脚本静止段超过阈值时
          让**视频快进**到下一动作点；离目标太远才跳，防 seek 环 */
       if (r && r.ok && r.seek_to != null && isFinite(r.seek_to)) {
@@ -2476,6 +2476,13 @@
       }
     });
   }
+  /* 高频 tick 驱动：timeupdate 只有 ~250ms 且抖动，做不了"段边界发帧"的检测
+     （慢段顿挫、快段迟发）——定时器每 40ms 读一次播放器时间；timeupdate 保留作
+     后台保底（隐藏时定时器可能被节流）。rate=播放倍速，宿主按手机端乘到速度上。 */
+  setInterval(function () {
+    var v = vlVid();
+    if (v && !v.paused && !v.seeking) syncTick(v.currentTime, v.playbackRate || 1);
+  }, 40);
 
   function pollDev() {
     api("/api/device/state").then(function (r) {

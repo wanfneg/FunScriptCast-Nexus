@@ -2506,7 +2506,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(d["arbiter"].start_script(vp))
             elif path == "/api/sync/tick":
                 d = _get_device()
-                d["sync"].tick(float(body.get("t") or 0))
+                # rate = 播放倍速：段速要乘它（手机端 computeMove 的 playbackRate）
+                d["sync"].tick(float(body.get("t") or 0), float(body.get("rate") or 1))
                 # 「跳过无动作」：判定出静止段时把快进目标带回界面（seek 语义，Q2 裁定）
                 self._json({"ok": True, "seek_to": d["sync"].pop_seek()})
             elif path == "/api/sync/delay":
@@ -4006,6 +4007,34 @@ def _get_device() -> dict:
 
 
 _PLAYER_LOCK = threading.Lock()
+_MPV_TICK_STARTED = False
+
+
+def _start_mpv_sync_ticker() -> None:
+    """mpv 外挂播放器模式：宿主 ~50ms 读播放进度喂脚本同步。
+    内置 <video> 由前端高频 tick；mpv 走不了那条路（进度在宿主进程里），
+    而 1s 的存活轮询粒度做不了"段边界发帧"的检测（会漏段/迟发）。"""
+    global _MPV_TICK_STARTED
+    if _MPV_TICK_STARTED:
+        return
+    _MPV_TICK_STARTED = True
+
+    def _run() -> None:
+        while True:
+            time.sleep(0.05)
+            try:
+                d = _DEV.get("obj")
+                p = PLAYER
+                if not d or p is None or not d["sync"].active:
+                    continue
+                st = p.state()
+                if st.get("paused") or not st.get("playing"):
+                    continue
+                d["sync"].tick(float(st.get("pos") or 0), float(st.get("speed") or 1))
+            except Exception:
+                pass
+
+    threading.Thread(target=_run, daemon=True, name="mpv-sync-tick").start()
 
 
 def _get_player():
@@ -4023,6 +4052,7 @@ def _get_player():
                         pass
 
                 PLAYER = MpvPlayer(on_progress=_on_progress)
+                _start_mpv_sync_ticker()
     return PLAYER
 
 
