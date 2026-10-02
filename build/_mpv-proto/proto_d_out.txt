@@ -1,3 +1,0 @@
-diag parent=6424282 mpv_hwnd=12913780
-diag SetParent ret=65548 after GetParent=0
-RESULT pos=19.736383333333336
