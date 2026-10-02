@@ -4108,3 +4108,21 @@ version.json=1.0.84 ✓；libmpv-2.dll=95.8MB（lgpl）✓；许可文本三件�
 
 **新增工具**：`tools/verify_install.py`——安装后一键验证（版本 / dll / 许可 / zhconv / 残留 / 抽帧）。
 
+### R118.3（2026-10-02 当日）：公网发布（v1.0.84）——源码推送 + GitHub Release
+
+**用户指令**：推送（解除测试期不推送约束），正式发布（公网 latest：1.0.51 → **1.0.84**）。
+
+**源码推送（100 提交）踩坑与处置**：
+- 网络坑：git 配了本地代理（7897）而代理未开 → 直连 fetch 可用、**push 大对象包被 reset/超时**；改分批推（25/批）推掉第一批（f6e75dc..236ccdf）后卡住。**真凶**：远端 **GH001 大文件拒绝**——`build/_mpv-proto/` 两个 121MB libmpv dll 副本（R108 原型残留）一直在待推历史里，且 **gitignore 漏了该目录**（R116 清理时只处理了 vendor/player 副本——**R96"构建暂存区先写 gitignore"教训的复发**）。
+- 处置：①本地 bare 备份 `E:/tmp/nexus-backup.git`（2.2GB，确认无误后可删）；②下载 git-filter-repo 单文件版（gh-proxy 拉取），`--refs origin/main..main --strip-blobs-bigger-than 100M` **只重写未推区间**（已推 25 提交与 origin/main 锚点 236ccdf 均未动）；③补 gitignore 规则 + `git rm -r --cached build/_mpv-proto`（含 32MB 7z 残留）彻底摘除跟踪；④用户开启代理后**一次推完**。
+- 结果：`88370d2`，本地/远端 **0/0 同步**；树上无 >10MB 文件。
+- **教训**：push 被 GH001 拒时先 `rev-list + ls-tree` 扫历史大文件（别赖网络）；filter-repo 的 `--refs <range>` 部分重写安全可用（前提：先 bare 备份）；**原型目录 gitignore 要成对**（建目录即加规则）。
+
+**Release 发布**：
+- **draft 先行**：`gh release create v1.0.84 --draft` → 4 资产串行上传（带重试）→ 远端 SHA256 与本地/官方 digest 逐一比对通过 → `gh release edit --draft=false`。**发布瞬间资产已齐，latest/download 固定链接零断窗**。
+- 资产：安装包（161MB）+ audiocpp cuda（1.07GB）+ audiocpp cpu（27MB）+ llama（627MB）；三大件从 v1.0.51 重新拉齐携带（R96 新 release 必携旧资产——下载走 gh-proxy 镜像 4.9MB/s，上传走代理约 4MB/s，全程 7.5 分钟）；**已移入 `build/_release-carry/`**（下次发布直接携带，无需再下载）。
+- 发布正文 = 用户可感知变化（媒体库/播放器/设备直连/预设/快捷动作/关联项 + 改进与稳定性 + 安装包瘦身 198→161MB + libmpv LGPL）；同步补进 `tools/release_notes.md`（顶注同步修正）。
+- 验证：`releases/latest` 徽章 = v1.0.84 ✓；latest/download 固定链接 302→资产 ✓；tag `v1.0.84` 指向发布提交 ✓。
+- 发布页：https://github.com/wanfneg/FunScriptCast-Nexus/releases/tag/v1.0.84
+**勘误（发布当晚发现并即刻更正）**：R118.2/R118.1 期间写发布材料时误称"外挂 mpv 窗口播放 / libmpv 播放"（实际 **R116 已整套删除外挂 mpv，播放走 WebView 内置 `<video>`（/api/library/stream）**；**libmpv 仅用于媒体库缩略图 / 时长探测**）。已更正：GitHub Release 正文（`gh release edit`）+ `tools/release_notes.md` + `README.md`（"内置播放器"行）。**教训**：写对外材料前先对照当前实现代码——长期记忆条目（R116"播放全走 WebView video"）与发布材料并存时，属"记忆比脑子新"，材料必须回源码核对。
+
