@@ -90,11 +90,44 @@ class LiveCaptionsCapture:
         return self.state()
 
     # ---------------------------------------------------------------- LC 管家
+    def _spawn_minimized(self) -> None:
+        """启动 LC 并**直接以最小化状态**出现——CreateProcessW + STARTF_USESHOWWINDOW +
+        SW_SHOWMINNOACTIVE(7)，避免"先在前台弹一下再缩"的闪烁（R122 用户观察驱动；
+        参考项目是"先弹后缩"，此写法更进一步，实测窗口出现即 IsMinimized）。
+        之后 _ensure_lc 还会补 WS_EX_TOOLWINDOW 把它从任务栏隐藏。"""
+        import ctypes
+
+        class STARTUPINFO(ctypes.Structure):
+            _fields_ = [("cb", ctypes.c_ulong), ("lpReserved", ctypes.c_wchar_p),
+                        ("lpDesktop", ctypes.c_wchar_p), ("lpTitle", ctypes.c_wchar_p),
+                        ("dwX", ctypes.c_ulong), ("dwY", ctypes.c_ulong),
+                        ("dwXSize", ctypes.c_ulong), ("dwYSize", ctypes.c_ulong),
+                        ("dwXCountChars", ctypes.c_ulong), ("dwYCountChars", ctypes.c_ulong),
+                        ("dwFillAttribute", ctypes.c_ulong), ("dwFlags", ctypes.c_ulong),
+                        ("wShowWindow", ctypes.c_ushort), ("cbReserved2", ctypes.c_ushort),
+                        ("lpReserved2", ctypes.c_void_p), ("hStdInput", ctypes.c_void_p),
+                        ("hStdOutput", ctypes.c_void_p), ("hStdError", ctypes.c_void_p)]
+
+        class PROCESS_INFORMATION(ctypes.Structure):
+            _fields_ = [("hProcess", ctypes.c_void_p), ("hThread", ctypes.c_void_p),
+                        ("dwProcessId", ctypes.c_ulong), ("dwThreadId", ctypes.c_ulong)]
+
+        si = STARTUPINFO()
+        si.cb = ctypes.sizeof(si)
+        si.dwFlags = 0x00000001     # STARTF_USESHOWWINDOW
+        si.wShowWindow = 7          # SW_SHOWMINNOACTIVE：显示但最小化、不激活
+        pi = PROCESS_INFORMATION()
+        ok = ctypes.windll.kernel32.CreateProcessW(
+            None, ctypes.c_wchar_p(LC_EXE), None, None, False, 0,
+            None, None, ctypes.byref(si), ctypes.byref(pi))
+        if not ok:
+            raise OSError("CreateProcess 启动 LiveCaptions 失败")
+
     def _ensure_lc(self, auto) -> "auto.WindowControl | None":
         win = auto.WindowControl(searchDepth=1, ClassName=LC_WINDOW_CLASS)
         if not win.Exists(1):
             try:
-                subprocess.Popen([LC_EXE])
+                self._spawn_minimized()
             except Exception as e:
                 raise RuntimeError(f"启动 Live Captions 失败：{e}")
             win = auto.WindowControl(searchDepth=1, ClassName=LC_WINDOW_CLASS)

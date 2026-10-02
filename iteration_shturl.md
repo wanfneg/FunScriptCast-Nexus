@@ -4282,3 +4282,5 @@ code_of 番号正则 + base_of 分件基名 + _aggregate 归组），且发现 *
 **R122 补记（用户质疑驱动修正——重要）**：用户质疑"LC 窗口不能用隐藏？不是有参考项目吗，它也是这样吗"——去逐字读 LiveCaptions-Translator 源码：它用的是 **`SW_MINIMIZE` + `WS_EX_TOOLWINDOW`（最小化 + 从任务栏/Alt-Tab 消失）**，**不是 `SW_HIDE`**！在有字幕活动时实测：**最小化 + TOOLWINDOW 后 UIA 照读不误、字幕持续更新** ✓。lc_capture 的"后台静默"已从"移出屏外"改为**参考项目同款最小化方案**（更好：真最小化、任务栏与 Alt-Tab 双隐、stop 时自动恢复）。
 **教训**：我只试了 SW_HIDE（完全隐藏，确实会让 UIA 失明）就下了"隐藏不可行"的结论，**没有逐字核对参考项目实际用的做法**——遇"社区有先例"的质疑时，先去读参考实现，再下结论。
 
+**R122 再补记（用户观察驱动——启动闪烁修复）**：用户观察到"还是会先弹出前台窗口然后再隐藏"——去读参考项目 `LaunchLiveCaptions` 全流程：它也是"先正常启动（弹窗）→ 再最小化"，**没有做"最小化启动"**。但用户猜的方向对：用 **`CreateProcessW` + `STARTF_SPEWWINDOW` + `SW_SHOWMINNOACTIVE(7)`** 实测 **LC 启动时即为最小化态**（`IsIconic=True`，无前台闪烁）——已替换 lc_capture 的 `subprocess.Popen` 启动方式，并复测（最小化启动 + 抓取/翻译全正常）。**我们的做法比参考项目更进一步**。
+
