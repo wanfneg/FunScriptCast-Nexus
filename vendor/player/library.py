@@ -167,7 +167,9 @@ class Library:
                         "pos": prev.get("pos", 0.0),
                         "played_at": prev.get("played_at", 0.0),
                     }
-                    if need_probe or (local and not prev.get("dur")):
+                    if need_probe or (local and (not prev.get("dur") or not prev.get("thumb"))):
+                        # 时长或缩略图缺一就补探——旧条件只看 dur：某次扫描抽帧失败（瞬时）
+                        # 但时长成功，此后永不重试，缩略图永久缺失（K1cztm.mp4 实测案例）
                         dur, thumb = self._probe_local(vp)
                         e["dur"], e["thumb"] = dur, thumb
                     found[key] = e
