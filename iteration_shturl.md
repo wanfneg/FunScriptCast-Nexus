@@ -4167,3 +4167,21 @@ code_of 番号正则 + base_of 分件基名 + _aggregate 归组），且发现 *
    **replace 里的控制字符用 `chr(n)` 拼**（字面 `\x0c` 出过"count=1 却 replace 无效"
    的离奇失效，chr 版一次通过）。
 
+### R119.1（2026-10-02 当晚）：运行时大包独立"资源页"——发版不再搬家（用户需求）
+
+**用户需求**：每次发版都要重传那几个大包（约 1.8GB/次）太浪费；把大包放固定地方，只在有更新时才动。
+
+**方案（已落地）**：
+- 新建 **`runtime-assets` release（Pre-release 标记 → 不占 Latest 位）**，存放三个运行时包
+  （audiocpp cuda 1.07GB / llama 627MB / audiocpp cpu 27MB；从 `build/_release-carry/` 上传，
+  一次性"最后一次搬家"）。
+- **3 处引用改固定地址**（`releases/download/runtime-assets/...`，替代 `releases/latest/download/...`）：
+  `host_server.py` 两个 catalog 条目（llama-runtime / audiocpp-cuda）+ `tools/fetch_audiocpp.ps1`。
+- **v1.0.86 发布**（只传 exe——上传 41 秒，原 7.5 分钟）：静默装机 ✓ verify 6/6 ✓ 推送 ✓
+  Release（draft → 单 exe → 校验（sha256 本地=远端）→ 转正）✓；发布说明用新版"只列 exe"模板。
+- **新老过渡**：1.0.86+ 走固定地址（永久有效）；**≤1.0.85 旧版** URL 仍是 latest/download——
+  latest 现为 1.0.86（不带 zip），旧版点"下载运行时"会 404——外部几乎无用户（1.0.85 发布仅
+  15 分钟后即被 1.0.86 接替），老板机器已升 1.0.86。
+- **此后发版流程**：打包 → 装 → 推 → `gh release create`（只 exe）——不再碰三大件；
+  三大件真升级时单独更新 `runtime-assets` 页并改文件名注明版本。
+
