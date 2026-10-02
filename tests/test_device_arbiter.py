@@ -602,6 +602,26 @@ class TestQuickMovesEngine(Base):
         quick.orgasm.link_speed = False
         self.assertEqual(quick._orgasm_params(), (0, 100, 500))
 
+    async def test_slow_own_frames_do_not_reset_idle(self):
+        """缓动自己的帧不得被误判为外部动作——锁死对"自触发掐死循环"的免疫。
+
+        背景：VR 版出过"待机缓动每隔几秒停一下"（写帧是异步入队、onMoving 回调
+        晚到 → 缓动循环把自己的帧当成外部动作 → 掐掉自己的循环 → 重等空闲）。
+        PC 的 `await self._write()` 是同步完成、cb 也在 `_self_moving` 窗口内同步触发，
+        天然免疫；本测试把这个保证焊死（改渠道时序会立刻红）。"""
+        ch, quick = self.make_world()[:2]
+        quick.slow.min_percent, quick.slow.max_percent = 0, 20
+        quick.slow.max_speed = 100
+        quick.slow.idle_detect_seconds = 1
+        quick.start_slow()
+        await asyncio.sleep(1.4)                    # 等空闲到期、缓动开始出帧
+        gen_before = quick._gen_s
+        n = len(ch.calls)
+        await asyncio.sleep(0.6)                    # 缓动持续期间
+        self.assertGreater(len(ch.calls), n, "缓动被自己的帧掐死了（每隔几秒停一下）")
+        self.assertEqual(quick._gen_s, gen_before, "缓动自己的帧重启了空闲倒计时（自触发）")
+        quick.stop_slow()
+
     async def test_script_defers_while_orgasm_runs(self):
         """手机端 setExternalControl：爆发活动期间脚本同步**让路**——不掐爆发、
         不抢设备；爆发停止后脚本才能起来。'加载脚本把爆发顶掉'是方向反了。"""
