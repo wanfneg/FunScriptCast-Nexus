@@ -788,9 +788,9 @@ html[data-theme="light"]{
   --heat-ink:#1b1b1f;
 }
 
-#page-library.active{ display:flex; flex-direction:column; height:100%; padding:30px 34px 30px; }
+#page-library.active{ display:flex; flex-direction:column; height:100%; padding:8px 34px 8px; }/* 上下页面留白让给视频/媒体库窗口（用户 2026-10-02） */
 .vl-frame{ flex:1; min-height:0; display:grid;
-  grid-template-rows:320fr 10fr 40fr 5fr 40fr 5fr 150fr; }
+  grid-template-rows:minmax(120px,1fr) 16px 62px 8px 62px 8px 233px; }
 
 /* ---- ① 大框框：媒体库浏览 ⇄ 播放窗口 ---- */
 .vl-stage{ grid-row:1; min-height:0; display:flex; flex-direction:column; padding:10px 14px; overflow:hidden; }
