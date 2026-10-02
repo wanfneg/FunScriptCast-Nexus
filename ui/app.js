@@ -1535,7 +1535,7 @@
      重启进播放时若上次开着则自动恢复（对齐手机端"打开视频后自动开启"的默认体验）。 */
   var lcActive = false;
   var lcLang = localStorage.getItem("lcLang") || "";
-  var lcTimer = null, lcKey = "";
+  var lcTimer = null, lcKey = "", lcLastAt = 0;
   function lcRender() {
     var btn = $("#vlAiSub"); if (btn) btn.classList.toggle("on", lcActive);
     [["lcOff", "off"], ["lcJa", "ja"], ["lcEn", "en"]].forEach(function (pair) {
@@ -1569,7 +1569,7 @@
     if (lcTimer) { clearInterval(lcTimer); lcTimer = null; }
     var sub = $("#lcSub"); if (sub) sub.hidden = true;
     var box = $("#lcLines"); if (box) box.innerHTML = "";
-    var cur = $("#lcCur"); if (cur) cur.textContent = "";
+    lcLastAt = 0;
     api("/api/lc/stop", "POST", {}).catch(function () {});
     lcRender();
   }
@@ -1588,17 +1588,25 @@
           return;   // 预热期不刷字幕（也没字幕可刷）
         }
       }
-      var key = (lc.cur || "") + "|" + ((lc.lines || []).length);
-      if (key === lcKey) return;
+      var key = (lc.lines || []).length + "|" + ((lc.lines || []).slice(-1)[0] || {}).zh;
+      if (key === lcKey) {
+        // 无新句：超过 8 秒把上一句撤掉（"过去的就过去了"，不留残留）
+        if (lcLastAt && Date.now() - lcLastAt > 8000) {
+          var box0 = $("#lcLines");
+          if (box0 && box0.innerHTML) { box0.innerHTML = ""; lcLastAt = 0; }
+        }
+        return;
+      }
       lcKey = key;
-      var cur = $("#lcCur");
-      if (cur) cur.textContent = lc.cur || "";
+      var last = (lc.lines || []).slice(-1)[0] || {};
       var box = $("#lcLines");
-      if (box && lc.lines) {
-        box.innerHTML = lc.lines.slice(-3).map(function (ln) {
-          return '<div class="lc-line">' + esc(ln.zh || "") +
-                 '<span class="ja">' + esc(ln.ja || "") + "</span></div>";
-        }).join("");
+      if (box) {
+        // 一句一显示：只渲染最新定稿句的**译文**（无双语、无历史堆叠——对齐手机端）；
+        // 译文还没翻回来时先不显示（空白），回来即替换。
+        box.innerHTML = last.zh
+          ? '<div class="lc-line">' + esc(last.zh) + "</div>"
+          : "";
+        lcLastAt = Date.now();
       }
     }).catch(function () {});
   }
