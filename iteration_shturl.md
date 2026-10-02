@@ -4126,3 +4126,44 @@ version.json=1.0.84 ✓；libmpv-2.dll=95.8MB（lgpl）✓；许可文本三件�
 - 发布页：https://github.com/wanfneg/FunScriptCast-Nexus/releases/tag/v1.0.84
 **勘误（发布当晚发现并即刻更正）**：R118.2/R118.1 期间写发布材料时误称"外挂 mpv 窗口播放 / libmpv 播放"（实际 **R116 已整套删除外挂 mpv，播放走 WebView 内置 `<video>`（/api/library/stream）**；**libmpv 仅用于媒体库缩略图 / 时长探测**）。已更正：GitHub Release 正文（`gh release edit`）+ `tools/release_notes.md` + `README.md`（"内置播放器"行）。**教训**：写对外材料前先对照当前实现代码——长期记忆条目（R116"播放全走 WebView video"）与发布材料并存时，属"记忆比脑子新"，材料必须回源码核对。
 
+## R119（2026-10-02 当晚）：删"分件聚合"（用户裁定 B）+ 重发 v1.0.85 + 发布说明精简
+
+**用户裁定**：质疑版本说明里"番号识别与分件聚合"是否真做过 → 核查证实做过（R109 的
+code_of 番号正则 + base_of 分件基名 + _aggregate 归组），且发现 **3 组误并**
+（SIVR-001/SIVR-002 两个不同番号、YWYWYW013 两组日期号——"尾部 1-3 位数字一律当分件号"
+的规则把编号本体当成了分件号）。用户选 **B：删功能**（回到"一个文件一张卡"），
+并要求：**打包后重新推送**、**发布说明精简**（只写新功能）、**下载节写明"只下 .exe
+即可，其余 .zip 软件内一键下载自动装好"**。
+
+**代码（vendor/player/library.py）**：
+- `_aggregate` 改为"一个文件一张卡"（parts 恒单元素，卡片结构/接口兼容）；卡片 title=
+  文件名、移除 code 字段；删 `code_of` / `base_of` / `PART_TAIL` / `CODE_RE` 与死导入 re；
+  文件头注释更新（记录裁定与误并案例）。
+- 实测：源仓库与**安装版（D 盘 1.0.85）**各自对真实索引验证——**307 文件 → 307 卡、
+  多分件 0** ✓（原 286）。
+- 认知更正：媒体库界面早已是"文件夹浏览"形态（海报墙 cards 接口无前端消费），此功能
+  唯一可见面是后台扫描数字——删除的用户可见影响≈零。
+
+**发布 v1.0.85**：打包（静默守卫在）→ **静默安装 D 盘**（Inno 6 自动关闭占用文件的
+旧宿主——ExitCode=0，无需手工 taskkill）→ verify_install.py **6/6**（柔性版本检查已改，
+不再锁小版本）→ 启动宿主 → 推送（703917a）→ Release（draft 先行 + 4 资产 + sha256 校验 +
+转正；三大件直接取自 `build/_release-carry/`，无需再下载）。
+- **发布说明改版**：v1.0.84 与 v1.0.85 的 Release 正文均替换为"只列新功能"精简版
+  （删 UI 调整/稳定性/体积段落与"番号/分件"句）；**下载节**改为："**只需要下载安装包
+  （.exe）就行**——其余 .zip 依赖包不用管，进入软件后在界面里按需一键下载，会自动装好"。
+  tools/release_notes.md 同步。
+
+**工具链两条大坑（教训，务必记牢）**：
+1. **工具 JSON 参数里的 Windows 路径反斜杠会被转义吃掉**：写文件时 `\r`→CR、`\t`→TAB、
+   `\v`→VT、`\f`→FF、`\b`→BS（实测 `tools\verify_install.py` 变成 `tools<VT>erify…`）。
+   **规矩：凡写含反斜杠的文本一律双写（`\`）；写完全库二进制复扫（0x08/0x09/0x0b/0x0c
+   + 行内 CR）**。本轮修 7 处（verify/release_notes/iteration）。
+2. **行尾纠缠三连**：①`Path.write_text` 有 newline 转换；②`git add` 的 clean 把 CRLF
+   工作区写成 LF index，而**该文件的 HEAD blob 是 CRLF**（与 app.js 同类）→ 全文件 diff；
+   ③index 里已存在"clean 后的等价版本"时 `git add` 会跳过不更新。
+   **规矩**：改文本用 `read_bytes→decode→replace→encode→write_bytes`（不碰行尾）；
+   CRLF-blob 文件 staged 用 `git rm --cached <f> && git -c core.autocrlf=false add <f>`；
+   新增行的行尾必须与文件一致（CRLF 文件里别用裸 `\n` 拼新行）；
+   **replace 里的控制字符用 `chr(n)` 拼**（字面 `\x0c` 出过"count=1 却 replace 无效"
+   的离奇失效，chr 版一次通过）。
+
