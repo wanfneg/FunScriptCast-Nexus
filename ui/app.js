@@ -1414,7 +1414,11 @@
       if (v.has_funscript) badges += '<span class="lib-badge"><svg class="ic"><use href="#i-vk-script"/></svg>脚本</span>';
       if (v.has_srt) badges += '<span class="lib-badge sub"><svg class="ic"><use href="#i-vk-sub"/></svg>字幕</span>';
       var dur = (v.dur > 0) ? '<span class="lib-dur">' + fmtTime(v.dur) + '</span>' : "";
-      var prog = v.pos > 5 ? '<div class="lib-prog"><i style="width:' + Math.min(95, v.pos) + '%"></i></div>' : "";
+      /* 观看进度条：pos 是**秒**（后端语义），显示宽度必须换算成百分比——
+         旧实现把秒当百分比（35.2 秒画成 35.2%）且以“>5 秒”作显示条件，
+         导致“只有进度秒数大的那个视频有诡异长条”。看过 1% 以上才显示，封顶 95%。 */
+      var _pct = (v.dur > 0 && v.pos > 0) ? Math.min(95, v.pos / v.dur * 100) : 0;
+      var prog = _pct >= 1 ? '<div class="lib-prog"><i style="width:' + _pct.toFixed(1) + '%"></i></div>' : "";
       html += '<div class="lib-card" data-vpath="' + encodeURIComponent(v.path) + '">' +
         '<div class="lib-thumb">' + thumb +
         (badges ? '<span class="lib-badges">' + badges + '</span>' : "") + dur + prog + '</div>' +
@@ -1506,7 +1510,21 @@
     if (off) { off.hidden = false; if (msg) $("#vlVOffD").textContent = msg; }
     vlSetPlayIcon();
   }
+  /* 内置播放器进度上报：此前只有外挂 mpv 会记进度（_on_progress），WebView <video>
+     看过的视频永远没有"观看进度"（用户实测：看过的视频卡片没有进度条）。 */
+  var libProgLast = 0;
+  function reportProgress(force) {
+    var v = vlVid();
+    if (!v || !vlMed.path || vlMed.failed) return;
+    var now = Date.now();
+    if (!force && now - libProgLast < 5000) return;      // 节流 5s（与 mpv 轮询同频）
+    if (!isFinite(v.duration) || v.duration <= 0) return;
+    libProgLast = now;
+    api("/api/library/progress", "POST",
+        { path: vlMed.path, pos: v.currentTime || 0, dur: v.duration });
+  }
   function openVideo(path, name, list, idx) {
+    reportProgress(true);                                // 切换前先保存上一个的进度
     vlMed.path = path || "";
     vlMed.name = name || String(path || "").split(/[\\/]/).pop();
     vlMed.failed = false;
@@ -1565,6 +1583,7 @@
           vlSyncVlUi();
           if (ev === "pause" || ev === "ended") vlShowChrome(true);   // 暂停时常显
           if (ev === "pause" || ev === "ended") api("/api/quick", "POST", { kind: "pause", on: true }).then(pollDev);
+          if (ev === "pause" || ev === "ended") reportProgress(true); // 落盘观看进度
           if (ev === "play") api("/api/quick", "POST", { kind: "resume", on: true }).then(pollDev);
           if (ev === "play" || ev === "pause") vlTouch();
         });
@@ -1574,7 +1593,7 @@
     });
     v.addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
     v.addEventListener("play", function () { syncStart(vlMed.path); });
-    v.addEventListener("timeupdate", function () { syncTick(v.currentTime); });
+    v.addEventListener("timeupdate", function () { syncTick(v.currentTime); reportProgress(false); });
     v.addEventListener("ended", function () { syncStop(); });
     $("#vlPlay").addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
     $("#vlPrev").addEventListener("click", function () { vlStep(-1); });

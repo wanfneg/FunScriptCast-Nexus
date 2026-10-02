@@ -2670,6 +2670,16 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=_library_scan_bg, daemon=True,
                                  name="library-scan").start()
                 self._json({"ok": True})
+            elif path == "/api/library/progress":
+                # 内置播放器（WebView <video>）的观看进度上报——此前只有外挂 mpv 会记，
+                # 用内置播放器看过的视频永远没有进度条（用户实测反馈）
+                vp2 = str(body.get("path") or "")
+                if not vp2:
+                    self._json({"ok": False, "error": "缺少 path"}, 400)
+                    return
+                _get_library().set_progress(vp2, float(body.get("pos") or 0),
+                                            float(body.get("dur") or 0), time.time())
+                self._json({"ok": True})
             elif path == "/api/dlna/start":
                 self._json(dlna_start(body.get("port"), body.get("roots")))
             elif path == "/api/dlna/stop":
