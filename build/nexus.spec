@@ -40,6 +40,8 @@ hiddenimports = [
     "pythonnet",
     "tkinter",              # 托盘右键菜单用
     "tkinter.font",
+    "uiautomation",         # PC 直听字幕：读 Live Captions 窗口（R122）
+    "comtypes",
 ]
 
 datas = collect_data_files("webview", subdir="lib")

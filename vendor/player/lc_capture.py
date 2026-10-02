@@ -68,7 +68,8 @@ class LiveCaptionsCapture:
         t = self._thread
         if t and t.is_alive():
             t.join(timeout=3)
-        self._restore_window()
+        # 不恢复窗口（方案 A，R122 用户拍板）：LC 保持最小化待命，
+        # 下次 start 直接复用——用户全程看不到 LC 的存在感。
         with self._lock:
             self._running = False
         return self.state()
@@ -153,18 +154,6 @@ class LiveCaptionsCapture:
             except Exception as e:
                 self._log(f"[lc] 最小化失败：{e}")
         return win
-
-    def _restore_window(self) -> None:
-        """停止时把 LC 窗口恢复回可见状态（用户自己开的 LC 不该被我们弄没）。"""
-        try:
-            import ctypes
-            u = ctypes.windll.user32
-            hwnd = getattr(self, "_hwnd", None)
-            if hwnd:
-                u.SetWindowLongW(hwnd, -20, getattr(self, "_ex", u.GetWindowLongW(hwnd, -20)))
-                u.ShowWindow(hwnd, 9)   # SW_RESTORE
-        except Exception:
-            pass
 
     def _ensure_japanese(self, auto, win) -> None:
         """语言不对就切：展开 SpeechModelDropDown → 点 日语(日本) → 继续。"""

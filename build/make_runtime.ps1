@@ -22,7 +22,7 @@ $tmp = Join-Path $env:TEMP ("nexus-runtime-" + [guid]::NewGuid().ToString('N').S
 
 # 冒烟表达式：必须覆盖**实际安装**的全部直接依赖。半成品 runtime（pip 中途失败
 # 留下的残目录）只有跑到缺的那个 import 才会现形——"已存在"路径同样要过这一关。
-$smokeExpr = "import fastapi, uvicorn, numpy, faster_whisper, sys; print('runtime ok', sys.version.split()[0])"
+$smokeExpr = "import fastapi, uvicorn, numpy, faster_whisper, uiautomation, sys; print('runtime ok', sys.version.split()[0])"
 
 if (Test-Path $OutDir) {
     Write-Host "runtime 已存在：$OutDir，先冒烟验证完整性…" -ForegroundColor Yellow
@@ -87,6 +87,10 @@ if (Test-Path $bleakWheels) {
     & $venvPy -m pip install --target $sitePkgs bleak
     if ($LASTEXITCODE -ne 0) { throw "bleak 安装失败（exit $LASTEXITCODE）" }
 }
+# ---- PC 直听字幕（R122）：uiautomation + comtypes（读 Live Captions 窗口）----
+Write-Host "  安装 uiautomation（PC 直听字幕用）…" -ForegroundColor DarkGray
+& $venvPy -m pip install --target $sitePkgs uiautomation
+if ($LASTEXITCODE -ne 0) { throw "uiautomation 安装失败（exit $LASTEXITCODE）" }
     if ($LASTEXITCODE -ne 0) {
         # pip 半途失败会留下残目录——下次直接跑会被当成"已存在"（现已会被冒烟拦住，
         # 但这里主动删掉更干净）
