@@ -30,12 +30,18 @@ try {
     $arc = Join-Path $tmp 'mpv-dev.7z'
     $curlArgs = @('-L', '-sS', '--retry', '3', '--retry-all-errors', '-o')
     if ($Proxy) { $curlArgs += @('--proxy', $Proxy) }
-    & curl @curlArgs "$z7" 'https://www.7-zip.org/a/7zr.exe'
+    & curl.exe @curlArgs "$z7" 'https://www.7-zip.org/a/7zr.exe'
     if ($LASTEXITCODE -ne 0) { throw "下载 7zr.exe 失败（curl exit $LASTEXITCODE）" }
     $rel = Invoke-RestMethod 'https://api.github.com/repos/zhongfly/mpv-winbuild/releases/latest'
-    $asset = $rel.assets | Where-Object { $_.name -like 'mpv-dev-x86_64-*.7z' } | Select-Object -First 1
-    if (-not $asset) { throw "mpv-winbuild 最新 release 里没找到 mpv-dev-x86_64-*.7z" }
-    & curl @curlArgs "$arc" $asset.browser_download_url
+    # 用 lgpl 变体（R118 拍板）：mpv 默认 GPLv2+，lgpl 构建对本程序（播放/抽帧，只用解码）
+    # 功能无差、许可更干净（GPL 会与 MIT 主程序的对外声明混搭）。
+    # 排除 v3 变体：那是给较新 CPU 的优化构建，兼容性保守起见不用。
+    $asset = $rel.assets | Where-Object {
+        $_.name -like 'mpv-dev-lgpl-x86_64-*.7z' -and $_.name -notlike '*-v3-*'
+    } | Select-Object -First 1
+    if (-not $asset) { throw "mpv-winbuild 最新 release 里没找到 mpv-dev-lgpl-x86_64-*.7z" }
+    Write-Host "      资产：$($asset.name)" -ForegroundColor DarkGray
+    & curl.exe @curlArgs "$arc" $asset.browser_download_url
     if ($LASTEXITCODE -ne 0) { throw "下载 mpv-dev 失败（curl exit $LASTEXITCODE）" }
     Write-Host ("      OK {0:N1} MB" -f ((Get-Item $arc).Length / 1MB))
 
@@ -48,8 +54,8 @@ try {
 
     Write-Host "[3/3] 自检" -ForegroundColor Cyan
     if ((Get-Item $dll).Length -lt 50MB) { throw "libmpv-2.dll 大小异常" }
-    Set-Content -Path $marker -Value 'mpv-1' -Encoding ASCII
-    Write-Host "[完成] vendor\mpv\libmpv-2.dll 就绪（桌面播放器运行时）" -ForegroundColor Green
+    Set-Content -Path $marker -Value 'mpv-lgpl' -Encoding ASCII
+    Write-Host "[完成] vendor\mpv\libmpv-2.dll 就绪（LGPL 构建，桌面播放器运行时）" -ForegroundColor Green
 } finally {
     if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }

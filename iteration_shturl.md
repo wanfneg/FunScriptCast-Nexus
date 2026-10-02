@@ -4056,3 +4056,26 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 **波及构建脚本**：`build/make_runtime.ps1`（去 zhconv：pip 行 + 冒烟 + 注释提醒勿加回）。
 **未打包未推送**（仅本地提交；D 盘运行环境不受影响，zhconv 已从 D 盘 runtime 同步删除）。
 
+### R118.1（2026-10-02 当日）：libmpv 换 LGPL 构建（用户拍板「换」）
+
+**背景**：R118 体检发现 `vendor/mpv/libmpv-2.dll` 是 GPL 变体（zhongfly 的
+`mpv-dev-x86_64`，mpv 默认 GPLv2+）。用户问明 GPL/LGPL 区别后拍板换 lgpl。
+
+**改动**：
+- `tools/fetch_mpv.ps1`：资产匹配改 `mpv-dev-lgpl-x86_64-*.7z` 并**排除 `-v3-`**
+  （给较新 CPU 的优化构建，保守不用）；打印选中资产名便于复核；marker 值
+  `mpv-1`→`mpv-lgpl`；**`& curl` → `& curl.exe`**（本机 Windows PowerShell 的 `curl`
+  是 `Invoke-WebRequest` 别名，`-sS` 直接报"找不到位置形式参数"——真坑）。
+- 重下：资产 `mpv-dev-lgpl-x86_64-20261001-git-3186d369f9.7z`（27MB 压缩包；中途一次
+  Recv failure 被 `--retry` 救回，7z 解压通过 = 完整）。新 dll **95.8MB**（GPL 版
+  121MB，少的是 GPL-only 组件），ProductVersion `v0.41.0-1092-g3186d369f`（与旧版同日同提交）。
+- **实测**：ctypes 载入 + `mpv_client_api_version` 2.5 + create/destroy ✓；用
+  `library._probe_local` 对 `E:	estvideo\K1cztm.mp4` 真片抽帧：时长 1303.4s、
+  缩略图 242KB ✓（解码链路完好）。
+- **已同步**：E 仓库 + dist-app + **D 盘运行版**（文件未被占用，直接替换成功）。
+- 文本落盘：`vendor/mpv/` 加 `LICENSE.LGPL-2.1.txt`（gnu.org 原文，当前适用）、保留
+  GPLv2 文本（`mpv-Copyright.txt` 引用它）+ README 重写；台账 §1 行更新为 LGPL-2.1+。
+
+**注意**：宿主**当前进程**内存里若已加载旧 dll 映像，新播放仍走旧版；**重启应用后生效**
+（与热替换同规矩）。下次打包时安装包含 lgpl 版。**libmpv 事项闭环。**
+

@@ -4,7 +4,8 @@
 > 分发形态：安装包含 宿主 exe / embeddable Python runtime / ui / vendor / tools；
 > **模型权重不进安装包**，由用户在界面内自行下载（setup.iss 明确不碰 models\）。
 > **R118（2026-10-02）整体复核**：补记 libmpv / audio.cpp / bleak 相关组件；runtime 包清单
-> 按实际发行版重扫（51 个发行包）；再清理一次 zhconv（R69 的移除曾被构建脚本回装，见下）。
+> 按实际发行版重扫（51 个发行包）；再清理一次 zhconv（R69 的移除曾被构建脚本回装，见下）；
+> libmpv 由 GPL 构建换为 **LGPL 变体**（当日用户拍板，见第 1 节）。
 
 ## 1. 随安装包分发的组件
 
@@ -18,7 +19,7 @@
 | ui/fonts/JetBrains Mono | SIL OFL-1.1 | The JetBrains Mono Project Authors | `ui\fonts\LICENSE-JetBrainsMono-OFL.txt` | ✅ 已补 |
 | ui/fonts/Space Grotesk | SIL OFL-1.1 | The Space Grotesk Project Authors | `ui\fonts\LICENSE-SpaceGrotesk-OFL.txt` | ✅ 已补 |
 | ui 图标（index.html 内联 SVG sprite） | ISC | (c) 2026 Lucide Icons and Contributors | `ui\LICENSE-Lucide-ISC.txt`；生成脚本 `tools\gen_lucide_sprite.py` 逐字取自官方 svg | ✅ 已补 |
-| vendor/mpv（libmpv-2.dll，桌面播放器运行时，约 121MB） | **GPLv2+**（zhongfly/mpv-winbuild 的 mpv-dev 构建，未取 lgpl 变体） | mpv 项目及贡献者；构建方 zhongfly/mpv-winbuild | `vendor\mpv\LICENSE.GPL-2.0.txt` + `mpv-Copyright.txt`（R118 落盘；下次打包随包） | ✅ R118 补记 |
+| vendor/mpv（libmpv-2.dll，桌面播放器运行时，约 96MB） | **LGPL-2.1+**（zhongfly/mpv-winbuild 的 `mpv-dev-lgpl-x86_64` 变体，`-Dgpl=false` 构建） | mpv 项目及贡献者；构建方 zhongfly/mpv-winbuild | `vendor\mpv\LICENSE.LGPL-2.1.txt`（适用）+ `LICENSE.GPL-2.0.txt`（保留备查）+ `mpv-Copyright.txt` | ✅ R118：补记时发现初版取的是 GPL 变体，当日换 lgpl 并落盘文本（下次打包随包） |
 | vendor/audiocpp（audio.cpp CPU 运行时，随包内置；gpu\ 变体不随包） | Apache-2.0 | ShugoAI LLC | `vendor\audiocpp\LICENSE`（随包 ✓） | 无 |
 | 宿主 exe 打包器：PyInstaller | GPL-2.0-or-later **含运行时例外** | PyInstaller 贡献者 | 例外条款允许以任意许可分发打出的 exe；完整文本以 https://pyinstaller.org/en/stable/license.html 为准 | 无（例外覆盖） |
 | WebView2 Runtime | Microsoft 免费可再分发组件 | Microsoft | 系统组件，按 Microsoft 重新分发条款 | 无 |
