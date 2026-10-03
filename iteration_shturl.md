@@ -4329,3 +4329,20 @@ code_of 番号正则 + base_of 分件基名 + _aggregate 归组），且发现 *
 
 **R125 补记（用户截图批评——字幕渲染形态）**：字幕"一行行往上叠+双语"不对——**实时字幕=一句一句显示，过去的就过去**；且**只显示译文**（手机端字幕只渲染 translation，我又自作主张加了双语和 3 句历史堆叠）。已改：单条字幕（最新定稿句的译文，19px）、新句替换旧句、8 秒无新句自动消失、删词级原文行（lcCur）与日文小字。热替换 D 盘 + 重启生效。
 
+## R126（2026-10-03）：全项目代码审查（工作流）+ 高/中危 18 条全修 + 装机 1.0.90
+
+**用户指令**："使用工作流，全面审查代码"——首次误解为只审 LC 新功能（被纠正："我们软件不止有 AI 字幕"）；第二次按全项目重跑。
+
+**审查（CreateWorkflow，两轮）**：
+- 第一轮（LC 专项）：12 线设计缩为 5 线，23 条发现（高3/中10/低10，13 条复核确认）。
+- 第二轮（全项目）：**12 条线**并行（并发上限 4——R107"9 并发顶爆内存"教训），覆盖 host_server（3 线）/字幕服务 3 线/设备/DLNA/媒体库/前端 2 线/构建安装/横切安全专项；53 项原始发现去重合并 **46 条（高2/中16/低28），20 条独立复核确认**（多条实机复现：junction 泄露、截断 zip、线程复活、扫描竞态、轻声切句、滑轨算术、venv 复现 NameError/模型调包）。报告见工作流 artifact《全项目代码审查报告》（98KB）。
+- 审查中排除的误报（如实未报）：锁死锁回归、estop 语义、zip slip、秒/百分比回归等十余项。
+
+**修复（用户裁定"修"，18 条 = 高2 + 中16 全修；低 28 条留卫生批次）**：
+- **高①** DLNA 单根 reparse 绕过（vr_dlna key_to_path 单根不再提前 return，统一落检查；matched_root=None 兜底）——junction 逃逸实测 BLOCKED、正常文件/多根不回归，回归测试入库 `tests/test_dlna_junction_escape.py`。
+- **高②** 进度条二值化（initSlider 取整按值域自适应：**span>1 才 round**，vlVSeek 0..1 保留 3 位小数；初版 `>=1` 判定对 0..1 恰好为真是自摆乌龙，node 模拟验证进度/音量/速度三滑轨全对）。
+- 中危：模型 zip 坏包死循环（复用前 testzip 试开+失败删包+BadZipFile 分支删包+cl=0 拒绝扶正）；BLE 写异常卡死（channel._write catch 返回 False + 爆发/缓动/预设循环 except 复位状态位）；join_tokens 提级模块级（symtable 复验无未定义引用）；BOOST 500 不持久化（仅取消落盘，对齐手机端）；adb connect 失败清残留 serial + ok 改严格判据；流式 reaper 误杀（包装 body_iterator 让 _INFLIGHT/打点覆盖响应体生命周期）；双 Translator 路由失明（滞回命中前核对 `_resolve(target)==be.model`，复现验证调包即纠正）+ mt_warm 双实例聚合（stream_bridge.translator_instance() + /health 聚合）；轻声切句 VAD 复核（silent 丢弃前跑 VAD，有语音切出 vad-rescued，三场景验证）——**初版缩进错层被管线单测当场抓住（UnboundLocalError），单测价值实证**；流式上游崩溃自愈（ConnectionError 分支 ensure_server 重拉）；预设被看护顶掉（看护条件补 !vlPlayingPreset）；扫描覆盖进度（合并逐条 played_at 较新保留 + 收尾前重读磁盘补"未遍历文件"窗口，复现验证 PASS）；前端弹回×3（dlnaPort 接 markDirty+落盘后清、quickCmd 用响应状态乐观更新、a10_mode 回显认 mode_override 真值）。
+- **单测防线实证**：混合切句的缩进错层是 `tests/test_pipeline_unit.py` 抓的——设备 30 测、管线单测、junction 回归全绿后才打包。
+
+**装机**：1.0.90（构建 bump）静默安装 ExitCode=0，verify 6/6，**装后环境跑 junction 回归 PASS**，宿主已启动。未推送。
+
