@@ -4346,3 +4346,21 @@ code_of 番号正则 + base_of 分件基名 + _aggregate 归组），且发现 *
 
 **装机**：1.0.90（构建 bump）静默安装 ExitCode=0，verify 6/6，**装后环境跑 junction 回归 PASS**，宿主已启动。未推送。
 
+## R127（2026-10-03）：LC 接入适配度重构（"生硬接入"→ 正规管线）+ 装机 1.0.91
+
+**用户指令**："重点看 win11 实时字幕接入到当前系统的适配度，当时是直接生硬接入的"。
+
+**适配度诊断（生硬点）**：① `_lc_translate` 自拼 OpenAI 请求直打 8082——绕开 Translator **全部**能力（ensure_server 自愈 / 按语言路由模型与提示词 / 兜底 / key 脱敏），英语模式配日文提示词即此根因；② `mt_ok` 硬编码探测 8082，与字幕服务健康口径脱节；③ lccapture 模式空闲回收必然杀翻译（LC 专项 high② 未修）；④ asr_ready 恒真误导头显、流式路径无引导；⑤ lc_capture 一批健壮性（孤儿线程/僵尸化/同步翻译/全局树点击/失败文案上屏/会话串场）；⑥ 前端失败态缺失/lcStop 不放行/lcOn 不持久化/提示藏在隐藏面板。
+
+**适配改造（全部完成并验证）**：
+1. **翻译正规化**：字幕服务新增 `POST /translate/text`（仅本机——不加 _LAN_OPEN_PREFIXES 白名单自动被 _LoopbackGuard fail-closed 拦截局域网；与 /transcribe 同口径 _INFLIGHT+打点防回收误杀），内部走 Translator 完整管线（route=True 按语言路由）；宿主 `_lc_translate(text, lang)` 改调它。实测：ja "こんにちは三上ゆあです。" → "大家好，我是三上悠亚。"（Sakura 完整管线）、en 走路由 ✓。**英语提示词/自愈/路由问题一并根治**。
+2. **lccapture 模式禁用空闲回收**（reaper 顶部判 backend）——LC 专项 high② 根治。
+3. **_LcBackend.probe→False**（asr_ready 如实为 false，头显正确拒绝）+ **/transcribe/stream lccapture → 503 引导**（与 _claim_session 同形态）。
+4. **mt_ok 改读字幕服务 /health 聚合 mt_warm**（sub_health 唯一真相源，删硬编码探测；_LC_MT_PROBE 删除）。
+5. **lc_capture 健壮性**：start 独立 Event+join 后存活检查（超时拒绝重启防双跑）+重启清 _lines（会话隔离）；循环每 ~6s 校验窗口存活、失联重建 ≤3 次后如实报错（僵尸化自愈）；_ensure_language 限定 LC 进程（PID 过滤防误点其它应用）；_commit 改 **Queue+独立翻译 worker**（抓取循环永不因翻译阻塞），失败 zh 置空不上屏（对齐手机端）；_get_lc 加锁。
+6. **前端体验**：lcPoll 消费 error/running + **90s 总超时**（对齐手机端"失败也放行+原因上屏"）——LC 起不来不再困死暂停画面；lcStop 放行自己按下的暂停（pausedByUs 语义）；**lcOn 持久化**（关闭清标志，自动恢复只看它——方向对齐手机端）；预热/失败提示改挂字幕层常显（lcSubMsg，带已等秒数），不再藏在选语言即收起的面板里；去重键加 ts（同句译文不再漏渲染）；lcCur 死元素删除。
+
+**验证**：dev 宿主 /translate/text 双语实测 ✓、/api/lc 全链（lc_ok+mt_ok）✓、播放端到端 4 句翻译质量正常 ✓；单测（设备 30/管线/junction 回归）全绿；**装后复验**（1.0.91 D 盘）：verify 6/6 + LC 链 running/lc_ok/mt_ok 全 True。
+
+**装机**：1.0.91 静默安装 D 盘运行中。**未推送未发布**。
+
