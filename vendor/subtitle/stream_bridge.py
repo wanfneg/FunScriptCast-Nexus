@@ -89,6 +89,17 @@ def _get_translator():
         return _translator
 
 
+def translator_instance():
+    """已存在的 Translator 实例（未懒加载过则 None，**不触发构造**）。
+
+    R125 修复（全项目审查中危）：/health 的 mt_warm 只反映 server_app 自己的
+    Translator；流式为主（/transcribe/stream）的会话热记账记在 stream_bridge
+    的实例上，换过一次模型代次后 server_app 实例再无成功调用，mt_warm 恒 false
+    ——宿主 ready 门假阴性、诊断页失真。health 据此聚合两个实例的记账。
+    """
+    return _translator if isinstance(_translator, Translator) else None
+
+
 def _batch_size() -> int:
     """攒批阈值与 translate_engine 的批量大小保持同一个配置来源。"""
     try:
@@ -511,6 +522,19 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
                     conn.close()      # 异常路径此前不关连接，句柄靠 GC 兜底
             except Exception:
                 pass
+            # R125 修复（全项目审查中危）：上游 audiocpp_server 崩溃后的自愈重拉——
+            # 离线路径有 audiocpp_backend._ensure_alive 每次转写前自愈（F12），流式
+            # 路径此前对上游死亡零恢复：每块请求直接报错收尾直到服务重启。这里是
+            # 连接级失败的唯一兜底点：ensure_server 幂等（活着就不动，死了重拉），
+            # 拉起后不再重试本块（头显会按协议推下一块），下一块自然走新进程。
+            if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+                try:
+                    from audiocpp_backend import AudioCppBackend  # noqa: PLC0415
+                    AudioCppBackend(CFG.get("asr", {}).get("audiocpp", {}) or {}).ensure_server()
+                    print("[bridge] 上游连接失败，已尝试重拉 audiocpp_server（下一块生效）",
+                          flush=True)
+                except Exception as e:
+                    print(f"[bridge] 上游重拉失败（保持原错误上报）：{e}", flush=True)
             try:
                 for out in await _flush_lines():   # 断流前攒下的句子尽量翻完下发
                     yield out

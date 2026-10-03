@@ -34,6 +34,10 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
+
+# R125：模型核对口径与 llama_backend.use_model 的幂等判据同源（_resolve 比较）。
+# llama_backend 不反向依赖本模块，无循环导入。
+from llama_backend import _resolve  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor
 
 from free_translators import make_free
@@ -1051,7 +1055,21 @@ class Translator:
             self._lang_model_ref = target
         elif target == self._lang_model_ref:            # 与当前模型一致：什么都不做
             self._lang_cand, self._lang_cand_n = "", 0
-            return
+            # R125 修复（全项目审查中危）：滞回命中前必须核对**共享后端实际加载的
+            # 模型**——_lang_model_ref 是实例私有状态，而 _LOCAL_BE 是模块级单例。
+            # 同进程内 server_app 与 stream_bridge 各持一个 Translator（共享同一
+            # LlamaBackend），另一条路径 use_model 切走模型后，本实例按私有 ref
+            # 判"一致"直接 return，后续请求全部发给错误的模型且无任何日志
+            # （复核 venv 复现：ref=sakura 而 be.model=hymt2）。核对口径与
+            # use_model 的幂等判据一致（_resolve(target) == be.model）；
+            # use_model 本身幂等，核对不一致时走它零成本纠正。
+            try:
+                if _resolve(target) != _local_backend(local).model:
+                    self._lang_model_ref = None      # 私有 ref 已过时：走下方正常切换
+                else:
+                    return
+            except Exception:
+                return
         else:
             if self._lang_cand == target:
                 self._lang_cand_n += 1

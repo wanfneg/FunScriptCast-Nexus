@@ -35,13 +35,14 @@ import posixpath
 UNSAFE_EXACT = (
     "/", "/sdcard", "/mnt", "/mnt/sdcard", "/storage", "/storage/emulated",
     "/storage/emulated/0", "/storage/emulated/legacy", "/storage/self",
+    "/storage/self/primary",
     "/system", "/data", "/vendor", "/proc", "/sys", "/dev",
 )
 
 # 绝不作为目标的**子树**（应用私有目录、系统树）
 UNSAFE_PREFIX = (
     "/sdcard/android", "/storage/emulated/0/android", "/storage/emulated/legacy/android",
-    "/storage/emulated/android",
+    "/storage/emulated/android", "/storage/self/primary/android",
     "/system", "/data", "/vendor", "/proc", "/sys", "/dev",
 )
 

@@ -213,6 +213,23 @@ class HybridBuffer:
             # 才算真静音。不能每块都查——气声/轻声对白的块整段 RMS 也会低于
             # 阈值（实测 sivr002 被这样扔掉 205 块 ≈ 全片 1/3 语音）。
             if _rms(self._pcm[:cut_n]) < self.thr:
+                # R125 修复（全项目审查中危）：丢弃前用 VAD 复核——轻声/耳语内容
+                # 的**切点本身**就是被轻声 RMS 误判出来的（RMS 判据优先于 VAD），
+                # 旧代码对 VAD 结果零引用，VAD 明确报有语音也整段丢弃，该内容
+                # 每 2s 循环丢弃、一句不出。VAD 报告切下段内有语音区就不丢，
+                # 照常交给 ASR + 幻觉过滤（幻觉过滤才是防"VAD 误报"的下一道闸）。
+                if self.vad_fn is not None:
+                    try:
+                        _v = self.vad_fn(self._pcm[:cut_n])
+                    except Exception:
+                        _v = None
+                    if _v:
+                        # 与下方 vad 分支同口径：clip 成"相对 span 秒"的语音区供对齐复用
+                        span, start_ms = self._pcm[:cut_n], self._start_ms
+                        self._pcm = self._pcm[cut_n:]
+                        self._start_ms += int(round(cut_n / SR * 1000))
+                        self.last_cut_regions = self._clip_regions(_v, cut_n)
+                        return span, start_ms, "vad-rescued"
                 self._pcm = self._pcm[cut_n:]
                 self._start_ms += int(round(cut_n / SR * 1000))
                 self.last_cut_regions = None    # 没有切出 span，别把上一次的语音区留着

@@ -124,6 +124,13 @@ class QuickMoves:
                 await asyncio.sleep(max(0.05, (hi - lo) * 1000.0 / speed / 1000.0))
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            # R125 修复（全项目审查中危）：循环死于意外异常时状态位必须复位——
+            # 旧代码 is_orgasm 只在 start/stop 入口复位，循环静默死亡后爆发卡死
+            # （脚本同步被永久 defer、UI 显示运动中而设备不动）。channel._write
+            # 已兜住 BLE 断连，这里兜其余意外并如实上报。
+            print(f"[quick] 爆发循环异常终止：{type(e).__name__}: {e}", flush=True)
+            self.is_orgasm = False
         finally:
             self._self_moving = False
 
@@ -195,6 +202,10 @@ class QuickMoves:
                 await asyncio.sleep(max(0.1, (hi - lo) * 1000.0 / speed / 1000.0))
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            # R125 修复：同 _orgasm_loop——循环意外死亡必须复位状态位（缓动卡死）。
+            print(f"[quick] 缓动循环异常终止：{type(e).__name__}: {e}", flush=True)
+            self.is_slow = False
         finally:
             self._self_moving = False
 

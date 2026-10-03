@@ -1679,6 +1679,13 @@ def _download_once(opener, url: str, dest: Path, prog=None) -> None:
         if total and done < total:
             raise RuntimeError(
                 f"下载不完整（{done}/{total} 字节，连接提前中断）：{url}")
+        if not cl:
+            # R125 修复（全项目审查中危·zip 死循环的前半环）：全程无 Content-Length
+            # ⇒ 无法证明完整性，半截包不得扶正（旧代码 total=0 短路检查后无条件
+            # os.replace）。catalog 的下载源（GitHub releases 固定资产）都带长度头，
+            # 不带即视为不可靠源。
+            part.unlink(missing_ok=True)
+            raise RuntimeError("服务器未提供 Content-Length，无法验证完整性，已丢弃下载：" + url)
         os.replace(part, dest)
         return
     raise RuntimeError("下载重试仍失败：" + url)
@@ -1776,10 +1783,22 @@ def _model_dl_worker(e: dict) -> None:
                 tmp = tmpdir / (id_ + "--" + f["rel"])
                 # R103 复核修正：已存在的完整包直接复用（跳过下载）——旧写法先
                 # append 再无条件重下，GB 级 zip 重试时整包重下 + extractall 两次。
-                # 完整性由 zip 校验兜底（坏包在 ZipFile 处抛错重走）。
+                # R125 修复（全项目审查中危）：复用前必须试开校验——旧判据只有
+                # size>0，内容级损坏/磁盘写坏/误放同名文件的坏包会被反复复用，
+                # 而解压抛 BadZipFile 后旧代码不删包 ⇒ 重试永远复用同一坏包，
+                # 永久卡在 error（注释声称的"zip 校验兜底重走"实际不成立）。
                 if tmp.is_file() and tmp.stat().st_size > 0:
-                    zpaths.append(tmp)
-                    continue
+                    try:
+                        with zipfile.ZipFile(tmp) as _z:
+                            bad = _z.testzip()
+                        if bad is None:
+                            zpaths.append(tmp)
+                            continue
+                        log.warning("缓存 zip 损坏（首坏项 %s），删除重下：%s", bad, tmp)
+                    except Exception as _ze:
+                        log.warning("缓存 zip 无法打开（%s），删除重下：%s", _ze, tmp)
+                    tmp.unlink(missing_ok=True)
+
                 def prog(done, total, _i=i):
                     frac = (_i + (done / total if total else 0.0)) / n
                     with _DL_LOCK:
@@ -1887,6 +1906,14 @@ def _model_dl_worker(e: dict) -> None:
             except Exception as ex:
                 print("[models] 自动切换翻译模型失败（忽略）：", ex, flush=True)
     except Exception as exc:
+        # R125 修复（全项目审查中危）：解压失败（坏包）时删除对应 zip 缓存——
+        # 旧代码只置 error 不删包，重试会再次复用同一坏包，永久卡在 error。
+        try:
+            for zp in (zpaths or []):
+                if zp.is_file():
+                    zp.unlink(missing_ok=True)
+        except Exception:
+            pass
         with _DL_LOCK:
             _MODEL_DL[id_].update(state="error", error=type(exc).__name__ + ": " + str(exc))
         RT.add_log("模型下载失败：" + e["label"] + "（" + str(exc) + "）", "err")
@@ -2636,7 +2663,13 @@ class Handler(BaseHTTPRequestHandler):
                     res = p.toggle_random()
                 elif act == "boost":
                     res = p.toggle_boost()
-                    _remember_preset_speed(p.speed)   # BOOST 跳 500 / 取消恢复原速，都照手机端写回
+                    # R125 修复（全项目审查中危）：只有**取消**（恢复原速）才落盘——
+                    # 旧代码激活时把 BOOST 的临时 500 一并持久化（注释声称"照手机端"
+                    # 写回是错的：手机端激活分支明确不持久化、仅取消落盘恢复的原速），
+                    # 之后 _apply_device_settings 回读 500 驱动物理设备满速；激活中
+                    # 保存设置还会覆写 _boost_prev_speed 导致取消后也回不到原速。
+                    if not p.boost:
+                        _remember_preset_speed(p.speed)
                 elif act == "speed":
                     res = p.set_speed(int(body.get("speed") or 100))
                     _remember_preset_speed(p.speed)   # 落盘（手机端 persistDebounced）：否则下次
@@ -3437,9 +3470,21 @@ class SyncService:
                     self.slots[kind].device = serial
                     self.slots[kind].error = ""
                 except Exception as e:
+                    # R125 修复（全项目审查中危）：verify 失败必须清空本槽与控制器上
+                    # 残留的旧 serial——旧代码只记 error，槽里仍是上一台设备，
+                    # res["ok"]（只判槽位非空）照样 true 并谎报"已连接新设备"，
+                    # 之后 /api/sync/run 把文件推到非预期设备。ctrl.serial 是
+                    # run_sync 实际使用的值，两处都要清。
+                    ctrl.serial = ""
+                    self.slots[kind].serial = ""
+                    self.slots[kind].device = ""
                     self.slots[kind].error = str(e)
                     res["error"] = str(e)
-            res["ok"] = all(s.serial for s in self.slots.values())
+            # ok = 本次所有通道 verify 都成功（slot.serial == 本次请求的 serial），
+            # 而不是"槽位非空"——后者会把上一台设备的残留当成连接成功。
+            res["ok"] = all(
+                s.serial == serial for s in self.slots.values()
+            ) and not res.get("error")
             RT.add_log(
                 f"设备已连接：{serial}" if res["ok"] else f"设备连接失败：{res.get('error')}",
                 "ok" if res["ok"] else "err",

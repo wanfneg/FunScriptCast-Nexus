@@ -186,6 +186,24 @@ class Library:
         for k in list(files_idx):
             if k not in found:
                 del files_idx[k]
+        # R125 修复（全项目审查中危）：合并时逐条保留**较新的播放进度**——
+        # _scan 全程不持锁，扫描（单文件探测可达 60s）期间 set_progress 并发写入
+        # 的新进度会被 found 里的扫描期快照覆盖（实测复现：进度 999 → 扫后回退 50，
+        # 内存卡片同步回退）。对每个本轮见过的文件，若 files_idx 同键的 played_at
+        # 更新（用户在扫描期间看过），则保留其 pos/played_at。
+        for k, e in found.items():
+            prev_e = files_idx.get(k)
+            if prev_e and float(prev_e.get("played_at") or 0) > float(e.get("played_at") or 0):
+                e["pos"] = prev_e.get("pos", 0.0)
+                e["played_at"] = prev_e.get("played_at", 0.0)
+        # R125 修复（全项目审查中危·补充窗口）：收尾合并前重读磁盘索引——扫描期间
+        # set_progress（持锁写盘）对"**尚未被遍历到**的文件"的更新落在磁盘上，
+        # 若直接用扫描开始时的快照落盘会把这些更新整体打回（用户正在看的视频
+        # 恰在扫描后半段时必中）。本轮没见到的文件 _scan 未触碰，以磁盘最新为准。
+        latest_idx = self._load_index().get("files", {})
+        for k in files_idx:
+            if k not in found and k in latest_idx:
+                files_idx[k] = latest_idx[k]
         idx["files"] = {**files_idx, **found}
         idx["last_scan"] = time.time()
         self._save_index(idx)

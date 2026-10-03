@@ -48,6 +48,10 @@ import urllib.parse  # noqa: E402  （跨站栅栏要解析 Origin）
 from contextlib import asynccontextmanager  # noqa: E402
 
 import numpy as np  # noqa: E402
+
+from text_filters import join_tokens  # noqa: E402  R125：提到模块级——_apply_line_merge（行合并）
+                                     # 曾引用未导入的 join_tokens（唯一的 import 在 _transcribe_impl
+                                     # 的局部作用域里），开启 asr.line_merge 后 /transcribe 必 NameError 500
 from fastapi import FastAPI, Request  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
@@ -528,6 +532,31 @@ def _recommended_chunk_sec() -> int:
         return 3
 
 
+def _aggregate_mt_warm() -> dict:
+    """聚合两条翻译路径的预热记账（R125 修复：流式为主时 server_app 实例可能
+    长期无成功调用，单实例口径会恒报 false——取两者中"最新一次成功预热"）。"""
+    best = {"mt_warm": False, "mt_warm_ts": None, "mt_warm_epoch": None}
+    cands = [state.get("translator")]
+    try:
+        import stream_bridge  # noqa: PLC0415
+        cands.append(stream_bridge.translator_instance())
+    except Exception:
+        pass
+    for tr in cands:
+        if tr is None:
+            continue
+        try:
+            wi = tr.warm_info()
+        except Exception:
+            continue
+        if wi.get("mt_warm"):
+            return wi
+        ts = wi.get("mt_warm_ts")
+        if ts is not None and (best.get("mt_warm_ts") is None or ts > best["mt_warm_ts"]):
+            best = wi
+    return best
+
+
 def _gpu_used_gb() -> float:
     """（已废弃，恒 0）原为 PyTorch 引擎的 torch 显存监控；两个现役引擎
     （whisper=CTranslate2 / audiocpp=独立进程）的显存都不归 torch 管，
@@ -692,8 +721,7 @@ def health():
         # 路由换过权重后自动变 false（新权重没付过那次 prefill），新模型跑完第一句
         # 又自动变 true。旧实现在这里存了一份"只置位不复位"的副本 ⇒ 换过模型照样
         # 报热，用户按这个字段判断"翻译热了没"会被骗。
-        **(state["translator"].warm_info() if state["translator"] else
-           {"mt_warm": False, "mt_warm_ts": None, "mt_warm_epoch": None}),
+        **_aggregate_mt_warm(),
         # 显存档位估算（R66）：UI 的「识别与翻译」卡据此显示占用与推荐组合
         "vram_estimate": _vram_estimate(),
     }
@@ -1175,7 +1203,30 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
                                  "recommended_chunk_sec": _recommended_chunk_sec()},
                                 status_code=503)
         from stream_bridge import transcribe_stream as _impl   # 同目录，复用已验证实现
-        return await _impl(request, lang, translate, video_start_ms, MAX_BODY_BYTES)
+        resp = await _impl(request, lang, translate, video_start_ms, MAX_BODY_BYTES)
+        # R125 修复（全项目审查中危）：starlette 是**先执行完 handler（含 finally）
+        # 再迭代响应体**——上面的 _INFLIGHT--/打点在流式响应体的实质工作（上游 SSE
+        # 读取 + 批量翻译，单块最坏分钟级）开始**之前**就已执行，空闲回收的在飞保护
+        # 对流式完全失效，可在出字幕中途 os._exit(0)。包装 body_iterator 让计数与
+        # 打点覆盖整个响应体生命周期。
+        inner = resp.body_iterator
+
+        async def _guarded():
+            try:
+                async for chunk in inner:
+                    _touch_request_clock()
+                    yield chunk
+            finally:
+                with _INFLIGHT_LOCK:
+                    _INFLIGHT += 1          # 抵消外层 finally 的减一（本守卫接管生命周期）
+                try:
+                    _touch_request_clock()
+                finally:
+                    with _INFLIGHT_LOCK:
+                        _INFLIGHT -= 1
+
+        resp.body_iterator = _guarded()
+        return resp
     finally:
         # 与 /transcribe 同口径：先刷时钟再减计数（评审 F10）
         _touch_request_clock()

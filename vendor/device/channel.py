@@ -242,8 +242,16 @@ class DeviceChannel:
         if not (self._client and getattr(self._client, "is_connected", False)) or self._toy is None:
             return False
         # 握手（模式/限位/信息）没走完就不写运动帧 —— 手机端 forceMoveTo 同样要求 _ready
-        for i in range(0, len(payload), CHUNK):
-            await self._client.write_gatt_char(self._toy.tx, payload[i:i + CHUNK], response=False)
+        try:
+            for i in range(0, len(payload), CHUNK):
+                await self._client.write_gatt_char(self._toy.tx, payload[i:i + CHUNK], response=False)
+        except Exception as e:
+            # R125 修复（全项目审查中危）：is_connected 检查与 write 之间存在断开窗口
+            # （BLE 常态事件），write_gatt_char 抛 BleakError 会沿调用链杀死爆发/缓动/
+            # 预设循环协程，状态位残留卡死会话。手机端 writeFrame 同样 catch 返回 false。
+            # 返回 False = 写失败，调用方按"本帧没发出去"处理；断连由 disconnect 流程收尾。
+            print(f"[channel] 写入失败（视为断连窗口）：{type(e).__name__}: {e}", flush=True)
+            return False
         return True
 
     # ---------- 运动 ----------

@@ -1265,6 +1265,12 @@
     });
   }
 
+  /* R125 修复（全项目审查中危）：#dlnaPort 一直没接 markDirty——回填判据
+     （:322）里 dirty 分支是半成品，改完端口一失焦就被 1s 轮询刷回旧值，
+     点「启动」用旧端口并落盘。与其它控件同款接上。 */
+  $("#dlnaPort").addEventListener("input", function () { markDirty(this); });
+  $("#dlnaPort").addEventListener("change", function () { markDirty(this); });
+
   function startDlna() {
     var port = parseInt($("#dlnaPort").value, 10) || 8899;
     // R103 复核：改用服务端实时配置判空（S.settings 是 1s 轮询快照，刚加完根
@@ -1281,6 +1287,7 @@
           toast("端口保存失败", (r && r.error) || "", "err");
           return;
         }
+        clearDirty($("#dlnaPort"));   // 已落盘：轮询可恢复回填（R125 配套）
         api("/api/dlna/start", "POST", { port: port }).then(function (r) {
           toast(r.ok ? "DLNA 正在启动" : "启动失败", r.error || "", r.ok ? "ok" : "err");
           poll(true);
@@ -1990,7 +1997,13 @@
     /* live=true 表示拖动进行中：只更新显示，不触发落盘（设备限位等 pointerup 才下发，
        否则拖一下就是一次 BLE apply_limits 往返，与运动帧交错） */
     function set(which, v, live) {
-      v = Math.round(Math.min(max, Math.max(min, v)));
+      /* R125 修复（全项目审查高危②）：取整按值域自适应——整数刻度滑轨
+         （音量 0..100、速度 1..500 等，span>1）照旧 Math.round；**浮点值域滑轨
+         （进度条 vlVSeek 0..1，span 恰为 1）必须保留小数**，否则进度被二值化成
+         0/1：拖到 [0,50%) 回开头、[50%,100%] 跳片尾（实测复现）。 */
+      var integral = (max - min) > 1;
+      v = (integral ? Math.round : function (x) { return Math.round(x * 1000) / 1000; })(
+        Math.min(max, Math.max(min, v)));
       if (dual) {
         if (which === "lo" && v > hi - 1) v = hi - 1;
         if (which === "hi" && v < lo + 1) v = lo + 1;
@@ -2130,6 +2143,13 @@
       if (kind === "stop") {
         SYNC.estopped = !!on;
         if (on) { SYNC.on = false; SYNC.want = false; }   // 急停停了会话（I6）：不自动恢复
+      }
+      /* R125 修复（全项目审查中危）：用响应携带的最新 quick 状态**立即**更新
+         本地快照——旧代码只等 2s 轮询，快速二次点击读到旧值会重发同向命令
+         （与用户意图相反）。服务端是绝对方向命令（非服务端 toggle），回显有真值。 */
+      if (r.quick) {
+        DEV.quick = r.quick;
+        renderDev(DEV);
       }
       pollDev();
     });
@@ -2439,7 +2459,15 @@
       var el = $("#" + id); if (el) el.disabled = !on;
     });
     if ($("#advHint")) $("#advHint").hidden = on;
-    $("#setA10").checked = String(DEV.toy || "").toLowerCase() === "vorze";
+    /* R125 修复（全项目审查中危）：伪装开关回显改认**设备的 mode_override 真值**
+       （DEV.a10_mode，用户设置后宿主持久保存的稳定状态）；连接后从未改过（null）
+       才按当前通道档案播种（Vorze 通道→开）。旧写法只认 DEV.toy——非 vorze 设备
+       上用户勾选（写入 a10_mode=1 成功）会被 2s 轮询按 toy 恒刷回 false（开关
+       不可用且反复重启设备），与"以用户意图为唯一真源"的手机端语义相反。 */
+    var _a10 = DEV.a10_mode;
+    $("#setA10").checked = (_a10 === null || _a10 === undefined)
+      ? String(DEV.toy || "").toLowerCase() === "vorze"
+      : Number(_a10) === 1;
     $("#setReversed").checked = !!DEV.reversed;
     var _mp = Number((DEV.info || {}).motor_power) || 0;
     $("#setOcMode").checked = on && _mp >= 100;   // 75=默认档（关）；100=开
@@ -2620,7 +2648,12 @@
          断线重连后会话丢失。不碰的两种情况：急停（会话已按 I6 停止且不自动恢复，
          用户重按播放/重开联动才复活）；用户自己停过联动或视频无脚本（want=false）。 */
       var v = vlVid();
+      /* R125 修复（全项目审查中危）：看护条件补 `!vlPlayingPreset`——arbiter 接管
+         停脚本后 SYNC.want 不清（只有急停/失败/显式停清它），预设开播 ≤2s 被
+         看护 syncStart 顶掉（实测复现）。同构的缓动场景已有专门回归
+         （test_slow_survives_script_watchdog），预设场景漏防。 */
       if (SYNC.want && DEV.connected && !DEV.quick.stop && !SYNC.estopped
+          && !vlPlayingPreset
           && vlMed.path && v && !v.paused && SYNC.scriptless !== vlMed.path
           && !SYNC.starting && (!DEV.sync || !DEV.sync.active)) {
         syncStart(vlMed.path);

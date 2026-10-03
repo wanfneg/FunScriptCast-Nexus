@@ -174,6 +174,11 @@ class PresetPlayer:
                     self.selected = self._random_other(pid)      # 每个循环结束换下一个
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            # R125 修复（全项目审查中危）：预设循环意外死亡必须复位 playing——
+            # 旧代码 UI 显示播放中而设备不动、start() 无法自启（卡死）。
+            print(f"[preset] 预设循环异常终止：{type(e).__name__}: {e}", flush=True)
+            self.playing = False
 
     async def _play_one_loop(self, pr: dict, gen: int) -> None:
         for sg in (pr.get("_play") or pr.get("segments") or []):

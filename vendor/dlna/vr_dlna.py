@@ -541,18 +541,23 @@ class MediaLibrary:
                 # 那等于把 `../../evil.mp4` 放行了，被"穿越必须返回 None"的测试当场抓住。
                 if not self._inside_root(root, p):
                     return None
-                if p.exists():
-                    return p
                 # 只有上一种解释**找不到文件**时，才当作陈旧的多根风格 key（label/rel）剥离
                 # ——旧版本生成的 URL/缓存仍要能用（兼容性保留）。
-                lbl = root.label
-                if lbl and rel.casefold().startswith(lbl.casefold() + "/"):
-                    stripped = rel[len(lbl) + 1:]
-                    if stripped:
-                        p2 = _norm(Path(root.path) / stripped)
-                        if self._inside_root(root, p2) and p2.exists():
-                            return p2
-                return p                      # 都不存在：回不含 label 的那个（与 path_to_key 同口径）
+                if not p.exists():
+                    lbl = root.label
+                    if lbl and rel.casefold().startswith(lbl.casefold() + "/"):
+                        stripped = rel[len(lbl) + 1:]
+                        if stripped:
+                            p2 = _norm(Path(root.path) / stripped)
+                            if self._inside_root(root, p2) and p2.exists():
+                                p = p2
+                    # 都不存在：保持不含 label 的那个（与 path_to_key 同口径），
+                    # 交给统一出口（不存在的路径过 reparse 检查后由调用方 404）。
+                # R125 修复（全项目审查高危①）：单根分支**不再提前 return**——
+                # 此前三个成功 return 全部绕过下方的 reparse 检查，媒体根内的联接
+                # 目录（含系统自带 junction）可经直连 URL 读根外任意文件（实测复现）。
+                # 统一落到函数末尾的检查；matched_root 置 None 由 effective_root 兜底。
+                matched_root = None
             else:
                 label, _, rest = rel.partition("/")
                 matched_root = next((r for r in self.roots if r.label.casefold() == label.casefold()), None)
