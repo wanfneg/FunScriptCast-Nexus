@@ -1016,12 +1016,11 @@ html[data-motion="off"] .dev-spinner, html[data-motion="reduced"] .dev-spinner{
   color:#fff; background:rgba(8,10,16,.75); border-radius:6px; padding:4px 16px;
   text-shadow:0 1px 2px rgba(0,0,0,.65);
 }
-.lc-cur{
-  max-width:88%; text-align:center; font-size:19px; font-weight:600;
-  color:#fff; background:rgba(8,10,16,.78); border-radius:6px; padding:5px 16px;
-  text-shadow:0 1px 3px rgba(0,0,0,.7);
+.lc-submsg{
+  max-width:88%; text-align:center; font-size:13px;
+  color:#c8cfdd; background:rgba(8,10,16,.72); border-radius:6px; padding:4px 14px;
 }
-.lc-cur:empty{ display:none; }
+.lc-submsg:empty{ display:none; }
 /* AI 字幕面板（R123·对齐手机端 AiPanelContent）：右下浮动，选语言即启动 */
 .lc-panel{
   position:absolute; right:14px; bottom:96px; z-index:40;

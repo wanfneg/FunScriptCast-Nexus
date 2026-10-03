@@ -52,7 +52,7 @@ import numpy as np  # noqa: E402
 from text_filters import join_tokens  # noqa: E402  R125：提到模块级——_apply_line_merge（行合并）
                                      # 曾引用未导入的 join_tokens（唯一的 import 在 _transcribe_impl
                                      # 的局部作用域里），开启 asr.line_merge 后 /transcribe 必 NameError 500
-from fastapi import FastAPI, Request  # noqa: E402
+from fastapi import Body, FastAPI, Request  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
 from translate_engine import Translator  # noqa: E402
@@ -227,6 +227,13 @@ async def _idle_reaper() -> None:
         # 10s 粒度（R54）：回收阈值改成了分钟级的小值（用户要求"没用就尽快清显存"），
         # 30s 粒度下实际回收延迟最坏 = 阈值 + 30s，体验跟不上阈值本身的意义。
         await asyncio.sleep(10)
+        # R125 LC 适配：识别模型 = Win11 实时字幕（lccapture）时**禁用空闲回收**——
+        # 该模式没有 /transcribe 打点（识别外包给 Windows），回收必然到点触发；
+        # 而 llama-server 挂在字幕服务的 Job Object 下，os._exit 会连带杀掉翻译，
+        # 此后 LC 翻译全灭且无自愈（全项目审查 high 实测复现）。翻译常驻本就是
+        # lccapture 模式的预期（零识别显存，显存全给翻译）。
+        if str((CFG.get("asr") or {}).get("audiocpp") or {}).get("model") == "lccapture":
+            continue
         mins = _idle_release_min()
         if mins <= 0:
             continue
@@ -295,6 +302,12 @@ class _LcBackend:
 
     def stop_server(self) -> None:
         pass
+
+    def probe(self, timeout: float = 1.0) -> bool:
+        # R125 LC 适配：/health 的 asr_ready 语义 = "头显能不能推流"（_asr_ready
+        # 对无 probe 后端走"已构造即就绪"）。lccapture 下头显推流 100% 失败，
+        # probe 必须返回 False，让 headset_status 如实拒绝而不是放行白推音频。
+        return False
 
     def transcribe(self, *args, **kwargs) -> dict:
         return {"language": None, "segments": [], "asr_ms": 0.0, "skipped": True,
@@ -738,6 +751,40 @@ def translate_stats():
 
 
 @app.get("/translate/selftest")
+@app.post("/translate/text")
+def translate_text(payload: dict = Body(default={})):
+    """单句文本翻译（R125 LC 适配：PC 直听字幕的正规翻译入口）。
+
+    走 Translator **完整管线**（ensure_server 自愈 / 按语言路由模型与提示词 /
+    兜底 / key 脱敏）——此前宿主的 LC 抓取器自拼 OpenAI 请求直打 8082，绕开了
+    上述全部能力（英语模式配日文提示词、llama-server 死后无自愈）。
+    仅限本机（不在 _LAN_OPEN_PREFIXES 白名单，_LoopbackGuard fail-closed）。
+    入参 {"text": "...", "lang": "ja|en"}；出参 {"ok", "translation"}，
+    失败 translation 为空串 + error（LC 显示层对空译文静默跳过，不上错误文案）。
+    与 /transcribe 同口径计数与打点：翻译耗时分钟级，防止空闲回收半途杀进程。
+    """
+    global _LAST_REQ_MONO, _LAST_REQ_WALL, _INFLIGHT
+    t = state["translator"]
+    if t is None or t.disabled:
+        return {"ok": False, "error": "翻译器未初始化或已关闭"}
+    text = str(payload.get("text") or "").strip()
+    lang = str(payload.get("lang") or "ja")
+    if not text:
+        return {"ok": True, "translation": ""}
+    with _INFLIGHT_LOCK:
+        _INFLIGHT += 1
+    try:
+        segs = [{"start_ms": 0, "end_ms": 0, "text": text}]
+        # route=True：按语言路由（en → Hy-MT2 及英文提示词）——LC 的语言选择
+        # 与字幕服务共享同一套路由事实。
+        t.translate_segments(segs, lang)
+        return {"ok": True, "translation": (segs[0].get("translation") or "").strip()}
+    finally:
+        _touch_request_clock()
+        with _INFLIGHT_LOCK:
+            _INFLIGHT -= 1
+
+
 def translate_selftest(text: str = "こんにちは、いい天気ですね。"):
     """用**当前配置**真跑一句，把译文与上游原始报错一起回给调用方（UI 的「测试」按钮）。
 
@@ -1202,6 +1249,14 @@ async def transcribe_stream(request: Request, lang: str = "ja", translate: bool 
             return JSONResponse({"error": deny,
                                  "recommended_chunk_sec": _recommended_chunk_sec()},
                                 status_code=503)
+        if getattr(state.get("asr"), "backend_kind", "") == "lccapture":
+            # R125 LC 适配：流式路径直连 audiocpp_server（lccapture 模式从未启动），
+            # 旧实现头显只会收到连接错误 SSE 且无引导；与 _claim_session 拒绝同形态
+            # （503，头显旧 APK 对非 200 有既定处理）。
+            return JSONResponse(
+                {"error": "当前识别模型为 Win11 实时字幕，仅支持 PC 本机播放字幕；头显字幕请在 PC 端切换 Qwen 模型",
+                 "recommended_chunk_sec": _recommended_chunk_sec()},
+                status_code=503)
         from stream_bridge import transcribe_stream as _impl   # 同目录，复用已验证实现
         resp = await _impl(request, lang, translate, video_start_ms, MAX_BODY_BYTES)
         # R125 修复（全项目审查中危）：starlette 是**先执行完 handler（含 finally）

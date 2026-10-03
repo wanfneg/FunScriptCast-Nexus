@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import queue
 import re
 import subprocess
 import threading
@@ -53,31 +54,55 @@ class LiveCaptionsCapture:
         self._hide_window = True
         self._want_lang = LANG_NAMES["ja"]
         self._cur_lang = ""
+        # 翻译 worker（R125 适配）：抓取线程只入列，独立线程串行翻译回填
+        self._tq: "queue.Queue[dict] | None" = None
+        self._tw: threading.Thread | None = None
+        self._lang_code = "ja"
 
     # ---------------------------------------------------------------- 对外接口
     def start(self, lang: str = "ja") -> dict:
-        self._want_lang = LANG_NAMES.get(lang, LANG_NAMES["ja"])
+        """启动/换语言重启。
+
+        R125 适配修复（全项目审查高危③）：旧实现换语言时 join(3) 超时后仍
+        clear **共享** _stop 并无条件起新线程——切换语言恰是耗时操作（UIA 导航
+        含多次 sleep），超时几乎必然 → 旧线程被 clear"复活"与新线程双跑（字幕
+        重复、翻译翻倍，已用最小脚本复现）。现在：每次启动用**独立 Event**
+        （代次隔离），join 后检查存活，仍存活则**拒绝启动**并如实报错，
+        绝不复活旧线程；成功重启时清空上一会话的定稿句（会话隔离）。
+        """
+        want = LANG_NAMES.get(lang, LANG_NAMES["ja"])
+        old = None
         with self._lock:
+            if self._running and self._cur_lang == want:
+                return self.state()
             if self._running:
-                # 已在跑但语言不同 → 重启抓取线程让语言生效（手机端选语言即切换）
-                if self._cur_lang != self._want_lang:
-                    self._stop.set()
-                    th = self._thread
-                else:
-                    return self.state()
-            else:
-                th = None
-        if th is not None:
-            th.join(timeout=3)
-            with self._lock:
-                self._running = False
+                self._stop.set()          # 停旧代次
+                old = self._thread
+            self._running = False
+        if old is not None and old.is_alive():
+            old.join(timeout=8)
+            if old.is_alive():
+                with self._lock:
+                    self._err = "上一抓取线程未在 8 秒内退出，已拒绝重启（避免双线程重复字幕）"
+                return self.state()
+        stop_ev = threading.Event()
         with self._lock:
-            self._stop.clear()
+            self._stop = stop_ev
+            self._want_lang = want
+            self._cur_lang = want
+            self._lang_code = lang if lang in ("ja", "en") else "ja"
             self._err = ""
+            self._lc_ok = False
+            self._cur = ""
+            self._lines = []              # 会话隔离：重启不清上会话残留（前端 F5 串场根因）
             self._running = True
-            self._cur_lang = self._want_lang
-            self._thread = threading.Thread(target=self._run, name="lc-capture", daemon=True)
+            self._thread = threading.Thread(target=self._run, args=(stop_ev,),
+                                            name="lc-capture", daemon=True)
             self._thread.start()
+            self._tq = queue.Queue()
+            self._tw = threading.Thread(target=self._translate_worker, args=(stop_ev,),
+                                        name="lc-translate", daemon=True)
+            self._tw.start()
         return self.state()
 
     def stop(self) -> dict:
@@ -202,7 +227,15 @@ class LiveCaptionsCapture:
         time.sleep(1.8)
         # 在整棵可见树里找"日语(日本)"列表项并点击
         target = None
+        my_pid = win.ProcessId
         for w in auto.GetRootControl().GetChildren():
+            # R125 适配修复（审查中危）：限定 LC 进程——旧实现遍历桌面全部窗口，
+            # 其它应用里同名"日语(日本)"列表项（系统语言设置等）可能被误点。
+            try:
+                if w.ProcessId != my_pid:
+                    continue
+            except Exception:
+                continue
             if not (w.Name or ""):
                 continue
 
@@ -235,7 +268,7 @@ class LiveCaptionsCapture:
             self._log(f"[lc] 未找到语言列表项：{want}（保持现状）")
 
     # ---------------------------------------------------------------- 抓取循环
-    def _run(self) -> None:
+    def _run(self, stop_ev: threading.Event) -> None:
         try:
             auto = _uia()
         except Exception as e:
@@ -265,8 +298,35 @@ class LiveCaptionsCapture:
         committed = last          # 已定稿前缀（LC 累积全文里的已处理部分）
         pending = ""              # 尚未定稿的尾巴（= committed 之后的部分）
         settle_at = 0.0           # 看到句尾标点后的静默计时
-        while not self._stop.is_set():
+        # R125 适配修复（审查中危·僵尸化自愈）：LC 进程会"僵尸化"（进程在、窗口
+        # 从 UIA 消失，实测出现过）——旧实现 _read 恒空串、线程空转、lc_ok 恒 True，
+        # "开着但永无字幕"且无任何提示。每 ~6s 校验一次窗口存活，连续失联 → 重建；
+        # 重建失败达上限则如实置错退出（前端能看到失败态）。
+        alive_check = 0
+        rebuilds = 0
+        while not stop_ev.is_set():
             time.sleep(POLL_SEC)
+            alive_check += 1
+            if alive_check >= 50:            # ≈6s
+                alive_check = 0
+                try:
+                    if not win.Exists(0.2):
+                        raise RuntimeError("窗口失联")
+                except Exception:
+                    rebuilds += 1
+                    self._log(f"[lc] LC 窗口失联，尝试重建（第 {rebuilds} 次）")
+                    if rebuilds > 3:
+                        with self._lock:
+                            self._err = "Live Captions 反复失联，已停止（请检查 Windows 实时字幕可用性）"
+                            self._running = False
+                        return
+                    try:
+                        win = self._ensure_lc(auto)
+                        rebuilds = 0
+                        self._log("[lc] LC 窗口已重建")
+                    except Exception as e:
+                        self._log(f"[lc] 重建失败：{e}")
+                        continue
             txt = _read()
             if txt != last:
                 last = txt
@@ -300,16 +360,32 @@ class LiveCaptionsCapture:
             with self._lock:
                 self._cur = tail
 
+    def _translate_worker(self, stop_ev: threading.Event) -> None:
+        """串行消费翻译队列：保序（字幕按句序回填）；失败置空不重试（下一句
+        自然接上，避免错误文案上屏与请求堆积）。"""
+        while not stop_ev.is_set():
+            try:
+                rec = self._tq.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                rec["zh"] = self._translate(rec["ja"], self._lang_code) or ""
+            except Exception as e:
+                self._log(f"[lc] 翻译失败（该句不上屏）：{type(e).__name__}: {e}")
+                rec["zh"] = ""
+
     def _commit(self, ja: str) -> None:
+        """定稿句入列，翻译由独立 worker 完成——**抓取循环永不因翻译阻塞**
+        （R125 适配修复：旧实现在抓取线程内同步翻译（最长 20s），期间 UIA 不再
+        轮询、LC 全文滚动会触发重对齐丢句，与 docstring"异步补译文"承诺相反）。
+        翻译失败 zh 置空串：显示层对空译文静默跳过（对齐手机端），错误只进日志
+        ——不再把「（翻译失败：…）」当字幕渲染到画面。"""
         rec = {"ja": ja, "zh": "", "ts": time.time()}
         with self._lock:
             self._lines.append(rec)
             self._cur = ""
-        try:
-            zh = self._translate(ja)
-        except Exception as e:
-            zh = f"（翻译失败：{e}）"
-        with self._lock:
-            rec["zh"] = zh
             if len(self._lines) > MAX_LINES:
                 self._lines = self._lines[-MAX_LINES:]
+            q = self._tq
+        if q is not None:
+            q.put(rec)

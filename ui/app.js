@@ -1542,7 +1542,7 @@
      重启进播放时若上次开着则自动恢复（对齐手机端"打开视频后自动开启"的默认体验）。 */
   var lcActive = false;
   var lcLang = localStorage.getItem("lcLang") || "";
-  var lcTimer = null, lcKey = "", lcLastAt = 0;
+  var lcTimer = null, lcKey = "", lcLastAt = 0, lcPausedByUs = false, lcWarmStart = 0;
   function lcRender() {
     var btn = $("#vlAiSub"); if (btn) btn.classList.toggle("on", lcActive);
     [["lcOff", "off"], ["lcJa", "ja"], ["lcEn", "en"]].forEach(function (pair) {
@@ -1554,17 +1554,27 @@
   function lcHint(msg) {
     var h = $("#lcHint"); if (h) h.textContent = msg || "实时转写并翻译为中文；识别由 Windows 实时字幕完成（不占显存）";
   }
+  function lcHintSub(msg) {
+    /* 预热/失败提示显示在**字幕层**（画面上永远可见）——旧版写在面板里，
+       选语言后面板立即收起，等待期用户对着暂停画面什么都看不到。 */
+    var el = $("#lcSubMsg");
+    if (el) el.textContent = msg || "";
+  }
   function lcStart(lang) {
     lcLang = (lang === "en") ? "en" : "ja";
     lcActive = true;
     localStorage.setItem("lcLang", lcLang);
+    localStorage.setItem("lcOn", "1");            // 开启意图持久化（关闭时清除）
     api("/api/lc/start", "POST", { lang: lcLang }).catch(function () {});
     var sub = $("#lcSub"); if (sub) sub.hidden = false;
-    // 暂停视频等预热（对齐手机端：识别+翻译都就绪才恢复播放）
+    // 暂停视频等预热（对齐手机端 R104：识别+翻译都就绪才恢复播放）。
+    // 记录"暂停是我们按下的"——lcStop 时要放行（手机端 pausedByUs 语义）。
     lcWarming = true;
+    lcWarmStart = Date.now();
     var v = vlVid();
-    if (v && !v.paused) { try { v.pause(); } catch (e) {} }
-    lcHint("正在启动识别与翻译…（首次预热约 10–40 秒，就绪后自动继续播放）");
+    lcPausedByUs = false;
+    if (v && !v.paused) { try { v.pause(); lcPausedByUs = true; } catch (e) {} }
+    lcHintSub("AI 字幕启动中…（首次预热约 10–40 秒，就绪后自动继续播放）");
     if (lcTimer) clearInterval(lcTimer);
     lcTimer = setInterval(lcPoll, 600);
     lcRender();
@@ -1573,10 +1583,19 @@
     lcActive = false;
     lcWarming = false;
     lcHint();
+    lcHintSub("");
+    localStorage.removeItem("lcOn");   // 关闭意图持久化——否则下次进播放又自动重启
     if (lcTimer) { clearInterval(lcTimer); lcTimer = null; }
     var sub = $("#lcSub"); if (sub) sub.hidden = true;
     var box = $("#lcLines"); if (box) box.innerHTML = "";
     lcLastAt = 0;
+    // R125 适配修复：预热等待中用户点「关闭」= 止损，必须放行自己按下的暂停
+    // （对齐手机端 stopInternal 的 pausedByUs 语义），否则视频停在暂停无提示。
+    if (lcPausedByUs) {
+      lcPausedByUs = false;
+      var v = vlVid();
+      if (v) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+    }
     api("/api/lc/stop", "POST", {}).catch(function () {});
     lcRender();
   }
@@ -1584,18 +1603,39 @@
     api("/api/lc/state").then(function (r) {
       var lc = (r && r.lc) || {};
       if (lcWarming) {
+        // 失败态消费（对齐手机端"失败也放行+原因上屏"，90s 总超时同款）：
+        // 后端 error/running 已透传，旧实现丢弃 → LC 起不来时用户被永久困在暂停画面。
+        var failed = (lc.error && String(lc.error).length > 0) || lc.running === false;
+        var waited = Date.now() - lcWarmStart;
+        if (failed || waited > 90000) {
+          lcWarming = false;
+          lcPausedByUs = false;
+          lcHintSub(failed
+            ? ("AI 字幕启动失败：" + (lc.error || "超时（90 秒）") + "。已按无字幕继续播放。")
+            : "");
+          var vF = vlVid();
+          if (vF) { var pF = vF.play(); if (pF && pF.catch) pF.catch(function () {}); }
+          if (failed) { toast("AI 字幕启动失败", lc.error || "超时", "err"); lcStop(); }
+          return;
+        }
         var ready = !!lc.lc_ok && !!lc.mt_ok;
         if (ready) {
           lcWarming = false;
+          lcPausedByUs = false;
           lcHint();
+          lcHintSub("");
           var v0 = vlVid();
           if (v0) { var p0 = v0.play(); if (p0 && p0.catch) p0.catch(function () {}); }
         } else {
-          lcHint(!lc.lc_ok ? "正在启动 Windows 实时字幕…" : "识别已就绪，正在预热翻译…");
+          var sec = Math.round(waited / 1000);
+          lcHintSub(!lc.lc_ok
+            ? "正在启动 Windows 实时字幕…（已等 " + sec + " 秒，画面已暂停）"
+            : "识别已就绪，正在预热翻译…（已等 " + sec + " 秒）");
           return;   // 预热期不刷字幕（也没字幕可刷）
         }
       }
-      var key = (lc.lines || []).length + "|" + ((lc.lines || []).slice(-1)[0] || {}).zh;
+      var lastLn = (lc.lines || []).slice(-1)[0] || {};
+      var key = (lc.lines || []).length + "|" + (lastLn.ts || "") + "|" + (lastLn.zh || "");
       if (key === lcKey) {
         // 无新句：超过 8 秒把上一句撤掉（"过去的就过去了"，不留残留）
         if (lcLastAt && Date.now() - lcLastAt > 8000) {
@@ -1655,7 +1695,12 @@
       if (pr && pr.catch) pr.catch(function () { /* 自动播放被拦或解码失败，等 error 事件 */ });
     });
     vlTouch();
-    if (lcLang) lcStart(lcLang);                 // 上次开着 AI 字幕 → 进播放自动恢复（R123）
+    /* R125 适配修复：自动恢复看 **lcOn（开启意图）**——旧判据用 lcLang（语言偏好），
+       用户点「关闭」后 lcLang 仍在，每次进播放都违背意愿地重启+强制预热暂停
+       （方向与手机端真源相反：手机端换片主动停止、无自动开启）。 */
+    var lcOn = false;
+    try { lcOn = localStorage.getItem("lcOn") === "1"; } catch (e) {}
+    if (lcOn) lcStart(lcLang || "ja");
     vlSyncVlUi();
   }
   function vlSyncVlUi() {

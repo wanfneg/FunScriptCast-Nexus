@@ -4094,67 +4094,65 @@ def _get_library():
 _LC_CAP = None
 
 
-def _lc_translate(ja: str) -> str:
-    """定稿句 → 中文：走现有本地翻译 llama-server（地址/模型实时读 subtitle_config）。"""
-    tr = (subtitle_config() or {}).get("translate") or {}
-    local = tr.get("local") or {}
-    base = str(local.get("base_url") or "http://127.0.0.1:8082").rstrip("/")
-    model = str(local.get("alias") or "sakura-7b")
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "你是专业的实时字幕翻译器。把用户输入翻译成简体中文，只输出译文本身。"},
-            {"role": "user", "content": "将下面的日文文本翻译成中文：" + ja},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 256,
-    }
+def _lc_translate(ja: str, lang: str = "ja") -> str:
+    """定稿句 → 中文：**走字幕服务的正规翻译管线**（R125 LC 适配）。
+
+    旧实现自拼 OpenAI 请求直打 8082，绕开了 Translator 的全部能力：
+    ensure_server 自愈、按语言路由模型与提示词（英语模式曾配日文提示词）、
+    兜底与 key 脱敏。现在调字幕服务的 POST /translate/text（仅本机，
+    fail-closed 回环守卫），与头显字幕共享同一套翻译事实。
+    字幕服务没在跑时由调用方（/api/lc/start）负责拉起。
+    """
+    body = json.dumps({"text": ja, "lang": lang}).encode("utf-8")
     req = urllib.request.Request(
-        base + "/v1/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
+        "http://127.0.0.1:8756/translate/text",
+        data=body,
         headers={"Content-Type": "application/json"})
-    # 绕过系统代理（本机请求；同 main() 单实例探测的教训）
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(req, timeout=20) as r:
+    with opener.open(req, timeout=60) as r:
         d = json.loads(r.read().decode("utf-8"))
-    return (d["choices"][0]["message"]["content"] or "").strip()
-
-
-_LC_MT_PROBE = {"ts": 0.0, "ok": False}
+    if not d.get("ok"):
+        raise RuntimeError(d.get("error") or "翻译管线返回失败")
+    return (d.get("translation") or "").strip()
 
 
 def _lc_mt_ok() -> bool:
-    """翻译服务（8082）就绪探测（3s 缓存；前端"等待预热"状态用）。"""
-    now = time.time()
-    if now - _LC_MT_PROBE["ts"] < 3:
-        return _LC_MT_PROBE["ok"]
+    """翻译就绪判定（R125 LC 适配）：读字幕服务 /health 的聚合 mt_warm——
+    与头显放行（headset_status）同一真相源。旧实现硬编码探测 8082，与
+    _lc_translate 的可配置 base_url 口径脱节。字幕服务没跑时视为未就绪。"""
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open("http://127.0.0.1:8082/health", timeout=1.5) as r:
-            _LC_MT_PROBE["ok"] = (r.status == 200)
+        h = sub_health()
+        if not h:
+            return False
+        return bool(h.get("mt_warm"))
     except Exception:
-        _LC_MT_PROBE["ok"] = False
-    _LC_MT_PROBE["ts"] = now
-    return _LC_MT_PROBE["ok"]
+        return False
 
 
 def _lc_warm_quietly() -> None:
     """预热翻译服务（R123）：触发 llama-server 拉起 + 首句 prefill；失败静默。"""
     try:
-        _lc_translate("こんにちは")
+        _lc_translate("こんにちは", "ja")
     except Exception as e:
         log.info("[lc] 翻译预热未完成（首句可能稍慢）：%s", e)
 
 
+_LC_LOCK = threading.Lock()
+
+
 def _get_lc():
-    """LC 抓取器（懒加载；首次 start 才 import/起 LC，不拖慢宿主启动）。"""
+    """LC 抓取器（懒加载；首次 start 才 import/起 LC，不拖慢宿主启动）。
+    R125 修复（审查 low）：加锁——并发首调会构造两个实例互相覆盖，
+    先 start 的实例成为 stop() 摸不到的孤儿抓取线程。"""
     global _LC_CAP
     if _LC_CAP is None:
-        sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
-        from lc_capture import LiveCaptionsCapture   # noqa: PLC0415
+        with _LC_LOCK:
+            if _LC_CAP is None:
+                sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
+                from lc_capture import LiveCaptionsCapture   # noqa: PLC0415
 
-        _LC_CAP = LiveCaptionsCapture(translate_fn=_lc_translate,
-                                      log=lambda m: log.info("%s", m))
+                _LC_CAP = LiveCaptionsCapture(translate_fn=_lc_translate,
+                                              log=lambda m: log.info("%s", m))
     return _LC_CAP
 
 
