@@ -4105,7 +4105,7 @@ def _lc_translate(ja: str, lang: str = "ja") -> str:
     """
     body = json.dumps({"text": ja, "lang": lang}).encode("utf-8")
     req = urllib.request.Request(
-        "http://127.0.0.1:8756/translate/text",
+        "http://127.0.0.1:%d/translate/text" % SUBTITLE_PORT,   # R125：端口同源（SUBTITLE_PORT 唯一定义）
         data=body,
         headers={"Content-Type": "application/json"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

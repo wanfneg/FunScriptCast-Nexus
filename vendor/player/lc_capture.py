@@ -29,6 +29,7 @@ LANG_NAMES = {"ja": "日语(日本)", "en": "英语(美国)"}
 JA_NAME = LANG_NAMES["ja"]
 
 SETTLE_SEC = 0.7        # 句尾标点出现后，静默这么久即视为定稿
+LINE_IDLE_SEC = 2.5     # 尾行无标点时，静默这么久也定稿（口语停顿不打标点；R127 延迟修复）
 POLL_SEC = 0.12         # 抓取轮询间隔
 MAX_LINES = 40          # 保留的定稿句上限（供前端回看）
 
@@ -298,6 +299,7 @@ class LiveCaptionsCapture:
         committed = last          # 已定稿前缀（LC 累积全文里的已处理部分）
         pending = ""              # 尚未定稿的尾巴（= committed 之后的部分）
         settle_at = 0.0           # 看到句尾标点后的静默计时
+        line_changed_at = 0.0     # 尾行最后一次变化的时刻（无标点停顿定稿用）
         # R125 适配修复（审查中危·僵尸化自愈）：LC 进程会"僵尸化"（进程在、窗口
         # 从 UIA 消失，实测出现过）——旧实现 _read 恒空串、线程空转、lc_ok 恒 True，
         # "开着但永无字幕"且无任何提示。每 ~6s 校验一次窗口存活，连续失联 → 重建；
@@ -335,26 +337,42 @@ class LiveCaptionsCapture:
                     committed = ""
                 pending = txt[len(committed):]
                 settle_at = 0.0
+                # R127 延迟修复（用户实测"比 ASR 管线还慢"的根因）：**换行 = LC 宣告
+                # 一行完成**（其内部句边界），旧实现却要等"句号 + 0.7s 静默"——口语
+                # 停顿 LC 不打句号，一句只能等下一句出现才被挤出去，延迟被放大到
+                # 整句时长。现在**行完成立即定稿送翻**，不等标点。
+                if "\n" in pending:
+                    rows = pending.split("\n")
+                    done_rows, pending = rows[:-1], rows[-1]
+                    for ln in done_rows:
+                        ja = ln.strip()
+                        if len(ja.strip("。！？ 　")) >= 2:
+                            self._commit(ja)
+                    committed = committed + "\n".join(done_rows) + "\n"
                 if re.search(r"[。！？]\s*$", pending.strip()):
                     settle_at = time.time()
-                elif re.search(r"[。！？]\s*\n", pending):
-                    settle_at = time.time()
-            elif pending and settle_at and (time.time() - settle_at) >= SETTLE_SEC:
-                # 静默定稿：pending 里"以标点结尾的完整行"逐行送翻，未完成的尾行留在 pending
-                rows = pending.split("\n")
-                if rows and not re.search(r"[。！？]\s*$", rows[-1].strip()) and len(rows) > 1:
-                    done_rows, remaining = rows[:-1], rows[-1]
-                elif rows and re.search(r"[。！？]\s*$", rows[-1].strip()):
-                    done_rows, remaining = rows, ""
-                else:
-                    done_rows, remaining = [], pending
-                for ln in done_rows:
-                    ja = ln.strip()
-                    if len(ja.strip("。！？ 　")) >= 2:
-                        self._commit(ja)
-                committed = committed + "\n".join(done_rows) + ("\n" if done_rows else "")
-                pending = remaining
-                settle_at = time.time() if remaining else 0.0
+                line_changed_at = time.time()
+            elif pending:
+                now = time.time()
+                # 尾行定稿兜底（两个条件任一）：
+                # ① 尾行以句号结尾 + 静默 0.7s（原语义）；
+                # ② 尾行**无标点**但已 2.5s 无新字（口语停顿/句间换气——LC 不打标点，
+                #    旧实现要等下一句才定稿，造成"字幕总比说话晚一大截"）。
+                tail_s = pending.strip()
+                if settle_at and (now - settle_at) >= SETTLE_SEC and re.search(r"[。！？]\s*$", tail_s):
+                    self._commit(tail_s)
+                    committed = committed + pending
+                    pending = ""
+                    settle_at = 0.0
+                    line_changed_at = 0.0
+                elif not re.search(r"[。！？]\s*$", tail_s) and \
+                        line_changed_at and (now - line_changed_at) >= LINE_IDLE_SEC:
+                    if len(tail_s.strip("。！？ 　")) >= 2:
+                        self._commit(tail_s)
+                    committed = committed + pending
+                    pending = ""
+                    settle_at = 0.0
+                    line_changed_at = 0.0
             # 暴露"进行中句"（最后一行）
             tail = pending.splitlines()[-1].strip() if pending.strip() else ""
             with self._lock:

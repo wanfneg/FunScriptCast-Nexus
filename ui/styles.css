@@ -1011,14 +1011,19 @@ html[data-motion="off"] .dev-spinner, html[data-motion="reduced"] .dev-spinner{
   pointer-events:none; padding:0 24px; z-index:6;
 }
 .lc-lines{ display:flex; flex-direction:column; align-items:center; gap:4px; }
+/* 对齐手机端 AI 字幕样式（Screens.kt:2817-2825）：**无背景框**、白字 + 黑色
+   柔和阴影（Compose Shadow(black, blurRadius=12)）、居中。之前的深色圆角底块
+   是"悬浮窗"观感的来源（用户指出）。 */
 .lc-line{
-  max-width:88%; text-align:center; font-size:19px; line-height:1.5;
-  color:#fff; background:rgba(8,10,16,.75); border-radius:6px; padding:4px 16px;
-  text-shadow:0 1px 2px rgba(0,0,0,.65);
+  max-width:88%; text-align:center; font-size:21px; line-height:1.5;
+  color:#fff;
+  text-shadow:0 0 4px rgba(0,0,0,.95), 0 0 9px rgba(0,0,0,.75), 0 1px 3px rgba(0,0,0,.9);
 }
+/* 提示行对齐手机端（Screens.kt:2809-2815）：白 86%、字号约为字幕的 0.55、无背景 */
 .lc-submsg{
-  max-width:88%; text-align:center; font-size:13px;
-  color:#c8cfdd; background:rgba(8,10,16,.72); border-radius:6px; padding:4px 14px;
+  max-width:88%; text-align:center; font-size:12px; line-height:1.6;
+  color:rgba(255,255,255,.86);
+  text-shadow:0 0 4px rgba(0,0,0,.85), 0 1px 2px rgba(0,0,0,.8);
 }
 .lc-submsg:empty{ display:none; }
 /* AI 字幕面板（R123·对齐手机端 AiPanelContent）：右下浮动，选语言即启动 */

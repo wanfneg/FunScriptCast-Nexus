@@ -1577,7 +1577,47 @@
     lcHintSub("AI 字幕启动中…（首次预热约 10–40 秒，就绪后自动继续播放）");
     if (lcTimer) clearInterval(lcTimer);
     lcTimer = setInterval(lcPoll, 600);
+    lcStartResumeWorker();
     lcRender();
+  }
+  /* 恢复播放看护（R127 实测修复）：浏览器对**不可见/被遮挡页面**的定时器做
+     intensive 节流（低至 1 次/分钟）——lcPoll 的"就绪后自动恢复播放"会延迟到
+     失去意义，用户被永久困在暂停画面（IAB 复现：11 秒观察窗内 lcPoll 零次执行）。
+     Web Worker 的定时器**不受页面可见性节流**，用它每 500ms 探一次就绪状态，
+     就绪即恢复播放。页面不可见时本来就看不了画面，恢复动作必须可靠。 */
+  var lcResumeWorker = null;
+  function lcStartResumeWorker() {
+    try {
+      if (lcResumeWorker) lcResumeWorker.terminate();
+      var src = "setInterval(function(){ postMessage(0); }, 500);";
+      lcResumeWorker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+      lcResumeWorker.onmessage = function () {
+        if (!lcWarming) { lcResumeWorker.terminate(); lcResumeWorker = null; return; }
+        api("/api/lc/state").then(function (r) {
+          if (!lcWarming) return;
+          var lc = (r && r.lc) || {};
+          var failed = (lc.error && String(lc.error).length > 0) || lc.running === false;
+          var ready = !!lc.lc_ok && !!lc.mt_ok;
+          if (!ready && !failed) return;
+          lcWarming = false;
+          lcPausedByUs = false;
+          if (failed) {
+            lcHintSub("AI 字幕启动失败：" + (lc.error || "超时") + "。已按无字幕继续播放。");
+            toast("AI 字幕启动失败", lc.error || "", "err");
+          } else {
+            lcHint(); lcHintSub("");
+          }
+          var v = vlVid();
+          if (v) {
+            var pr = v.play();
+            if (pr && pr.catch) pr.catch(function () {
+              lcHintSub("就绪了——点击画面继续播放");
+            });
+          }
+          if (lcResumeWorker) { lcResumeWorker.terminate(); lcResumeWorker = null; }
+        }).catch(function () {});
+      };
+    } catch (e) { /* Worker 不可用（极端环境）：退回 lcPoll 的恢复路径 */ }
   }
   function lcStop() {
     lcActive = false;
@@ -1586,6 +1626,7 @@
     lcHintSub("");
     localStorage.removeItem("lcOn");   // 关闭意图持久化——否则下次进播放又自动重启
     if (lcTimer) { clearInterval(lcTimer); lcTimer = null; }
+    if (lcResumeWorker) { lcResumeWorker.terminate(); lcResumeWorker = null; }
     var sub = $("#lcSub"); if (sub) sub.hidden = true;
     var box = $("#lcLines"); if (box) box.innerHTML = "";
     lcLastAt = 0;
@@ -1625,7 +1666,12 @@
           lcHint();
           lcHintSub("");
           var v0 = vlVid();
-          if (v0) { var p0 = v0.play(); if (p0 && p0.catch) p0.catch(function () {}); }
+          if (v0) {
+            var p0 = v0.play();
+            if (p0 && p0.catch) p0.catch(function () {
+              lcHintSub("就绪了——点击画面继续播放");
+            });
+          }
         } else {
           var sec = Math.round(waited / 1000);
           lcHintSub(!lc.lc_ok
