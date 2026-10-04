@@ -29,7 +29,7 @@ LANG_NAMES = {"ja": "日语(日本)", "en": "英语(美国)"}
 JA_NAME = LANG_NAMES["ja"]
 
 SETTLE_SEC = 0.7        # 句尾标点出现后，静默这么久即视为定稿
-LINE_IDLE_SEC = 2.5     # 尾行无标点时，静默这么久也定稿（口语停顿不打标点；R127 延迟修复）
+LINE_IDLE_SEC = 2.2     # 尾行无标点时，静默这么久也定稿（口语停顿不打标点；R127 延迟修复）
 POLL_SEC = 0.12         # 抓取轮询间隔
 MAX_LINES = 40          # 保留的定稿句上限（供前端回看）
 
@@ -101,9 +101,10 @@ class LiveCaptionsCapture:
                                             name="lc-capture", daemon=True)
             self._thread.start()
             self._tq = queue.Queue()
-            self._tw = threading.Thread(target=self._translate_worker, args=(stop_ev,),
-                                        name="lc-translate", daemon=True)
-            self._tw.start()
+            for _wi in range(2):   # R128：双 worker——单句翻译 1~3s，串行会在句密时积压
+                self._tw = threading.Thread(target=self._translate_worker, args=(stop_ev,),
+                                            name=f"lc-translate-{_wi}", daemon=True)
+                self._tw.start()
         return self.state()
 
     def stop(self) -> dict:
@@ -125,6 +126,10 @@ class LiveCaptionsCapture:
                 "error": self._err,
                 "cur": self._cur,
                 "lines": list(self._lines[-MAX_LINES:]),
+                # R128 调试快照：切句状态（pending 卡住时一眼定位）
+                "dbg_pending": getattr(self, "_dbg_pending", ""),
+                "dbg_committed_tail": (getattr(self, "_dbg_committed", "") or "")[-80:],
+                "dbg_read_err": getattr(self, "_dbg_read_err", ""),
             }
 
     def clear(self) -> dict:
@@ -198,8 +203,40 @@ class LiveCaptionsCapture:
                 self._log(f"[lc] 最小化失败：{e}")
         return win
 
+    @staticmethod
+    def _invoke(ctrl) -> bool:
+        """**无鼠标**激活控件（R128 用户反馈：UIA Click = 真实移动光标+点击，
+        会抢用户的鼠标干扰正常使用）。优先级：Invoke 模式 → legacy 默认动作。
+        全部失败返回 False（调用方跳过该步，绝不落回真实鼠标点击）。"""
+        try:
+            ctrl.GetInvokePattern().Invoke()
+            return True
+        except Exception:
+            pass
+        try:
+            ctrl.DoDefaultAction()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _select_item(item) -> bool:
+        """**无鼠标**选中列表项：SelectionItem 模式 → legacy 默认动作。"""
+        try:
+            item.GetSelectionItemPattern().Select()
+            return True
+        except Exception:
+            pass
+        try:
+            item.DoDefaultAction()
+            return True
+        except Exception:
+            return False
+
     def _ensure_language(self, auto, win, want: str) -> None:
-        """语言不对就切：展开 SpeechModelDropDown → 点目标语言项 → 继续（R123 支持 ja/en）。"""
+        """语言不对就切：展开 SpeechModelDropDown → 选中目标语言项 → 继续
+        （R128：全程 **UIA 语义操作（Invoke/Select/Expand），零鼠标点击**——
+        旧实现的 .Click() 是真实移动光标+点击，会抢用户的鼠标干扰正常使用）。"""
         combo = win.ComboBoxControl(AutomationId=LANG_AID)
         if combo.Exists(1):
             try:
@@ -212,11 +249,11 @@ class LiveCaptionsCapture:
         if not combo.Exists(0.5):
             btn = win.ButtonControl(AutomationId="SettingsButton")
             if btn.Exists(1):
-                btn.Click()
+                self._invoke(btn)
                 time.sleep(0.8)
             item = auto.MenuItemControl(AutomationId="ChangeLanguageMenuFlyoutItem")
             if item.Exists(1.5):
-                item.Click()
+                self._invoke(item)
                 time.sleep(1.5)
             combo = win.ComboBoxControl(AutomationId=LANG_AID)
         if not combo.Exists(1):
@@ -224,14 +261,13 @@ class LiveCaptionsCapture:
         try:
             combo.GetExpandCollapsePattern().Expand()
         except Exception:
-            combo.Click()
+            time.sleep(0.3)   # Expand 失败不再用鼠标点（保持零鼠标承诺）；靠下方全局找列表项
         time.sleep(1.8)
-        # 在整棵可见树里找"日语(日本)"列表项并点击
+        # 在 LC 进程的可见树里找"日语(日本)"列表项并**语义选中**（无鼠标）
         target = None
         my_pid = win.ProcessId
         for w in auto.GetRootControl().GetChildren():
-            # R125 适配修复（审查中危）：限定 LC 进程——旧实现遍历桌面全部窗口，
-            # 其它应用里同名"日语(日本)"列表项（系统语言设置等）可能被误点。
+            # R125 适配修复（审查中危）：限定 LC 进程——其它应用里同名列表项不可触碰。
             try:
                 if w.ProcessId != my_pid:
                     continue
@@ -259,11 +295,13 @@ class LiveCaptionsCapture:
             if target:
                 break
         if target:
-            target.Click()
+            if not self._select_item(target):
+                self._log(f"[lc] 语言列表项选中失败（保持现状：{want}）")
+                return
             time.sleep(1.2)
             cont = win.ButtonControl(AutomationId=CONTINUE_AID)
             if cont.Exists(1):
-                cont.Click()
+                self._invoke(cont)
             self._log(f"[lc] 已切换识别语言 → {want}")
         else:
             self._log(f"[lc] 未找到语言列表项：{want}（保持现状）")
@@ -287,12 +325,22 @@ class LiveCaptionsCapture:
         with self._lock:
             self._lc_ok = True
 
+        _read_err = {"n": 0, "last": ""}
+
         def _read() -> str:
             # 每轮动态查元素：CaptionsTextBlock 随 LC 状态出现/消失（就绪态可能不在树里）
             el = win.TextControl(AutomationId=CAPTION_AID)
             try:
                 return el.Name if el.Exists(0.1) else ""
-            except Exception:
+            except Exception as e:
+                # R128 诊断：宿主（冻结 EXE）进程内曾出现"读恒空且无异常可见"——
+                # 首个异常透出到 _err（只记前 3 次，防刷屏），其余仍按空处理。
+                _read_err["n"] += 1
+                if _read_err["n"] <= 3:
+                    msg = f"UIA 读取异常：{type(e).__name__}: {e}"
+                    _read_err["last"] = msg
+                    setattr(self, "_dbg_read_err", msg)
+                    self._log(msg)
                 return ""
 
         last = _read()
@@ -332,23 +380,37 @@ class LiveCaptionsCapture:
             txt = _read()
             if txt != last:
                 last = txt
+                self._dbg_pending = pending[-60:]
+                self._dbg_committed = committed[-60:]
                 if not txt.startswith(committed):
                     # LC 偶发重写（滚动/修正）：以最新全文重新对齐
                     committed = ""
                 pending = txt[len(committed):]
                 settle_at = 0.0
-                # R127 延迟修复（用户实测"比 ASR 管线还慢"的根因）：**换行 = LC 宣告
-                # 一行完成**（其内部句边界），旧实现却要等"句号 + 0.7s 静默"——口语
-                # 停顿 LC 不打句号，一句只能等下一句出现才被挤出去，延迟被放大到
-                # 整句时长。现在**行完成立即定稿送翻**，不等标点。
+                # R128 修正：**换行 ≠ 句边界**——LC 界面窄，长句在它内部"显示折行"
+                # （实测：一句被拆成"因为距离很"+"近。"两条碎字幕）。区分：
+                # 换行拆出的行**以句尾标点结尾 → 句完成，定稿送翻**；
+                # **无标点 → 只是显示折行，拼回当前句继续攒**（配合下方 2.5s 停顿
+                # 兜底：真正的句间停顿仍会及时定稿，不丢延迟）。
                 if "\n" in pending:
                     rows = pending.split("\n")
-                    done_rows, pending = rows[:-1], rows[-1]
-                    for ln in done_rows:
-                        ja = ln.strip()
-                        if len(ja.strip("。！？ 　")) >= 2:
-                            self._commit(ja)
-                    committed = committed + "\n".join(done_rows) + "\n"
+                    done_rows, remaining = rows[:-1], rows[-1]
+                    buf = ""
+                    n_committed = 0
+                    for idx, ln in enumerate(done_rows):
+                        buf += ln
+                        if re.search(r"[。！？]\s*$", ln.strip()):
+                            s = buf.strip()
+                            if len(s.strip("。！？ 　")) >= 2:
+                                self._commit(s)
+                            buf = ""
+                            n_committed = idx + 1
+                    # 已定稿的行并入 committed；未定稿的折行内容**保留在 pending**
+                    # （不变式：pending ≡ 全文[len(committed):]，**必须保留字面 \n**——
+                    # R128 首版用拼接丢了 \n，不变式破坏 → 折行内容永远无法定稿）
+                    if n_committed:
+                        committed = committed + "\n".join(done_rows[:n_committed]) + "\n"
+                    pending = "\n".join(done_rows[n_committed:] + [remaining])
                 if re.search(r"[。！？]\s*$", pending.strip()):
                     settle_at = time.time()
                 line_changed_at = time.time()

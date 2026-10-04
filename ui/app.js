@@ -1576,7 +1576,7 @@
     if (v && !v.paused) { try { v.pause(); lcPausedByUs = true; } catch (e) {} }
     lcHintSub("AI 字幕启动中…（首次预热约 10–40 秒，就绪后自动继续播放）");
     if (lcTimer) clearInterval(lcTimer);
-    lcTimer = setInterval(lcPoll, 600);
+    lcTimer = setInterval(lcPoll, 300);
     lcStartResumeWorker();
     lcRender();
   }

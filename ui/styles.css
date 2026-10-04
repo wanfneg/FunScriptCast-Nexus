@@ -1015,7 +1015,8 @@ html[data-motion="off"] .dev-spinner, html[data-motion="reduced"] .dev-spinner{
    柔和阴影（Compose Shadow(black, blurRadius=12)）、居中。之前的深色圆角底块
    是"悬浮窗"观感的来源（用户指出）。 */
 .lc-line{
-  max-width:88%; text-align:center; font-size:21px; line-height:1.5;
+  /* 用户裁定（R128）：**只显示一行**——不折行，超宽也保持单行居中 */
+  white-space:nowrap; text-align:center; font-size:21px; line-height:1.5;
   color:#fff;
   text-shadow:0 0 4px rgba(0,0,0,.95), 0 0 9px rgba(0,0,0,.75), 0 1px 3px rgba(0,0,0,.9);
 }
