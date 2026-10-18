@@ -2913,6 +2913,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "Host 校验失败（疑似 DNS rebinding）"}, 403)
             return
         try:
+            # 新底座（app/）优先；未命中则原样回落到下面的历史路由链。
+            try:
+                from app.bridge import handle as _app_handle
+                if _app_handle(self, "GET", path):
+                    return
+            except ImportError:
+                pass
             if path == "/api/state":
                 self._json(state_payload())
             elif path == "/api/settings":
@@ -3171,6 +3178,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
             return
         try:
+            # 新底座（app/）优先；未命中则原样回落到下面的历史路由链。
+            try:
+                from app.bridge import handle as _app_handle
+                if _app_handle(self, "POST", path, body):
+                    return
+            except ImportError:
+                pass
             if path == "/api/settings":
                 res = save_settings(body)
                 # save_settings 失败时返回 {"ok": False, "error": ...}：必须原样
