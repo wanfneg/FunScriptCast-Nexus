@@ -93,3 +93,26 @@ ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
 
 `encode_video()` 实现了官方 `extract.end()` 的等价逻辑：EOF 时把末帧补 K 份再排空，
 保证最后 2~65 帧仍拥有自己的行。12 秒短段验证：写入 **360/360 行**，与缓存 int8 完全相等 84.25%、p99 偏差 1。
+
+## 8. 流式引擎（onnx_stream.py）
+
+`OnnxStreamEngine` 与 torch 版 `stream_engine.StreamEngine` 公开接口一致
+（buffer / times_ms / n_rows / _trk / rev_bias_log / set_playhead / request_jump），
+可通过环境变量切换后端。
+
+链路：ffmpeg 解码 → 64 帧分组 → `vjepa_pca.onnx`（GPU）→ int8 latent memmap →
+`head.onnx` + `env_step.onnx`（CPU，按 chunk 增量）→ 前缀样式 + 发布。
+
+| 指标（120 秒片段冒烟） | 结果 |
+|---|---|
+| 完成状态 | done，3608 行（120s×30+8） |
+| 动作数 | 141，覆盖至 120.3s |
+| 端到端耗时 | 79 s（切点 18s + 编码 ~55s + 解码/样式）≈ **1.5× 实时** |
+| 与离线解码的轨道一致性 | vmarg 0.999843；level 0.999984；env 0.999980；conf 0.999999 |
+
+### 两个实测约束
+
+1. **切点必须先跑完**：DirectML 在“编码 + 新建 transnet 会话”并发时会 E_FAIL
+   （`DmlGraphFusionHelper` 0xC0000005 族）。官方也是先 `find_cuts` 再编码，已按此顺序实现。
+2. **尾段是近似**：官方 Rust 把定长窗口向后滑过真实历史；我们的定长 ONNX 图改用
+   “重复末帧补满整组”，只影响最后约 2 秒的上下文。

@@ -195,12 +195,11 @@ class OnnxBundle:
                 buf.append(np.frombuffer(raw, np.uint8).reshape(W, W, 3).copy())
                 if len(buf) >= GROUP + K:
                     flush()
-            # EOF：末帧补 K 份后排空（官方 extract.end 的等价）
+            # EOF：补满一整组再 flush（定长图；官方 Rust 用窗口后滑，这里近似）
             if buf and written < total_rows:
-                for _ in range(K):
+                while len(buf) < GROUP + K:
                     buf.append(buf[-1])
-                while flush() > 0:
-                    pass
+                flush()
         finally:
             try:
                 proc.stdout.close()
@@ -299,6 +298,43 @@ class OnnxBundle:
         return cuts
 
     # ---- 解码 ----
+    def forward_chunk(self, lat: np.ndarray, cut: np.ndarray,
+                      fs: int, s: int, e: int, fe: int) -> dict[str, np.ndarray]:
+        """单块前向 + 包络 AR；返回 [s, e) 的原始轨道（未乘 v_std）。"""
+        pack = self.pack
+        n, off, keep = fe - fs, s - fs, e - s
+        x = np.ascontiguousarray(np.asarray(lat[fs:fe])[None, ...], dtype=np.int8)
+        res = self.head.run(None, {"x_i8": x, "cut": cut[fs:fe][None, :]})
+        got = {o.name: r for o, r in zip(self.head.get_outputs(), res)}
+        out = {k: np.empty(keep, np.float64) for k in
+               ("vmarg", "level", "env", "blo", "bhi",
+                "plat_top", "plat_bot", "rev_top", "rev_bot", "conf")}
+        for key, src in (("vmarg", "vmarg"), ("level", "level"),
+                         ("blo", "ext_lo"), ("bhi", "ext_hi"),
+                         ("plat_top", "plat_top"), ("plat_bot", "plat_bot"),
+                         ("rev_top", "rev_top"), ("rev_bot", "rev_bot")):
+            out[key] = got[src][0, off:off + keep].astype(np.float64)
+        out["conf"] = (got["conf"][0, off:off + keep].astype(np.float64)
+                       if "conf" in got else np.full(keep, np.nan))
+        if not pack.env_flow:
+            out["env"] = got.get("eg", np.zeros((1, n)))[0, off:off + keep]
+            return out
+        h = got["h"][0]
+        c = h.shape[0]
+        state = np.zeros((1, pack.env_state), np.float32)
+        eg = np.empty(keep, np.float64)
+        for i in range(n):
+            ht = np.ascontiguousarray(h[:, i].reshape(1, c, 1), np.float32)
+            e0 = np.array([[env_base_draw(fs + i, pack.env_seed, pack.env_base_hi)]],
+                          np.float32)
+            ev = self.env.run(None, {"h_t": ht, "state": state, "e0": e0})
+            val = float(np.asarray(ev[0]).reshape(-1)[0])
+            if off <= i < off + keep:
+                eg[i - off] = val
+            state = np.ascontiguousarray(np.asarray(ev[1], np.float32).reshape(1, -1))
+        out["env"] = eg
+        return out
+
     def decode_latents(self, lat: np.ndarray, n_rows: int,
                        cut_rows: list[int] | np.ndarray) -> dict[str, np.ndarray]:
         """按官方 chunk/ctx 语义跑 head + env，返回**原始**轨道（未乘 v_std）。"""
@@ -315,36 +351,9 @@ class OnnxBundle:
         }
 
         def forward(fs: int, s: int, e: int, fe: int) -> None:
-            n = fe - fs
-            off = s - fs
-            keep = e - s
-            x = np.ascontiguousarray(np.asarray(lat[fs:fe])[None, ...], dtype=np.int8)
-            res = self.head.run(None, {"x_i8": x, "cut": cut[fs:fe][None, :]})
-            got = {o.name: r for o, r in zip(self.head.get_outputs(), res)}
-            for key, src in (("vmarg", "vmarg"), ("level", "level"),
-                             ("blo", "ext_lo"), ("bhi", "ext_hi"),
-                             ("plat_top", "plat_top"), ("plat_bot", "plat_bot"),
-                             ("rev_top", "rev_top"), ("rev_bot", "rev_bot")):
-                out[key][s:e] = got[src][0, off:off + keep]
-            if "conf" in got:
-                out["conf"][s:e] = got["conf"][0, off:off + keep]
-            if not pack.env_flow:
-                out["env"][s:e] = got.get("eg", np.zeros((1, n)))[0, off:off + keep]
-                return
-            h = got["h"][0]                        # (C, n)
-            c = h.shape[0]
-            state = np.zeros((1, pack.env_state), np.float32)
-            eg = np.empty(keep, np.float64)
-            for i in range(n):
-                ht = np.ascontiguousarray(h[:, i].reshape(1, c, 1), np.float32)
-                e0 = np.array([[env_base_draw(fs + i, pack.env_seed, pack.env_base_hi)]],
-                              np.float32)
-                ev = self.env.run(None, {"h_t": ht, "state": state, "e0": e0})
-                val = float(np.asarray(ev[0]).reshape(-1)[0])
-                if off <= i < off + keep:
-                    eg[i - off] = val
-                state = np.ascontiguousarray(np.asarray(ev[1], np.float32).reshape(1, -1))
-            out["env"][s:e] = eg
+            chunk = self.forward_chunk(lat, cut, fs, s, e, fe)
+            for k, v in chunk.items():
+                out[k][s:e] = v
 
         nxt = 0
         while n_rows > nxt + pack.chunk:
