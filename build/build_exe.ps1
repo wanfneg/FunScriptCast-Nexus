@@ -161,12 +161,25 @@ foreach ($f in 'version.json', 'start.bat', 'README.md') {
 
 # 本地翻译运行时（llama.cpp + CUDA 库，约 1.1GB）不进产物：改为「识别与翻译」卡
 # 的一键下载项（host_server MODELS_CATALOG → llama-runtime）。设备同步脚本
-# toolsetch_llama.ps1 仍是构建机侧的安装方式。
+# tools\fetch_llama.ps1 仍是构建机侧的安装方式。
 $distLlama = Join-Path $out 'vendor\llama'
 if (Test-Path $distLlama) {
     Remove-Item $distLlama -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "  已剔除 vendor\llama（改为界面内下载，安装包瘦身约 300MB）" -ForegroundColor DarkGray
 }
+
+# AI 识别模块的运行缓存（转码产物 + latent）**绝不能进安装包**：
+# 一次测试就能在 vendor\vision\cache 留下上百 MB 的 480p 转码文件与 .lat.bin，
+# 它们是按视频路径散落的临时数据，拷到别的机器毫无用处（且随包体积暴涨）。
+# 权重 weights\（17MB）必须保留——那是模型本体。
+$visCache = Join-Path $out 'vendor\vision\cache'
+if (Test-Path $visCache) {
+    Remove-Item $visCache -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "  已剔除 vendor\vision\cache（识别缓存，运行时自动重建）" -ForegroundColor DarkGray
+}
+Get-ChildItem (Join-Path $out 'vendor\vision') -Recurse -Force -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in '.lat', '.bin' -and $_.Name -like '*.lat.bin' } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 # 清理不该进产物/安装包的东西：运行日志、__pycache__（仓库里可能残存，Copy 不看 .gitignore）
 Get-ChildItem (Join-Path $out 'vendor'), (Join-Path $out 'ui'), (Join-Path $out 'tools') -Recurse -Force -ErrorAction SilentlyContinue |

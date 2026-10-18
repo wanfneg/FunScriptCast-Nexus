@@ -55,6 +55,7 @@ MODELS_DIR = APP_DIR / "models"
 # 因此本应用不再依赖 E:\Development 下的任何其他目录。
 VRDLNA_DIR = Path(os.environ.get("VRDLNA_DIR", str(VENDOR_DIR / "dlna")))
 SUBTITLE_DIR = Path(os.environ.get("SUBTITLE_DIR", str(VENDOR_DIR / "subtitle")))
+VISION_DIR = Path(os.environ.get("VISION_DIR", str(VENDOR_DIR / "vision")))
 
 
 def _subtitle_python() -> Path:
@@ -105,6 +106,7 @@ SUBTITLE_VENV_PY = _subtitle_python()
 # ---------------------------------------------------------------- 端口
 UI_API_PORT = int(os.environ.get("FS_HOST_PORT", "8790"))   # 前端 + API（仅环回）
 SUBTITLE_PORT = int(os.environ.get("FS_SUBTITLE_PORT", "8756"))
+VISION_PORT = int(os.environ.get("FS_VISION_PORT", "8757"))
 # 头显（Quest/PICO）专用接口：绑 0.0.0.0，但只放开三个路由。
 # 为什么不把 8790 直接绑到局域网：那上面还有设置、设备同步、adb、退出……
 # 单独一个端口 + 单独一个 Handler，按构造就不可能误暴露，而不是靠一处
@@ -139,6 +141,19 @@ class Runtime:
         # 我们 spawn 字幕服务的时刻。用来判断 8756 上应答的到底是不是自己人：
         # 孤儿一定是在我们启动**之前**就存在的（见 _service_ours）。
         self.sub_spawn_ts = 0.0
+        # AI 实时识别（vendor/vision）——与字幕同一套子进程机制
+        self.vis_proc: subprocess.Popen | None = None
+        self.vis_starting = False
+        self.vis_gen = 0
+        self.vis_error = ""
+        self.vis_ready = False
+        self.vis_spawn_ts = 0.0
+        self.vis_auto = True                # 播放时自动拉起（用户可关）
+        # 识别运行时的后台安装状态（建 venv + pip install torch 等，约 3-5GB）
+        self.vis_rt_state = "absent"        # absent/installing/done/error
+        self.vis_rt_pct = 0
+        self.vis_rt_error = ""
+        self.vis_rt_proc: subprocess.Popen | None = None
         self.logs: list[dict] = []          # {ts, level, msg}
         self.dlna_logs: list[str] = []
 
@@ -311,6 +326,10 @@ DEFAULT_SETTINGS = {
     "subtitle_auto_start": False,
     "library_roots": [],
     "video_link": {},
+    "mini_heatmap": True,   # 控件隐藏时的画面底部 mini 热力条（对齐手机端 miniHeatmapEnabled）
+    # AI 识别服务用的 Python（空=自动探测）。安装版没有 torch 时用户在这里
+    # 指到自己已有的 Python（需装 vendor/vision/requirements.txt）。
+    "vision_python": "",
     "script_folder": "",
     "video_folder": "",
     "device_folder": "/sdcard/Movies",
@@ -1469,6 +1488,24 @@ def _hf_hub_dir() -> Path:
 
 MODELS_CATALOG = [
     {
+        # AI 实时识别模块本体（代码 + 16.9MB checkpoint）。安装包已经带了这份，
+        # 这条目用于**单独更新/补装**：用户在安装版里发现识别模块缺失或想升级到
+        # 新版本时，不必重装整个程序。zip 由 build\pack_vision.ps1 产出。
+        # check_file 用 run_server.py：只校验模块本体在，权重缺失会在服务里报
+        # 明确错误（fetch_vision 单独拉），不会误判成"没装"。
+        "id": "vision-module",
+        "role": "vision-module",
+        "label": "AI 实时识别模块（边播边推理）",
+        "kind": "zip",
+        "check_file": "run_server.py",
+        "dest_dir": APP_DIR / "vendor" / "vision",
+        "size_gb": 0.02,
+        "files": [
+            {"rel": "vision-module.zip",
+             "url": "https://github.com/wanfneg/FunScriptCast-Nexus/releases/download/runtime-assets/vision-module.zip"},
+        ],
+    },
+    {
         # R69 打通全新安装链路时恢复（重建 catalog 时曾被误删——D 盘机器上
         # vendor/llama 恰好已存在，把缺条目遮住了）。仓库私有 → 自挂 release
         # 资产必须放在公开的发行仓库；zip 内容 = llama.cpp 官方两 zip 解压合并。
@@ -2118,6 +2155,643 @@ def sys_info() -> dict:
 
 
 # ================================================================ API
+
+# ================================================================ AI 实时识别
+# 与字幕服务同构：子进程 + /health 探测 + 代数校验 + 空闲回收。
+# 差别：识别服务只在用户播放视频且需要 AI 脚本时才拉起，空闲 10 分钟自动退出释放显存。
+
+def _vision_python() -> Path:
+    """识别服务用的解释器。
+
+    **不能直接复用字幕的 SUBTITLE_VENV_PY**：安装包自带的 runtime\python.exe 只装了
+    fastapi/uvicorn/numpy（字幕 audiocpp 主路径够用），没有 torch —— 识别服务一
+    import 就 ModuleNotFoundError。torch 约 4GB，不可能塞进安装包，所以识别服务
+    有自己的一套候选顺序：
+
+      1. vision-runtime\python.exe   专用运行时（界面下载，含 torch/timm/opencv）
+      2. 应用目录 .venv             开发机 / 绿色版
+      3. 上一级目录 .venv           源码仓库里的 dist-app（开发机）
+      4. SUBTITLE_VENV_PY          最后兜底（缺 torch 时由服务报明确错误）
+
+    选中的来源记进 VISION_PY_SOURCE，启动日志会打出来——"识别服务起不来"时
+    第一眼看的就是它到底用了哪个解释器。
+    """
+    global VISION_PY_SOURCE
+    env = os.environ.get("NEXUS_VISION_PY")
+    if env:
+        VISION_PY_SOURCE = "环境变量 NEXUS_VISION_PY"
+        return Path(env)
+    try:
+        chosen = str((load_settings() or {}).get("vision_python") or "").strip()
+    except Exception:  # noqa: BLE001
+        chosen = ""
+    if chosen:
+        VISION_PY_SOURCE = "设置里的 vision_python"
+        return Path(chosen)
+    candidates = [
+        # venv 的解释器在 Scripts\ 下（Windows）；写成 vision-runtime\python.exe
+        # 会永远命不中，装了运行时也仍然退到字幕解释器 → 报"缺少 torch"。
+        (APP_DIR / "vision-runtime" / "Scripts" / "python.exe",
+         "识别专用运行时（vision-runtime）"),
+        (APP_DIR / "vision-runtime" / "bin" / "python",
+         "识别专用运行时（vision-runtime）"),
+        (APP_DIR / ".venv" / "Scripts" / "python.exe", "应用目录自带的 .venv"),
+        (APP_DIR / ".venv" / "bin" / "python", "应用目录自带的 .venv"),
+    ]
+    candidates += [
+        (APP_DIR.parent / ".venv" / "Scripts" / "python.exe", "上一级目录的 .venv"),
+        (APP_DIR.parent / ".venv" / "bin" / "python", "上一级目录的 .venv"),
+    ]
+    for c, src in candidates:
+        if c.exists():
+            VISION_PY_SOURCE = src
+            return c
+    # 系统 Python：安装到 %LOCALAPPDATA% 时既没有仓库 .venv，也没有上一级 .venv。
+    # 这一步**必须验证 torch 可用**，不能像字幕那样"找到 python 就用"——字幕主路径
+    # 只需要 fastapi/uvicorn/numpy，识别服务缺 torch 直接起不来，还会在 60s 超时后
+    # 只留一句"启动即退出"。逐个试 PATH 上的解释器，挑第一个 import torch 成功的。
+    for exe in ("python", "python3", "py"):
+        found = shutil.which(exe)
+        if not found:
+            continue
+        try:
+            r = subprocess.run(
+                [found, "-c", "import torch, timm, cv2; print(torch.__version__)"],
+                capture_output=True, timeout=25, text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+            )
+            if r.returncode == 0:
+                VISION_PY_SOURCE = f"PATH 上的 {exe}（已验证 torch {r.stdout.strip()}）"
+                return Path(found)
+        except Exception:  # noqa: BLE001
+            continue
+    VISION_PY_SOURCE = f"字幕解释器兜底（多半缺 torch）：{SUBTITLE_VENV_PY}"
+    return SUBTITLE_VENV_PY
+
+
+# 识别服务解释器来源（启动/拉起时记进日志）
+VISION_PY_SOURCE = ""
+
+
+# 识别服务必需的三方包：缺任一，run_server 一 import 就死（torch 是显存大户，
+# 安装包不可能带；其余是视觉管线）。启动前先问一遍，错误信息才能说人话。
+_VISION_DEPS = ("torch", "timm", "cv2", "einops", "transnetv2_pytorch")
+
+_VISION_PROBE = r"""
+import importlib
+out = []
+for m in ("torch", "timm", "cv2", "einops", "transnetv2_pytorch"):
+    try:
+        importlib.import_module(m)
+    except Exception:
+        out.append(m)
+print(",".join(out))
+"""
+
+
+def _vision_missing_deps(py: Path) -> list[str]:
+    """用目标解释器逐个 import，返回缺的包名（探测失败按"全缺"处理）。"""
+    try:
+        r = subprocess.run(
+            [str(py), "-c", _VISION_PROBE], capture_output=True, text=True,
+            timeout=90,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if os.name == "nt" else 0,
+        )
+        if r.returncode != 0:
+            return list(_VISION_DEPS)
+        return [m for m in (r.stdout or "").strip().split(",") if m]
+    except Exception:  # noqa: BLE001
+        return list(_VISION_DEPS)
+
+
+def _vision_base() -> str:
+    return f"http://127.0.0.1:{VISION_PORT}"
+
+
+def _vision_http(path: str, payload: dict | None = None, timeout: float = 5.0) -> dict | None:
+    """极简 JSON 客户端（避免给宿主引入 requests 依赖）。"""
+    import urllib.error
+    import urllib.request
+    url = _vision_base() + path
+    try:
+        if payload is None:
+            req = urllib.request.Request(url, method="GET")
+        else:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(url, data=data, method="POST",
+                                         headers={"Content-Type": "application/json"})
+        token = _vision_auth_token()
+        if token:
+            req.add_header("X-FSC-Vision-Token", token)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _vision_auth_token() -> str:
+    try:
+        cfg = json.loads((VISION_DIR / "config.json").read_text(encoding="utf-8"))
+        return str((cfg.get("server") or {}).get("auth_token") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def vision_health() -> dict | None:
+    return _vision_http("/health", timeout=1.5)
+
+
+def vision_state() -> dict:
+    """给 UI 的聚合状态（服务未起时也要能渲染）。"""
+    with RT.lock:
+        proc = RT.vis_proc
+        starting = RT.vis_starting
+        err = RT.vis_error
+        auto = RT.vis_auto
+    running = proc is not None and proc.poll() is None
+    h = vision_health() if running else None
+    st = _vision_http("/state", timeout=1.5) if h else None
+    return {
+        "ok": True,
+        "installed": VISION_DIR.is_dir() and (VISION_DIR / "run_server.py").is_file(),
+        "running": running,
+        "starting": starting,
+        "ready": bool(h),
+        "auto": auto,
+        "port": VISION_PORT,
+        "error": err,
+        "health": h,
+        "job": (st or {}).get("job"),
+        "engine_state": (st or {}).get("state") or "idle",
+        "n_actions": (st or {}).get("n_actions", 0),
+        "coverage_ms": (st or {}).get("coverage_ms", 0),
+        "warmup_pct": (st or {}).get("warmup_pct", 0),
+        "note": (st or {}).get("note", ""),
+        "elapsed_sec": (st or {}).get("elapsed_sec", 0),
+        "py_source": VISION_PY_SOURCE,
+    }
+
+
+# ---------------- AI 识别运行时（vision-runtime）一键安装 ----------------
+# 安装包不可能带 torch（4GB+），但**也绝不该每次都从零下载**：
+# 本机往往已经有一份 torch（仓库 .venv、系统 Python、其他项目环境）。
+#
+# 所以这里按代价从低到高三级：
+#   1. 复用：某个解释器已经装齐全部依赖 → 直接记进设置，零下载
+#   2. 借用：某个解释器有 torch 但缺几个轻量包 → 用 --system-site-packages
+#      建 venv 继承它的 torch，只补装缺的那几个（几十 MB，不是 2.5GB）
+#   3. 全新安装：本机完全没有 torch 才走这条，约 3-5GB
+#
+# 运行时目录 <APP_DIR>\vision-runtime\，_vision_python() 第一候选就是它。
+
+VISION_RT_DIR = APP_DIR / "vision-runtime"
+VISION_RT_PY = VISION_RT_DIR / "Scripts" / "python.exe"
+
+# 轻量依赖（几十 MB）。torch/torchvision 单独处理——它们是重的那部分。
+_VISION_RT_LIGHT = [
+    "timm", "einops", "opencv-python-headless", "transnetv2-pytorch",
+    "scipy", "scikit-learn", "numba", "safetensors", "huggingface_hub",
+]
+_VISION_TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
+
+
+def _vision_rt_installed() -> bool:
+    return VISION_RT_PY.is_file()
+
+
+def _probe_interpreter(py: Path) -> dict:
+    """探测一个解释器：Python 版本 + 已装哪些依赖 + torch 是否带 CUDA。
+
+    只跑一次子进程（import 一遍），比逐个包起进程快得多。
+    """
+    code = (
+        "import json,sys\n"
+        "r={'py':sys.version.split()[0],'has':{},'torch':''}\n"
+        "for m in ('torch','torchvision','timm','cv2','einops','transnetv2_pytorch',\n"
+        "          'scipy','sklearn','numba','safetensors','huggingface_hub'):\n"
+        "    try:\n"
+        "        __import__(m); r['has'][m]=True\n"
+        "    except Exception:\n"
+        "        r['has'][m]=False\n"
+        "try:\n"
+        "    import torch\n"
+        "    r['torch']=torch.__version__\n"
+        "    r['cuda']=bool(torch.cuda.is_available())\n"
+        "except Exception:\n"
+        "    r['cuda']=False\n"
+        "print(json.dumps(r))"
+    )
+    try:
+        p = subprocess.run(
+            [str(py), "-c", code], capture_output=True, text=True, timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+        )
+        if p.returncode != 0:
+            return {}
+        import json as _json
+        return _json.loads((p.stdout or "{}").strip().splitlines()[-1])
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _candidate_pythons() -> list[Path]:
+    """本机可能已有 torch 的解释器，按"最可能可用"排序。"""
+    out: list[Path] = []
+    seen: set[str] = set()
+
+    def add(p) -> None:
+        try:
+            pp = Path(p)
+        except Exception:  # noqa: BLE001
+            return
+        if not pp.is_file():
+            return
+        k = str(pp).lower()
+        if k in seen:
+            return
+        seen.add(k)
+        out.append(pp)
+
+    # 仓库/应用自带（最常见：开发机、绿色版）
+    for base in (APP_DIR, APP_DIR.parent):
+        for rel in ((".venv", "Scripts", "python.exe"), (".venv", "bin", "python")):
+            add(base.joinpath(*rel))
+    # PATH 上的
+    for exe in ("python", "python3"):
+        f = shutil.which(exe)
+        if f:
+            add(f)
+    # Windows 官方安装器的默认位置（py 启动器不可靠，直接扫目录）
+    for root in (Path.home() / "AppData" / "Local" / "Programs" / "Python",
+                 Path("C:/Python310"), Path("C:/Python311"), Path("C:/Python312")):
+        if not root.is_dir():
+            continue
+        if (root / "python.exe").is_file():
+            add(root / "python.exe")
+        for d in sorted(root.glob("Python3*")):
+            add(d / "python.exe")
+    return out
+
+
+def _scan_best_runtime() -> dict | None:
+    """找一个"有 torch"的解释器，返回探测结果 + 路径。优先 CUDA、依赖最全。"""
+    best = None
+    for py in _candidate_pythons():
+        info = _probe_interpreter(py)
+        if not info or not info.get("has", {}).get("torch"):
+            continue
+        has = info["has"]
+        light_ok = sum(1 for m in ("timm", "cv2", "einops", "transnetv2_pytorch")
+                       if has.get(m))
+        # 排序：CUDA 优先 → 轻量依赖更全 → Python 版本更高
+        score = (100 if info.get("cuda") else 0) + light_ok * 10
+        rec = {"path": str(py), "info": info, "score": score}
+        if best is None or rec["score"] > best["score"]:
+            best = rec
+    return best
+
+
+def vision_runtime_state() -> dict:
+    with RT.lock:
+        st = RT.vis_rt_state
+        pct = RT.vis_rt_pct
+        err = RT.vis_rt_error
+    if _vision_rt_installed() and st != "installing":
+        st = "done"
+    return {"state": st, "pct": pct, "error": err,
+            "dir": str(VISION_RT_DIR), "installed": _vision_rt_installed()}
+
+
+def _set_rt(pct: int | None = None, note: str = "", level: str = "info") -> None:
+    with RT.lock:
+        if pct is not None:
+            RT.vis_rt_pct = pct
+    if note:
+        RT.add_log("[vision-runtime] " + note, level)
+
+
+def _vision_rt_worker() -> None:
+    """三级策略：复用 → 借用 → 全新安装。全程写 RT.vis_rt_*。"""
+    try:
+        _set_rt(2, "扫描本机已有的 torch 环境…")
+
+        best = _scan_best_runtime()
+        if best:
+            has = best["info"]["has"]
+            missing_light = [m for m in ("timm", "cv2", "einops",
+                                         "transnetv2_pytorch", "scipy", "sklearn",
+                                         "numba", "safetensors", "huggingface_hub")
+                             if not has.get(m)]
+            _set_rt(6, f"发现 {best['path']}（torch {best['info'].get('torch')}"
+                       f"{', CUDA' if best['info'].get('cuda') else ', CPU'}，"
+                       f"缺 {len(missing_light)} 个轻量依赖）")
+
+            # ---- 1. 复用：什么都不缺，直接用这个解释器 ----
+            if not missing_light:
+                save_settings({"vision_python": best["path"]})
+                with RT.lock:
+                    RT.vis_rt_state = "done"
+                    RT.vis_rt_pct = 100
+                _set_rt(None, f"本机环境已完整，直接复用：{best['path']}", "ok")
+                return
+
+            # ---- 2. 借用：继承它的 torch，只补轻量包 ----
+            base = Path(best["path"])
+            _set_rt(10, "用 --system-site-packages 继承已有 torch，只补装轻量依赖")
+            if VISION_RT_DIR.exists():
+                shutil.rmtree(VISION_RT_DIR, ignore_errors=True)
+            r = subprocess.run(
+                [str(base), "-m", "venv", "--system-site-packages", str(VISION_RT_DIR)],
+                capture_output=True, text=True, timeout=600,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+            )
+            if r.returncode != 0 or not VISION_RT_PY.is_file():
+                raise RuntimeError("创建 venv 失败：" +
+                                   ((r.stderr or r.stdout or "").strip()[-500:]))
+            _set_rt(20, "venv 已建好（已继承 torch），补装轻量依赖")
+            _pip_install([p for p in _VISION_RT_LIGHT if p.split("[")[0] not in has
+                          or not has.get(p.split("[")[0])], 20, 95)
+        else:
+            # ---- 3. 全新安装：本机确实没有 torch ----
+            base_s = shutil.which("python") or shutil.which("python3") or ""
+            if not base_s:
+                raise RuntimeError(
+                    "本机没有找到任何 Python 3.10+，也没有可复用的 torch。"
+                    "请先安装 Python（python.org），或在设置里填写解释器路径。")
+            _set_rt(5, f"本机没有可复用的 torch，用 {base_s} 全新安装（约 3-5GB）")
+            if VISION_RT_DIR.exists():
+                shutil.rmtree(VISION_RT_DIR, ignore_errors=True)
+            r = subprocess.run(
+                [base_s, "-m", "venv", str(VISION_RT_DIR)],
+                capture_output=True, text=True, timeout=600,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+            )
+            if r.returncode != 0 or not VISION_RT_PY.is_file():
+                raise RuntimeError("创建 venv 失败：" +
+                                   ((r.stderr or r.stdout or "").strip()[-500:]))
+            _set_rt(10, "运行时目录已建好，安装 torch（cu128，约 2.5GB）")
+            _pip_install(["torch", "torchvision"], 10, 75,
+                         index_url=_VISION_TORCH_INDEX)
+            _set_rt(75, "torch 装好，安装视觉管线依赖")
+            _pip_install(_VISION_RT_LIGHT, 75, 96)
+
+        _set_rt(97, "校验依赖")
+        miss = _vision_missing_deps(VISION_RT_PY)
+        if miss:
+            raise RuntimeError("安装完成但缺少：" + ", ".join(miss))
+
+        # 运行时可用 → 清掉可能残留的手工指定，走自动探测（第一候选就是它）
+        save_settings({"vision_python": ""})
+        with RT.lock:
+            RT.vis_rt_state = "done"
+            RT.vis_rt_pct = 100
+        _set_rt(None, "AI 识别运行时就绪", "ok")
+    except Exception as e:  # noqa: BLE001
+        with RT.lock:
+            RT.vis_rt_state = "error"
+            RT.vis_rt_error = f"{type(e).__name__}: {e}"
+            RT.vis_rt_proc = None
+        RT.add_log(f"AI 识别运行时安装失败：{RT.vis_rt_error}", "err")
+
+
+def _pip_install(pkgs: list[str], pct0: int, pct1: int,
+                 index_url: str = "") -> None:
+    """pip install 一组包，进度按日志行推进（够 UI 显示"在动"）。"""
+    if not pkgs:
+        return
+    env = dict(os.environ)
+    # 系统代理会让 pip 的 TLS 校验失败（与 make_runtime.ps1 同类问题）
+    env["NO_PROXY"] = "*"
+    env["no_proxy"] = "*"
+    args = [str(VISION_RT_PY), "-m", "pip", "install", "--no-input",
+            "--disable-pip-version-check"]
+    if index_url:
+        args += ["--index-url", index_url]
+    args += pkgs
+    proc = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", env=env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+    )
+    with RT.lock:
+        RT.vis_rt_proc = proc
+    span = max(1, pct1 - pct0)
+    step = 0
+    for line in proc.stdout:  # type: ignore[union-attr]
+        line = (line or "").rstrip()
+        if not line:
+            continue
+        if line.startswith(("Collecting ", "Downloading ", "Installing ")):
+            step += 1
+            with RT.lock:
+                RT.vis_rt_pct = min(pct1 - 1, pct0 + step)
+        RT.add_log("[vision-runtime] " + line[:300], "info")
+    rc = proc.wait()
+    with RT.lock:
+        RT.vis_rt_proc = None
+    if rc != 0:
+        raise RuntimeError(f"pip install 失败（exit {rc}），详见日志")
+
+
+def vision_runtime_install(base_py: str = "") -> dict:
+    """启动后台安装。base_py 非空时跳过扫描，直接用它做基础解释器。"""
+    with RT.lock:
+        if RT.vis_rt_state == "installing":
+            return {"ok": True, "already": True}
+    if _vision_rt_installed() and not _vision_missing_deps(VISION_RT_PY):
+        return {"ok": True, "already": True, "installed": True}
+
+    with RT.lock:
+        RT.vis_rt_state = "installing"
+        RT.vis_rt_pct = 1
+        RT.vis_rt_error = ""
+    if base_py.strip():
+        # 用户指定了解释器：记进设置，由 _vision_python 优先使用
+        save_settings({"vision_python": base_py.strip()})
+    threading.Thread(target=_vision_rt_worker, daemon=True,
+                     name="vision-runtime").start()
+    return {"ok": True, "starting": True}
+
+
+def vision_runtime_remove() -> dict:
+    """删掉运行时（换解释器 / 回收空间）。"""
+    with RT.lock:
+        if RT.vis_rt_state == "installing":
+            return {"ok": False, "error": "正在安装中，稍后再试"}
+        RT.vis_rt_state = "absent"
+        RT.vis_rt_pct = 0
+        RT.vis_rt_error = ""
+    if VISION_RT_DIR.exists():
+        shutil.rmtree(VISION_RT_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+def vision_start() -> dict:
+    with RT.lock:
+        if RT.vis_proc and RT.vis_proc.poll() is None:
+            return {"ok": True, "already": True}
+        if RT.vis_starting:
+            return {"ok": True, "starting": True}
+        RT.vis_starting = True
+        RT.vis_error = ""
+        gen = RT.vis_gen
+
+    if not (VISION_DIR / "run_server.py").is_file():
+        with RT.lock:
+            RT.vis_starting = False
+        return {"ok": False, "error": f"识别模块缺失：{VISION_DIR}"}
+
+    # 端口上已经有服务（上次残留 / 用户自己起的）→ 直接复用
+    if vision_health() is not None:
+        with RT.lock:
+            RT.vis_starting = False
+            RT.vis_ready = True
+        RT.add_log(f"{VISION_PORT} 上已有识别服务，直接复用", "warn")
+        return {"ok": True, "reused": True}
+
+    def worker() -> None:
+        try:
+            py = _vision_python()
+            RT.add_log(f"识别服务解释器：{py}（来源：{VISION_PY_SOURCE}）", "info")
+            if not py.exists():
+                raise RuntimeError(f"找不到 Python 解释器：{py}")
+            miss = _vision_missing_deps(py)
+            if miss:
+                raise RuntimeError(
+                    f"该解释器缺少 AI 识别依赖：{', '.join(miss)}。"
+                    f"请在设置里把「AI 识别 Python」指到已安装这些依赖的解释器"
+                    f"（在识别模块目录执行 pip install -r requirements.txt），"
+                    f"或给当前解释器装上它们。")
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            env = dict(os.environ)
+            env.setdefault("PYTHONIOENCODING", "utf-8")
+            env["FSC_VISION_PORT"] = str(VISION_PORT)
+            proc = subprocess.Popen(
+                [str(py), "run_server.py"],
+                cwd=str(VISION_DIR), env=env, creationflags=flags,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                encoding="utf-8", errors="replace", bufsize=1,
+            )
+            with RT.lock:
+                RT.vis_proc = proc
+                RT.vis_spawn_ts = time.time()
+                RT.vis_starting = False
+            RT.add_log(f"识别服务已拉起（PID {proc.pid}）", "info")
+
+            # 读日志（后台），同时等健康
+            def reader() -> None:
+                try:
+                    for line in proc.stdout:  # type: ignore[union-attr]
+                        line = (line or "").rstrip()
+                        if line:
+                            RT.add_log("[vision] " + line, "info")
+                except Exception:  # noqa: BLE001
+                    pass
+            threading.Thread(target=reader, daemon=True, name="vision-log").start()
+
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    raise RuntimeError(f"识别服务启动即退出（code {proc.returncode}）")
+                if vision_health() is not None:
+                    with RT.lock:
+                        if RT.vis_gen != gen:      # 期间用户点了停止
+                            try:
+                                proc.terminate()
+                            except Exception:  # noqa: BLE001
+                                pass
+                            return
+                        RT.vis_ready = True
+                    RT.add_log("识别服务就绪", "ok")
+                    return
+                time.sleep(0.5)
+            raise RuntimeError("识别服务 60s 内未就绪")
+        except Exception as e:  # noqa: BLE001
+            with RT.lock:
+                RT.vis_error = f"{type(e).__name__}: {e}"
+                RT.vis_starting = False
+            RT.add_log(f"识别服务启动失败：{RT.vis_error}", "err")
+
+    threading.Thread(target=worker, daemon=True, name="vision-start").start()
+    return {"ok": True, "starting": True}
+
+
+def vision_stop() -> dict:
+    with RT.lock:
+        RT.vis_gen += 1
+        proc = RT.vis_proc
+        RT.vis_proc = None
+        RT.vis_ready = False
+        RT.vis_starting = False
+    # 先礼貌请求退出（释放 CUDA 上下文），再兜底 kill
+    _vision_http("/shutdown", {}, timeout=3.0)
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+    RT.add_log("识别服务已停止", "info")
+    return {"ok": True}
+
+
+def vision_open(video: str) -> dict:
+    r = vision_start()
+    if not r.get("ok"):
+        return r
+    # 等就绪（最多 60s）
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        if vision_health() is not None:
+            break
+        time.sleep(0.5)
+    else:
+        return {"ok": False, "error": "识别服务未就绪"}
+    return _vision_http("/open", {"video": video}, timeout=20.0) or {
+        "ok": False, "error": "识别服务无响应"}
+
+
+def vision_close() -> dict:
+    r = _vision_http("/close", {}, timeout=30.0)
+    return r or {"ok": True}
+
+
+def vision_actions(from_ms: float, to_ms: float) -> dict:
+    r = _vision_http(f"/actions?from_ms={from_ms}&to_ms={to_ms}", timeout=3.0)
+    return r or {"ok": False, "actions": [], "coverage_ms": 0}
+
+
+def vision_reclaim_idle() -> None:
+    """空闲回收：无任务且超时 → 停服务释放显存（由看护线程周期调用）。"""
+    with RT.lock:
+        if not RT.vis_proc or RT.vis_proc.poll() is not None:
+            return
+    h = vision_health()
+    if not h:
+        return
+    try:
+        idle_min = float(h.get("idle_sec", 0)) / 60.0
+    except (TypeError, ValueError):
+        return
+    if h.get("engine_state") != "idle":
+        return
+    try:
+        cfg = json.loads((VISION_DIR / "config.json").read_text(encoding="utf-8"))
+        limit = float((cfg.get("runtime") or {}).get("idle_release_min", 10) or 0)
+    except Exception:  # noqa: BLE001
+        limit = 10.0
+    if limit > 0 and idle_min >= limit:
+        RT.add_log(f"识别服务空闲 {idle_min:.0f} 分钟，释放显存", "info")
+        vision_stop()
+
+
 def state_payload() -> dict:
     s = load_settings()
     with RT.lock:
@@ -2145,6 +2819,7 @@ def state_payload() -> dict:
             "logs": dlna_logs,
         },
         "subtitle": sub_state(),
+        "vision": vision_state(),
         "translate": sub_translate_stats(),
         "sync": SYNC.public(),
         "update": _update_status(),
@@ -2417,6 +3092,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "items": items,
                             "scanning": lib.scanning, "progress": lib.scan_progress,
                             "last_scan": lib.last_scan})
+            elif path == "/api/vision/state":
+                payload = vision_state()
+                payload["runtime"] = vision_runtime_state()
+                self._json(payload)
+            elif path == "/api/vision/actions":
+                q = parse_qs(urlparse(self.path).query)
+                a = float((q.get("from_ms") or ["0"])[0] or 0)
+                b = float((q.get("to_ms") or ["1e18"])[0] or 1e18)
+                self._json(vision_actions(a, b))
             elif path == "/api/device/state":
                 d = _get_device()
                 st = d["ch"].state_dict()
@@ -2496,6 +3180,17 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     _apply_device_settings()
                     self._json({"ok": True, "settings": res})
+            elif path == "/api/js-error":
+                # 前端未捕获异常上报（打包版无控制台，否则前端崩溃完全不可见）
+                kind = str(body.get("kind") or "error")
+                msg = str(body.get("message") or "")
+                det = str(body.get("detail") or "")
+                line = f"[前端 {kind}] {msg}"
+                if det:
+                    line = line + "\n" + det[:2000]
+                RT.add_log(line, "err")
+                log.error("%s", line)
+                self._json({"ok": True})
             elif path == "/api/win/show":
                 # 供「重复启动」唤起已有实例的窗口（见 run() 开头的单实例处理）。
                 # 托盘图标可能被系统收进溢出面板、用户找不到入口，这条路始终可用。
@@ -2516,8 +3211,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(d["arbiter"].start_script(vp))
             elif path == "/api/sync/tick":
                 d = _get_device()
+                t_now = float(body.get("t") or 0)
+                # AI 实时模式：每拍从引擎拉一次全量动作表（引擎侧已整体重算）。
+                # 全量拉取而非增量，是为了让"前缀重算"的修正能立刻反映到设备上；
+                # 22 分钟片约 4000 个点，JSON 约 100KB，本地环回 20ms 一拍可接受。
+                # 若日后成为瓶颈，改为按 coverage 变化触发（引擎 coverage_ms 单调）。
+                if d["sync"].live:
+                    act = vision_actions(0, 1e18)
+                    if act.get("ok"):
+                        d["sync"].feed_live(act.get("actions") or [],
+                                            float(act.get("coverage_ms") or 0))
                 # rate = 播放倍速：段速要乘它（手机端 computeMove 的 playbackRate）
-                d["sync"].tick(float(body.get("t") or 0), float(body.get("rate") or 1))
+                d["sync"].tick(t_now, float(body.get("rate") or 1))
                 # 「跳过无动作」：判定出静止段时把快进目标带回界面（seek 语义，Q2 裁定）
                 self._json({"ok": True, "seek_to": d["sync"].pop_seek()})
             elif path == "/api/sync/delay":
@@ -2538,6 +3243,41 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "devices": d["ch"].submit(d["ch"].scan(10.0), timeout=50)})
                 except Exception as e:
                     self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            elif path == "/api/vision/start":
+                self._json(vision_start())
+            elif path == "/api/vision/stop":
+                self._json(vision_stop())
+            elif path == "/api/vision/open":
+                vp = str(body.get("video") or "")
+                if not vp:
+                    self._json({"ok": False, "error": "缺少 video"}, 400)
+                    return
+                r = vision_open(vp)
+                # 引擎起来后把设备同步切到 live 模式：动作由 /api/vision/actions
+                # 增量喂入，下发路径与脚本模式完全共用（SyncEngine._apply）。
+                if r.get("ok"):
+                    d = _get_device()
+                    if d["ch"].state.connected:
+                        d["arbiter"].start_live(vp)
+                        r["live"] = True
+                self._json(r)
+            elif path == "/api/vision/close":
+                r = vision_close()
+                try:
+                    d = _get_device()
+                    if d["sync"].live:
+                        d["sync"].stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._json(r)
+            elif path == "/api/vision/auto":
+                with RT.lock:
+                    RT.vis_auto = bool(body.get("on", True))
+                self._json({"ok": True, "auto": RT.vis_auto})
+            elif path == "/api/vision/runtime/install":
+                self._json(vision_runtime_install(str(body.get("python") or "")))
+            elif path == "/api/vision/runtime/remove":
+                self._json(vision_runtime_remove())
             elif path == "/api/device/connect":
                 d = _get_device()
                 addr = str(body.get("address") or "")
@@ -3880,19 +4620,38 @@ class NexusApi:
     def pick_folder(self, current: str = "", multiple: bool = False) -> dict:
         """系统「选择文件夹」对话框；取消返回 ok=False。
 
-        multiple=True 时返回 paths（媒体根通常分散在好几个盘/目录，一次选完更省事）。
+        ⚠ **文件夹选择不支持多选**：pywebview 的 winforms 后端是用
+        ``OpenFileDialog`` + ``FOS_PICKFOLDERS`` 实现文件夹选择的（见
+        webview.platforms.winforms.OpenFolderDialog）。Vista 原生对话框在
+        "只选文件夹"模式下**没有多选语义**——``Multiselect=True`` 时
+        ``FileNames`` 往往返回空元组，前端拿到 ``paths: []`` 就会认为
+        "用户没选"，表现为"点了添加目录完全没反应"（用户实际踩到）。
+
+        所以这里强制单选：多选参数只为兼容旧调用保留，实际不生效。
+        调用方要添加多个目录，就多点几次。
         """
         try:
             import webview
 
+            # 新版 pywebview 弃用了 webview.FOLDER_DIALOG（Proxy 对象），
+            # 用 FileDialog.FOLDER 枚举；旧版没有 FileDialog 时回退。
+            try:
+                dialog_type = webview.FileDialog.FOLDER
+            except AttributeError:
+                dialog_type = webview.FOLDER_DIALOG
+
             res = self._win.create_file_dialog(
-                webview.FOLDER_DIALOG,
+                dialog_type,
                 directory=current or "",
-                allow_multiple=bool(multiple),
+                allow_multiple=False,       # 见 docstring：文件夹多选在 winforms 上不工作
             )
             if not res:
                 return {"ok": False, "cancelled": True}
-            paths = [str(p) for p in res]
+            paths = [str(p) for p in res if str(p).strip()]
+            if not paths:
+                # 对话框返回了空序列（多选模式的典型症状）：明确告诉用户，
+                # 而不是让前端静默什么都不做。
+                return {"ok": False, "error": "没有选中任何文件夹，请重新选择"}
             return {"ok": True, "path": paths[0], "paths": paths}
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -4281,6 +5040,20 @@ def run(open_window: bool = True) -> None:
     # 端口，模型加载那几十秒里端口是关的，此时 reap 会把服务刚认领的 audiocpp 孤儿杀掉。
     threading.Thread(target=lambda: reap_orphan_audiocpp(wait_start_sec=180.0),
                      daemon=True, name="reap-audiocpp").start()
+
+    # AI 识别服务空闲回收：vision_reclaim_idle() 原来定义了却**没人调用**，
+    # 识别服务一旦拉起就永久占着显存（模型 + V-JEPA ≈ 3-4GB），关掉视频也不放。
+    # 60s 轮询一次；服务自己报 idle_sec，超时（默认 10 分钟）就停进程。
+    def _vision_reclaim_loop() -> None:
+        while True:
+            time.sleep(60)
+            try:
+                vision_reclaim_idle()
+            except Exception as e:  # noqa: BLE001
+                print("[vision] 空闲回收异常：", e, flush=True)
+
+    threading.Thread(target=_vision_reclaim_loop, daemon=True,
+                     name="vision-reclaim").start()
 
     if not open_window:
         # 无窗口模式（调试/被外部托管）：保持进程存活

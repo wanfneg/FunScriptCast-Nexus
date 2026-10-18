@@ -5,6 +5,33 @@
 (function () {
   "use strict";
 
+  /* ---- 全局错误上报 ----
+     打包版是 WebView2 无控制台窗口，前端异常此前**完全不可见**：一个元素缺失
+     导致 bind() 中途抛错，后面的按钮（关闭窗口、添加目录…）全部静默失效，
+     用户只看到"点了没反应"，日志里一个字都没有。
+     这里把未捕获异常与 Promise rejection 送到宿主 /api/logs，排障时有据可查。 */
+  function reportJsError(kind, msg, detail) {
+    try {
+      fetch("/api/js-error", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: kind, message: String(msg || ""),
+                               detail: String(detail || ""),
+                               url: location.href })
+      }).catch(function () {});
+    } catch (e) { /* 上报失败不能再抛 */ }
+  }
+  window.addEventListener("error", function (e) {
+    reportJsError("error", e.message,
+      (e.filename || "") + ":" + (e.lineno || 0) + ":" + (e.colno || 0) +
+      (e.error && e.error.stack ? "\n" + e.error.stack : ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e.reason;
+    reportJsError("rejection", (r && (r.message || r)) || "unknown",
+      r && r.stack ? r.stack : "");
+  });
+
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   var S = { state: null, settings: {}, pollTimer: null, counts: {},
@@ -531,6 +558,10 @@
     if (!busyEditing($("#setCloseTray"))) $("#setCloseTray").checked = !!s.close_to_tray;
     if (!busyEditing($("#setStartMin"))) $("#setStartMin").checked = !!s.start_minimized;
     if (!busyEditing($("#setAutoStart"))) $("#setAutoStart").checked = !!s.launch_on_boot;
+    var vpy = $("#setVisionPy");
+    if (vpy && !busyEditing(vpy) && document.activeElement !== vpy) {
+      vpy.value = String(s.vision_python || "");
+    }
     // 注意：这里**不能**碰 #mtModel —— 它的值只归 loadSubtitleConfig 填。
     // 旧代码每秒轮询都把输入框清空，用户点保存（mousedown 已失焦）时读到的
     // 就是空串，把配置里已保存的模型名覆盖成 ""。
@@ -638,6 +669,7 @@
 
   /* ---------- 模型下载：识别 / 翻译模型缺什么下什么（走 hf-mirror，宿主负责） ---------- */
   var MODEL_NAMES = {
+    "vision-module": "AI 实时识别模块（边播边推理）",
     "audiocpp-cuda": "识别运行时 · CUDA（需 NVIDIA 显卡）",
     "qwen3-asr-0.6b": "识别模型 · Qwen3-ASR-0.6B（显存约 1.3GB）",
     "qwen3-asr-1.7b": "识别模型 · Qwen3-ASR-1.7B（显存约 3.6GB，转录质量更高）",
@@ -796,6 +828,37 @@
 
   /* ---------------------------------------------------------- 事件绑定 */
   function bind() {
+    /* ---- 关键绑定优先 + 逐段隔离 ----
+       历史教训（2026-10-18）：bind() 里有 50 处 `$("#id").addEventListener`
+       没有任何 null 保护。只要**任意一个**元素缺失，整条 bind() 就在那里抛错，
+       它后面的所有按钮全部静默失效——用户看到的是"关闭窗口点不动、添加目录
+       点了没反应"，而日志里一个字都没有（打包版是 WebView2 无控制台）。
+       所以：① 窗口控制与目录添加这两类"用户最先撞上"的绑定放在最前面；
+       ② 每段用 safe() 包住，一段失败只记日志，不拖垮后面。 */
+    function safe(label, fn) {
+      try {
+        fn();
+      } catch (e) {
+        reportJsError("bind", label + " 绑定失败: " + (e && e.message),
+                      e && e.stack ? e.stack : "");
+        console.error("[bind] " + label + " 失败", e);
+      }
+    }
+
+    /* 窗口控制（关闭/最小化）——必须最先绑上，否则用户无法退出程序 */
+    safe("窗口控制", function () {
+      function winCall(name) {
+        var api2 = window.pywebview && window.pywebview.api;
+        if (!api2 || !api2[name]) { toast("窗口操作不可用", "pywebview 未就绪", "err"); return; }
+        api2[name]().then(function (r) {
+          if (r && r.ok === false) toast("窗口操作失败", r.error || "", "err");
+        }).catch(function (e) { toast("窗口操作失败", String(e), "err"); });
+      }
+      var wmin = $("#winMin"), wclose = $("#winClose");
+      if (wmin) wmin.addEventListener("click", function () { winCall("win_minimize"); });
+      if (wclose) wclose.addEventListener("click", function () { winCall("win_close"); });
+    });
+
     /* 导航指示条初始位置 */
     setTimeout(function () { moveIndicator($('button[aria-current="true"]', nav)); }, 60);
 
@@ -850,20 +913,37 @@
         poll(true);
         });
       });
+      }).catch(function (e) {
+        toast("添加媒体根失败", String(e), "err");
       });
       return rootsOpChain;   // 链上排队：并发调用共享同一条串行链
     }
     $("#addRoot").addEventListener("click", function () { addRoots([$("#newRoot").value]); });
-    /* 媒体库目录：添加（选择器，多选）与移除 */
+    /* 媒体库目录：添加（选择器）与移除。
+       整段用 safe() 隔离：这里曾因选择器参数问题静默失效，而它前面任何一处
+       抛错也会连带打死这段（bind 是单条直线执行流）。 */
+    safe("媒体库目录", function () {
     $("#libRootAdd").addEventListener("click", function () {
       if (!bridgeReady()) return;
-      window.pywebview.api.pick_folder($("#newRoot").value || "", true).then(function (r) {
-        if (!r || !r.ok) { if (r && r.error) toast("打开选择器失败", r.error, "err"); return; }
-        addLibRoots(r.paths || [r.path]);
+      /* multiple=false：文件夹选择在 Windows 上不支持多选（见 pick_folder docstring）。
+         传 true 时对话框返回空 → 前端以为用户没选 → "点了完全没反应"。 */
+      window.pywebview.api.pick_folder($("#newRoot").value || "", false).then(function (r) {
+        if (!r || !r.ok) {
+          if (r && r.error) toast("选择目录失败", r.error, "err");
+          else if (r && r.cancelled) { /* 用户主动取消，不打扰 */ }
+          else toast("选择目录失败", "没有拿到路径", "err");
+          return;
+        }
+        addLibRoots(r.paths && r.paths.length ? r.paths : (r.path ? [r.path] : []));
+      }).catch(function (e) {
+        toast("选择目录失败", String(e), "err");
       });
     });
     var libRootChain = Promise.resolve();
     function addLibRoots(list) {
+      /* ⚠ 整条链必须吞掉异常：Promise 链一旦进入 rejected 状态，后续 .then
+         会全部跳过——表现就是"第一次添加失败后，之后再点添加永远没反应"
+         （用户实际踩到）。所以每一步都自带 catch，链本身始终是 resolved。 */
       libRootChain = libRootChain.then(function () {
         return api("/api/settings").then(function (cur) {
           var roots = (((cur || {}).settings || {}).library_roots || []).slice();
@@ -872,14 +952,23 @@
             p = String(p == null ? "" : p).trim();
             if (p && roots.indexOf(p) < 0) { roots.push(p); added++; }
           });
-          if (!added) { toast("这些目录已经在列表里了", "", "warn"); return; }
+          if (!added) {
+            toast(list && list.length ? "这些目录已经在列表里了" : "没有选中任何目录", "", "warn");
+            return;
+          }
           return api("/api/settings", "POST", { library_roots: roots }).then(function (r) {
             if (!r || r.ok === false) { toast("保存失败", (r && r.error) || "", "err"); return; }
             toast("已添加 " + added + " 个媒体库目录", "正在自动扫描生成海报墙", "ok");
             libRootSig = "";   // 强制重渲染
-            api("/api/library/rescan", "POST", {}).then(function () { browse(vlBrowsePath || ""); });
+            // rescan 失败（比如"扫描已在进行"返回 400）不该影响添加结果，
+            // 也不该让链 rejected —— 单独 catch 掉。
+            api("/api/library/rescan", "POST", {}).then(function () {
+              browse(vlBrowsePath || "");
+            }).catch(function () {});
           });
         });
+      }).catch(function (e) {
+        toast("添加目录失败", String(e), "err");
       });
       return libRootChain;
     }
@@ -898,17 +987,19 @@
         });
       });
     });
+    });
     /* 系统「选择文件夹」：主入口。手打路径容易带进引号/全角字符，
        而那种错误在头显里只表现为"目录为空"。支持一次多选。 */
     $("#pickRoot").addEventListener("click", function () {
       if (!bridgeReady()) return;
-      window.pywebview.api.pick_folder($("#newRoot").value || "", true).then(function (r) {
+      /* 同 #libRootAdd：文件夹选择不支持多选，传 true 会拿到空结果。 */
+      window.pywebview.api.pick_folder($("#newRoot").value || "", false).then(function (r) {
         if (!r || !r.ok) {
-          if (r && r.error) toast("打开选择器失败", r.error, "err");
+          if (r && r.error) toast("选择目录失败", r.error, "err");
           return;
         }
-        addRoots(r.paths || [r.path]);
-      });
+        addRoots(r.paths && r.paths.length ? r.paths : (r.path ? [r.path] : []));
+      }).catch(function (e) { toast("选择目录失败", String(e), "err"); });
     });
     $("#rootList").addEventListener("click", function (e) {
       var b = e.target.closest("[data-del-root]");
@@ -1102,21 +1193,15 @@
           if (r && r.ok) {
             inp.value = r.path;
             inp.dispatchEvent(new Event("change"));
+          } else if (r && r.error) {
+            toast("选择目录失败", r.error, "err");
           }
-        });
+        }).catch(function (e) { toast("选择目录失败", String(e), "err"); });
       });
     });
 
-    /* 自绘标题栏按钮 */
-    function winCall(name) {
-      if (window.pywebview && window.pywebview.api && window.pywebview.api[name]) {
-        window.pywebview.api[name]();
-      } else {
-        toast("窗口控制仅在桌面应用中可用", "", "warn");
-      }
-    }
-    $("#winMin").addEventListener("click", function () { winCall("win_minimize"); });
-    $("#winClose").addEventListener("click", function () { winCall("win_close"); });
+    /* 自绘标题栏按钮：**绑定已在 bind() 开头**（关键绑定优先，见那里的说明）。
+       这里只保留拖动区的 mousedown 拦截。 */
     // 标题栏整体是拖动区（pywebview 会向上查找 .pywebview-drag-region），
     // 所以按钮/主题切换/状态胶囊必须吃掉 mousedown，否则点它们会变成拖窗口。
     $$(".titlebar button, .titlebar .pills").forEach(function (el) {
@@ -1124,6 +1209,29 @@
     });
 
     /* 设置：change 时先标 dirty（落盘成功才清），避免"点了又弹回去" */
+    if ($("#setVisionPy")) {
+      var vpyEl = $("#setVisionPy");
+      var commitVpy = function () {
+        saveSetting("setVisionPy", "vision_python", vpyEl.value.trim(), function (r) {
+          if (r && r.ok) toast("AI 识别", "解释器已保存，下次启动识别服务时生效", "ok");
+        });
+      };
+      vpyEl.addEventListener("change", commitVpy);
+      vpyEl.addEventListener("blur", function () {
+        if (document.getElementById("setVisionPy") === document.activeElement) return;
+        if (PENDING["setVisionPy"]) return;
+        commitVpy();
+      });
+      if ($("#setVisionPyPick")) {
+        $("#setVisionPyPick").addEventListener("click", function () {
+          var api2 = window.pywebview && window.pywebview.api;
+          if (!api2 || !api2.pick_file) { toast("AI 识别", "当前环境不支持文件选择，请手动填写路径", "warn"); return; }
+          api2.pick_file("open", "", [["Python 解释器", "python.exe"], ["所有文件", "*.*"]]).then(function (r) {
+            if (r && r.ok && r.path) { vpyEl.value = r.path; commitVpy(); }
+          });
+        });
+      }
+    }
     $("#setDlnaAuto").addEventListener("change", function () {
       markDirty(this);
       saveSetting("setDlnaAuto", "dlna_auto_start", this.checked);
@@ -1504,11 +1612,17 @@
   function vlShowChrome(on) {
     var w = $("#vlVWrap"); if (!w) return;
     w.classList.toggle("idle", !on);
+    if (!on) { try { drawMiniHeat(); } catch (e) {} }   /* 隐藏后立刻按新尺寸重画 */
   }
+  var vlLastMove = 0;
   function vlTouch() {
     vlShowChrome(true);
+    vlLastMove = Date.now();
     clearTimeout(vlChromeTimer);
-    vlChromeTimer = setTimeout(function () { if (vlPlaying()) vlShowChrome(false); }, 4000);
+    vlChromeTimer = setTimeout(function () {
+      /* 只有"确实没再动过"才隐藏：避免 pointermove 抖动把计时器无限续期 */
+      if (vlPlaying() && Date.now() - vlLastMove >= 3900) vlShowChrome(false);
+    }, 4000);
   }
   function vlSetPlayIcon() {
     var v = vlVid(), u = $("#vlPlay") && $("#vlPlay").querySelector("use");
@@ -1707,7 +1821,11 @@
   document.addEventListener("click", function (ev) {
     var t = ev.target;
     if (!t || !t.closest) return;
-    if (t.closest("#vlAiSub")) {
+    if (t.closest("#vlAiScript") || t.closest("#vlAiScript2")) {
+      if (AIV.on) aivStop(); else aivStart();
+      return;
+    }
+    if (t.closest("#vlAiSub") || t.closest("#vlAiSub2")) {
       var p = $("#lcPanel"); if (p) { p.hidden = !p.hidden; lcRender(); }
       return;
     }
@@ -1721,6 +1839,386 @@
     var panel = $("#lcPanel");
     if (panel && !panel.hidden && !t.closest("#lcPanel")) panel.hidden = true;
   });
+  /* ---------- 播放器热力曲线（移植手机端 ScriptHeatmap.kt） ----------
+     算法逐条对齐：
+       · 每个动作段按 |Δpos|/dt 得速度(%/s)，均摊到它覆盖的像素列
+       · 每列取段均值 → 95 分位归一化（单尖峰不会压平其余）
+       · [1,2,1]/4 轻平滑把柱状连成曲线；强度 ≤2% 的列不画（无基线）
+       · 色带 黑→蓝→绿→金→红→紫→深紫（n=120 分档）
+       · 已播段 alpha=1，未播 0.45                                        */
+  var HEAT_COLORS = [[0,0,0],[30,144,255],[34,139,34],[255,215,0],
+                     [220,20,60],[147,112,219],[37,22,122]];
+  function heatColorRGB(speed) {
+    var n = 120;
+    if (speed <= 0) return HEAT_COLORS[0];
+    if (speed > 5 * n) return HEAT_COLORS[6];
+    var t = speed + n / 2;
+    var i = Math.min(Math.floor(t / n), HEAT_COLORS.length - 2);
+    var f = Math.max(0, Math.min(1, (t - i * n) / n));
+    var a = HEAT_COLORS[i], b = HEAT_COLORS[i + 1];
+    return [a[0] + (b[0]-a[0])*f, a[1] + (b[1]-a[1])*f, a[2] + (b[2]-a[2])*f];
+  }
+  var HEAT_GAP_MS = 5000;          // 长空档视为无动作（手机端 GAP_THRESHOLD_MS 同量级）
+  function buildHeatMask(actions, durationSec, width) {
+    if (!actions || actions.length < 2 || !(durationSec > 0) || width < 4) return null;
+    var durMs = durationSec * 1000;
+    var acc = new Float64Array(width), cnt = new Int32Array(width);
+    for (var b = 1; b < actions.length; b++) {
+      var prev = actions[b-1], cur = actions[b];
+      if (prev.at >= durMs) break;
+      var dt = (cur.at - prev.at) / 1000;
+      if (dt <= 0) continue;
+      if (dt * 1000 > HEAT_GAP_MS) continue;
+      var speed = Math.abs(cur.pos - prev.pos) / dt;      // %/s
+      var c0 = Math.min(width-1, Math.max(0, Math.floor(prev.at / durMs * width)));
+      var c1 = Math.min(width-1, Math.max(c0, Math.floor(cur.at / durMs * width)));
+      for (var c = c0; c <= c1; c++) { acc[c] += speed; cnt[c]++; }
+    }
+    var raw = new Float64Array(width), samples = [];
+    for (var c2 = 0; c2 < width; c2++) {
+      if (!cnt[c2]) continue;
+      raw[c2] = acc[c2] / cnt[c2];
+      samples.push(raw[c2]);
+    }
+    if (!samples.length) return null;
+    samples.sort(function(x,y){ return x-y; });
+    var p95 = samples[Math.min(samples.length-1, Math.floor((samples.length-1)*0.95))];
+    if (!(p95 > 0)) return null;
+    var cols = new Array(width);
+    for (var c3 = 0; c3 < width; c3++) {
+      var l = raw[Math.max(0,c3-1)], r = raw[Math.min(width-1,c3+1)];
+      var intensity = Math.max(0, Math.min(1, (((l + 2*raw[c3] + r) / 4) / p95)));
+      cols[c3] = intensity <= 0.02 ? null : { rgb: heatColorRGB(raw[c3]), h: intensity };
+    }
+    return cols;
+  }
+  var HEAT = { key: "", cols: null, w: 0, miniKey: "", miniCols: null };
+  function heatActions() {
+    return AIV.liveActions || (vlHeatScript && vlHeatScript.actions) || null;
+  }
+  /* 视频画面实际渲染矩形（移植手机端 Screens.kt computeVideoRectPx）：
+     · fit(contain)：等比缩放，pillarbox/letterbox 黑边不覆盖
+     · zoom/stretch：画面铺满容器 → 全宽贴底
+     aspect<=0 或尺寸未测得 → null（不显示 mini 条） */
+  function computeVideoRect(containerW, containerH) {
+    var v = vlVid();
+    var aspect = (v && v.videoWidth && v.videoHeight) ? (v.videoWidth / v.videoHeight) : 0;
+    if (!(aspect > 0) || containerW <= 0 || containerH <= 0) return null;
+    var mode = getComputedStyle(v).objectFit || "contain";
+    if (mode === "cover" || mode === "fill") {
+      return { widthPx: containerW, bottomPx: 0, leftPx: 0 };
+    }
+    var cAspect = containerW / containerH;
+    var w, h;
+    if (cAspect > aspect) {            // 容器更宽 → 画面高度顶满，左右黑边
+      h = containerH; w = containerH * aspect;
+    } else {                            // 容器更高 → 画面宽度顶满，上下黑边
+      w = containerW; h = containerW / aspect;
+    }
+    var sidePx = Math.max(0, (containerW - w) / 2);
+    var bottomPx = Math.max(0, (containerH - h) / 2);
+    return { widthPx: w, bottomPx: bottomPx, leftPx: sidePx };
+  }
+
+  /* mini 热力条（手机端 MiniHeatStrip）：20px 高，8px 能量条贴底 + 位置白线，
+     底部衬底渐变让亮画面上也看得清。只在 .idle（控件隐藏）时可见。
+     宽度/位置对齐"视频画面实际渲染区域"（与手机端 computeVideoRectPx 同逻辑）。 */
+  function drawMiniHeat() {
+    var cv = $("#vlMiniHeat"); if (!cv) return;
+    var v = vlVid(); if (!v) return;
+    var dpr = window.devicePixelRatio || 1;
+    var wrap = $("#vlVWrap");
+    if (!wrap) return;
+    /* 画面矩形：宽度取画面实际宽度，底部留 letterbox 黑边高度 */
+    var rect = computeVideoRect(wrap.clientWidth, wrap.clientHeight);
+    if (!rect) return;                       /* 无宽高比/无尺寸 → 手机端同样不显示 */
+    cv.style.width = Math.round(rect.widthPx) + "px";
+    cv.style.left = Math.round(rect.leftPx) + "px";
+    cv.style.right = "auto";
+    cv.style.bottom = Math.round(rect.bottomPx) + "px";
+    var cw = Math.round(rect.widthPx), ch = 20;
+    var w = Math.round(cw * dpr), h = Math.round(ch * dpr);
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    var g = cv.getContext("2d");
+    g.clearRect(0, 0, w, h);
+    var dur = v.duration || 0;
+    var acts = heatActions();
+    if (!acts || acts.length < 2) { g.clearRect(0, 0, w, h); return; }  /* 手机端: script==null 不显示 */
+    if (window.MINI_HEATMAP === false) { g.clearRect(0, 0, w, h); return; }  /* 设置里关掉 */
+    var key = "mini|" + (vlMed.path || "") + "|" + Math.round(dur) + "|" + w + "|" +
+              (acts ? acts.length : 0) + "|" + (AIV.liveActions ? "ai" : "script");
+    if (HEAT.miniKey !== key) {
+      HEAT.miniKey = key;
+      HEAT.miniCols = buildHeatMask(acts, dur, w);
+    }
+    var grad = g.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, "rgba(0,0,0,0)");
+    grad.addColorStop(1, "rgba(0,0,0,0.35)");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, w, h);
+    if (!HEAT.miniCols) return;
+    var barH = Math.round(8 * dpr);
+    var top = Math.max(0, h - barH);
+    var frac = dur > 0 ? Math.max(0, Math.min(1, (v.currentTime || 0) / dur)) : 0;
+    var headX = w * frac;
+    for (var x = 0; x < w; x++) {
+      var col = HEAT.miniCols[x];
+      if (!col) continue;
+      var bh = Math.max(1, 1 + col.h * (barH - 1));
+      g.globalAlpha = (x < headX) ? 1.0 : 0.45;
+      g.fillStyle = "rgb(" + Math.round(col.rgb[0]) + "," +
+                    Math.round(col.rgb[1]) + "," + Math.round(col.rgb[2]) + ")";
+      g.fillRect(x, h - bh, 1, bh);
+    }
+    g.globalAlpha = 1;
+    if (headX > 0) {
+      g.fillStyle = "rgba(255,255,255,0.9)";
+      g.fillRect(Math.round(headX) - 1, top, Math.max(1, Math.round(1.5 * dpr)), barH);
+    }
+  }
+  function drawHeatCurve() {
+    var cv = $("#vlHeatCurve"); if (!cv) return;
+    var v = vlVid(); if (!v) return;
+    var w = Math.max(4, Math.round(cv.clientWidth * (window.devicePixelRatio || 1)));
+    var h = Math.max(4, Math.round(cv.clientHeight * (window.devicePixelRatio || 1)));
+    var dur = v.duration || 0;
+    var acts = (SYNC && SYNC.live && SYNC.liveActions) ? SYNC.liveActions : vlScriptActions;
+    var key = (vlMed.path || "") + "|" + Math.round(dur) + "|" + w + "|" +
+              (acts ? acts.length : 0);
+    if (HEAT.key !== key) {
+      HEAT.key = key; HEAT.w = w;
+      HEAT.cols = buildHeatMask(acts, dur, w);
+    }
+    if (cv.width !== w) cv.width = w;
+    if (cv.height !== h) cv.height = h;
+    var g = cv.getContext("2d");
+    g.clearRect(0, 0, w, h);
+    if (!HEAT.cols) return;
+    var frac = dur > 0 ? Math.max(0, Math.min(1, (v.currentTime || 0) / dur)) : 0;
+    var headX = w * frac;
+    for (var x = 0; x < w; x++) {
+      var col = HEAT.cols[x];
+      if (!col) continue;
+      var bh = Math.max(2, 2 + col.h * (h - 2));
+      g.globalAlpha = (x < headX) ? 1.0 : 0.45;
+      g.fillStyle = "rgb(" + Math.round(col.rgb[0]) + "," +
+                    Math.round(col.rgb[1]) + "," + Math.round(col.rgb[2]) + ")";
+      g.fillRect(x, h - bh, 1, bh);
+    }
+    g.globalAlpha = 1;
+  }
+
+  /* ---------- AI 实时识别（边播边生成脚本 → 走现有 sync/tick 下发） ---------- */
+  var AIV = { on: false, state: "idle", coverage: 0, n: 0, pct: 0, err: "" };
+
+  /* 预热遮罩：暂停画面 + 明确进度提示（转码/加载/首批推理） */
+  function aivShowWarm(on) {
+    var box = $("#vlAiWarm");
+    if (!box) return;
+    box.hidden = !on;
+    if (!on) return;
+    var pct = AIV.pct || 0;
+    var bar = $("#vlAiWarmBar");
+    if (bar) bar.style.width = Math.max(2, Math.min(100, pct)) + "%";
+    var sub = $("#vlAiWarmSub");
+    if (sub) {
+      /* 阶段优先用引擎自己报的 note（"加载模型 / 转码 480p30 / 镜头切分 / 识别中"）——
+         只按百分比猜阶段会在转码期（coverage 恒 0）一直显示"正在识别画面 0%"，
+         用户分不清是在干活还是卡死。 */
+      var note = String(AIV.note || "");
+      if (AIV.state === "idle" || AIV.state === "warming") {
+        if (note) {
+          sub.textContent = note + (pct >= 1 ? "（已识别 " + pct.toFixed(1) + "%）" : "");
+        } else if (AIV.state === "idle") {
+          sub.textContent = "正在启动识别服务…";
+        } else {
+          sub.textContent = "正在准备（加载模型 / 转码视频）…";
+        }
+      } else {
+        sub.textContent = "正在识别画面（已识别 " +
+          (AIV.coverage / 1000).toFixed(0) + "s / " + pct.toFixed(1) + "%）…";
+      }
+    }
+    var hint = $("#vlAiWarmHint");
+    if (hint) {
+      hint.textContent = "预热完成后自动继续播放；也可点「取消」直接播放（无 AI 动作）";
+    }
+  }
+
+  /* 缺少识别依赖时的引导：说明 + 一键安装（后台建 venv 装 torch） */
+  function aivShowRuntimeMissing(msg) {
+    var box = $("#vlAiWarm");
+    if (!box) { toast("AI 识别", msg, "err"); return; }
+    box.hidden = false;
+    var bar = $("#vlAiWarmBar");
+    if (bar) bar.style.width = "0%";
+    var t = box.querySelector(".vl-aw-title");
+    if (t) t.textContent = "AI 识别还缺运行环境";
+    var sub = $("#vlAiWarmSub");
+    if (sub) {
+      sub.textContent = "会先扫描本机已有的 torch 并复用（通常只需补几十 MB 轻量依赖）；" +
+                        "本机完全没有 torch 时才下载（约 2.5GB）。" +
+                        "运行时建在程序目录下的 vision-runtime\，不影响系统 Python。";
+    }
+    var hint = $("#vlAiWarmHint");
+    if (hint) hint.textContent = "装一次即可，之后打开视频可直接识别。";
+    var btn = $("#vlAiWarmCancel");
+    if (btn) {
+      btn.textContent = "安装运行时";
+      btn.classList.add("primary");
+      btn.onclick = function () {
+        btn.disabled = true;
+        btn.textContent = "正在安装…";
+        api("/api/vision/runtime/install", "POST", {}).then(function (r) {
+          if (!r || !r.ok) {
+            btn.disabled = false;
+            btn.textContent = "安装运行时";
+            toast("安装失败", (r && r.error) || "未知错误", "err");
+            return;
+          }
+          toast("AI 识别", "已开始准备运行时（会优先复用本机 torch）", "info");
+          aivPollRuntime();
+        });
+      };
+    }
+  }
+
+  /* 轮询运行时安装进度，装完自动重新开始识别 */
+  function aivPollRuntime() {
+    api("/api/vision/state").then(function (r) {
+      if (!r || !r.ok) { setTimeout(aivPollRuntime, 3000); return; }
+      var rt = r.runtime || {};
+      var bar = $("#vlAiWarmBar");
+      var sub = $("#vlAiWarmSub");
+      var btn = $("#vlAiWarmCancel");
+      if (bar) bar.style.width = Math.max(2, Math.min(100, rt.pct || 0)) + "%";
+      if (sub) {
+        sub.textContent = rt.state === "error"
+          ? ("安装失败：" + (rt.error || "未知错误"))
+          : "正在准备识别运行时（" + (rt.pct || 0) + "%）…优先复用本机 torch，缺依赖时才下载";
+      }
+      if (rt.state === "done") {
+        toast("AI 识别", "运行时安装完成，正在重新预热", "ok");
+        if (btn) { btn.disabled = false; btn.textContent = "取消（直接播放）"; btn.classList.remove("primary"); }
+        aivShowWarm(false);
+        aivStart();
+        return;
+      }
+      if (rt.state === "error") {
+        if (btn) { btn.disabled = false; btn.textContent = "重试安装"; }
+        return;   // 停下等用户点重试
+      }
+      setTimeout(aivPollRuntime, 2000);
+    }).catch(function () { setTimeout(aivPollRuntime, 3000); });
+  }
+
+  function aivRender() {
+    var box = $("#vlAiVision"), txt = $("#vlAvText"), meta = $("#vlAvMeta"),
+        dot = $("#vlAvDot"), btn = $("#vlAiScript");
+    if (btn) btn.classList.toggle("on", AIV.on);
+    if (!box) return;
+    box.hidden = !AIV.on;
+    if (!AIV.on) return;
+    var label = {
+      idle: "AI 识别：未开始", warming: "AI 识别：预热中",
+      running: "AI 识别：跟随中", done: "AI 识别：全片完成", error: "AI 识别：出错"
+    }[AIV.state] || ("AI 识别：" + AIV.state);
+    if (txt) txt.textContent = label;
+    if (meta) {
+      meta.textContent = AIV.state === "warming"
+        ? ("已识别 " + (AIV.coverage / 1000).toFixed(0) + "s（" + AIV.pct + "%）")
+        : (AIV.n + " 个动作 · 已识别 " + (AIV.coverage / 1000).toFixed(0) + "s");
+    }
+    if (dot) {
+      dot.className = "vl-av-dot " +
+        (AIV.state === "error" ? "err" : AIV.state === "running" ? "ok" : "warm");
+    }
+  }
+
+  /* 设置同步：mini 热力条开关（对齐手机端 miniHeatmapEnabled，默认开） */
+  function miniHeatSync() {
+    api("/api/state").then(function (r) {
+      if (!r || !r.ok) return;
+      var s = r.settings || {};
+      window.MINI_HEATMAP = (s.mini_heatmap !== false);
+    }).catch(function () {});
+  }
+  miniHeatSync();
+
+  function aivPoll() {
+    if (!AIV.on) return;
+    api("/api/vision/state").then(function (r) {
+      if (!r || !r.ok) return;
+      AIV.state = r.engine_state || "idle";
+      AIV.coverage = r.coverage_ms || 0;
+      AIV.n = r.n_actions || 0;
+      AIV.pct = r.warmup_pct || 0;
+      AIV.err = r.error || "";
+      AIV.note = r.note || "";
+      aivRender();
+      /* 预热够了：撤遮罩 + 自动继续播放（用户不必盯着） */
+      if (AIV.state === "running" && AIV.coverage > 3000) {
+        aivShowWarm(false);
+        var v = vlVid();
+        if (v && v.paused && !AIV._autoplayed) {
+          AIV._autoplayed = true;
+          v.play().catch(function () {});
+        }
+      } else if (AIV.state === "warming" || AIV.state === "idle") {
+        aivShowWarm(true);
+        var wb = $("#vlAiWarmBar");
+        if (wb) wb.style.width = Math.max(2, Math.min(100, AIV.pct || 0)) + "%";
+      } else if ((AIV.state === "error" || (r.error && !r.running)) && !AIV._failShown) {
+        /* 预热失败：**必须**收起遮罩并恢复播放，否则视频被暂停、遮罩一直转圈，
+           用户只能强关程序。错误信息要留在界面上（toast），不要静默吞掉。 */
+        aivShowWarm(false);
+        var ve = vlVid();
+        if (ve && ve.paused) ve.play().catch(function () {});
+        var msg = AIV.err || "识别服务启动失败";
+        AIV._failShown = true;
+        /* 缺依赖是最常见的失败（安装版没有 torch）。这时把"安装运行时"做成
+           遮罩里的按钮——用户不用去设置页猜，也不会被一句技术错误挡住。 */
+        if (/缺少 AI 识别依赖|No module named/.test(msg)) {
+          aivShowWarm(false);
+          aivShowRuntimeMissing(msg);
+        } else {
+          aivShowWarm(false);
+          aivRender();
+          toast("AI 识别失败", msg, "err");
+        }
+        AIV.on = false;
+      }
+    });
+  }
+
+  function aivStart() {
+    if (!vlMed.path) { toast("AI 识别", "先打开一个视频", "warn"); return; }
+    AIV.on = true; AIV._autoplayed = false; AIV._failShown = false;
+    /* 预热期间暂停画面：识别要先把视频转码+跑一遍模型，此时播放会与
+       "AI 跟上中"空转。暂停并给出明确提示，预热完再自动继续。 */
+    var v0 = vlVid();
+    if (v0 && !v0.paused) { try { v0.pause(); } catch (e) {} }
+    aivShowWarm(true);
+    aivRender();
+    api("/api/vision/open", "POST", { video: vlMed.path }).then(function (r) {
+      if (!r || !r.ok) {
+        AIV.on = false; aivShowWarm(false); aivRender();
+        toast("AI 识别启动失败", (r && r.error) || "未知错误", "err");
+        return;
+      }
+      toast("AI 识别", "正在预热（转码 + 加载模型，约 30-60 秒）", "info");
+    });
+  }
+
+  function aivStop(silent) {
+    AIV.on = false; AIV.liveActions = null; AIV.note = ""; aivShowWarm(false);
+    aivRender(); drawHeatCurve();
+    api("/api/vision/close", "POST", {}).then(function () {
+      if (!silent) toast("AI 识别", "已停止", "info");
+    });
+  }
+  setInterval(aivPoll, 1000);
+
   function openVideo(path, name, list, idx) {
     reportProgress(true);                                // 切换前先保存上一个的进度
     vlMed.path = path || "";
@@ -1730,6 +2228,7 @@
     showPlayView(vlMed.path);
     $("#vlPlayName").textContent = vlMed.name;
     $("#vlPlayPath").textContent = vlMed.path;
+    var _vt = $("#vlVTitle"); if (_vt) _vt.textContent = vlMed.name || "—";
     $("#vlVOff").hidden = true;
     var v = vlVid();
     v.style.display = "";
@@ -1763,6 +2262,8 @@
     var mu = $("#vlMute") && $("#vlMute").querySelector("use");
     if (mu) mu.setAttribute("href", (v.muted || !v.volume) ? "#i-volume-x" : "#i-volume");
     drawHeat(cur, dur);
+    drawHeatCurve();
+    if ($("#vlVWrap") && $("#vlVWrap").classList.contains("idle")) drawMiniHeat();
     vlSetPlayIcon();
   }
   function vlSeekTo(sec) {
@@ -1799,10 +2300,17 @@
     v.addEventListener("play", function () { syncStart(vlMed.path); });
     v.addEventListener("timeupdate", function () { syncTick(v.currentTime); reportProgress(false); });
     v.addEventListener("ended", function () { syncStop(); });
-    $("#vlPlay").addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
-    $("#vlPrev").addEventListener("click", function () { vlStep(-1); });
-    $("#vlNext").addEventListener("click", function () { vlStep(1); });
-    $("#vlMute").addEventListener("click", function () { v.muted = !v.muted; vlSyncVlUi(); });
+    /* ⚠ 这四个按钮在重做播放器 UI（顶部功能区 + 底栏）时已从 index.html 移除，
+       但绑定代码还留着 —— 它们一旦为 null 就在**模块顶层**抛
+       "Cannot read properties of null (reading 'addEventListener')"，
+       整个 IIFE 直接中断，bind() 永不执行 ⇒ 关闭窗口、添加目录等全部失效
+       （2026-10-18 用户实测：两个症状同时出现）。用可选调用兜住。 */
+    var elPlay = $("#vlPlay"), elPrev = $("#vlPrev"),
+        elNext = $("#vlNext"), elMute = $("#vlMute");
+    if (elPlay) elPlay.addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
+    if (elPrev) elPrev.addEventListener("click", function () { vlStep(-1); });
+    if (elNext) elNext.addEventListener("click", function () { vlStep(1); });
+    if (elMute) elMute.addEventListener("click", function () { v.muted = !v.muted; vlSyncVlUi(); });
     /* 全屏作用在**文档根**：隐藏任何子容器都安全（见 styles.css 里那段注释）。
        副作用是 html 全屏后整页都在，所以靠 CSS 把 .vl-vwrap 提成铺满屏的浮层。 */
     $("#vlFull").addEventListener("click", function () {
@@ -1827,7 +2335,59 @@
       }
       toast("没有正在播放的视频", "先在媒体库里点一个视频", "warn");
     });
-    $("#vlVBack").addEventListener("click", function () {
+    /* ---- 顶部功能区（手机端 PlayerTopBar 同构） ---- */
+    var backFn = function () {
+      try {
+        if (document.fullscreenElement) {
+          var ex = document.exitFullscreen();
+          if (ex && ex.catch) ex.catch(function () {});
+        }
+      } catch (e) {}
+      try { v.pause(); } catch (e) {}
+      v.removeAttribute("src"); v.load();
+      vlMed.path = ""; vlMed.failed = false;
+      if (lcActive) lcStop();
+      if (AIV.on) aivStop();
+      vlCurPath = "";
+      $("#vlPlayView").style.display = "none";
+      $("#vlBrowse").style.display = "";
+      vlHeatScript = null; vlHeatKey = ""; drawHeat();
+      browse(vlBrowsePath || "");
+      if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
+    };
+    if ($("#vlVBack2")) $("#vlVBack2").addEventListener("click", backFn);
+    var titleEl = $("#vlVTitle");
+    if (titleEl) titleEl.textContent = vlMed.name || "—";
+    /* 字幕 pill：与旧 AI 字幕按钮同语义 */
+    if ($("#vlCcPill")) $("#vlCcPill").addEventListener("click", function () {
+      toast("字幕", "外部字幕请用「AI 字幕」；本页暂不支持内嵌字幕轨", "info");
+    });
+    if ($("#vlAiSub2")) $("#vlAiSub2").addEventListener("click", function () {
+      var p2 = $("#lcPanel"); if (p2) { p2.hidden = !p2.hidden; lcRender(); }
+      this.classList.toggle("on", lcActive);
+    });
+    if ($("#vlAiWarmCancel")) $("#vlAiWarmCancel").addEventListener("click", function () {
+      /* 取消 = 放弃 AI 识别（关掉引擎，释放显存）并立刻恢复播放。
+         只隐藏遮罩不关引擎的话，后台仍在转码/推理，用户会看到显存被占、
+         风扇狂转却"什么都没发生"。 */
+      aivStop(true);
+      var vv = vlVid(); if (vv && vv.paused) vv.play().catch(function () {});
+      toast("AI 识别", "已取消预热，继续播放（无 AI 动作）", "info");
+    });
+    if ($("#vlAiScript2")) $("#vlAiScript2").addEventListener("click", function () {
+      if (AIV.on) aivStop(); else aivStart();
+    });
+    if ($("#vlMore")) $("#vlMore").addEventListener("click", function () {
+      var items = ["静音/取消静音", "倍速 1.25x", "倍速 1.0x", "画中画"];
+      var lines = items.map(function (s, i) { return (i + 1) + ". " + s; });
+      var pick = window.prompt("更多操作（输入序号）： " + lines.join("  "), "1");
+      var n = parseInt(pick, 10);
+      if (n === 1) { v.muted = !v.muted; vlSyncVlUi(); }
+      else if (n === 2) { v.playbackRate = 1.25; toast("倍速", "1.25x", "info"); }
+      else if (n === 3) { v.playbackRate = 1.0; toast("倍速", "1.0x", "info"); }
+      else if (n === 4) { try { v.requestPictureInPicture && v.requestPictureInPicture(); } catch (e) {} }
+    });
+    var _vb = $("#vlVBack"); if (_vb) _vb.addEventListener("click", function () {
       /* 回到媒体库（暂停并释放流） */
       /* 先退全屏再动 DOM：虽然现在全屏元素是文档根、隐藏子容器已经安全，
          但退出动作放前面更稳（这里就是"全屏后点返回直接卡死"的现场）。 */
@@ -2654,10 +3214,10 @@
     $("#setScriptFolderPick") && $("#setScriptFolderPick").addEventListener("click", function () {
       var cur = $("#setScriptFolder").value || "";
       if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
-        window.pywebview.api.pick_folder(cur, true).then(function (r) {
+        window.pywebview.api.pick_folder(cur, false).then(function (r) {
           var p = (r && (r.path || r.folder)) || (typeof r === "string" ? r : "");
           if (p) { $("#setScriptFolder").value = p; api("/api/settings", "POST", { script_folder: p }); }
-        });
+        }).catch(function (e) { toast("选择目录失败", String(e), "err"); });
       }
     });
     $("#setScriptFolder") && $("#setScriptFolder").addEventListener("change", function () {

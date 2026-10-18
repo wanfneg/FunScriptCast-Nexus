@@ -867,6 +867,70 @@ html:fullscreen{ background:#000; }
 html:fullscreen .vl-vwrap{ position:fixed; inset:0; z-index:80; border-radius:0; }
 html:fullscreen .vl-vchrome{ padding-bottom:16px; }
 html:fullscreen .vl-screen-path{ display:none; }
+/* ---------- 播放器顶栏（对齐手机端 PlayerTopBar） ---------- */
+.vl-vtop{ position:absolute; left:0; right:0; top:0; display:flex; align-items:center; gap:8px;
+  padding:10px 12px 14px; z-index:6;
+  background:linear-gradient(180deg,rgba(6,9,14,.78),transparent);
+  transition:opacity var(--dur-base) var(--ease-out); }
+.vl-vwrap.idle .vl-vtop{ opacity:0; pointer-events:none; }
+.vl-vtitle{ flex:1; min-width:0; color:#fff; font-size:14px; font-weight:500;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.vl-vpills{ display:flex; align-items:center; gap:6px; flex:none; }
+.vl-pill{ height:26px; padding:0 11px; border-radius:999px; border:1px solid rgba(255,255,255,.22);
+  background:rgba(255,255,255,.08); color:#dfe7f2; font-size:12px; line-height:24px; cursor:pointer;
+  transition:background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+.vl-pill:hover{ background:rgba(255,255,255,.16); }
+.vl-pill.on{ background:rgba(93,169,255,.34); border-color:rgba(93,169,255,.7); color:#eaf3ff; }
+.vl-pill:disabled{ opacity:.4; cursor:default; }
+
+/* AI 识别预热遮罩：暂停画面 + 进度条 + 明确提示 */
+.vl-aiwarm{ position:absolute; inset:0; z-index:8; display:grid; place-items:center;
+  background:rgba(6,9,14,.72); backdrop-filter:blur(3px); }
+.vl-aiwarm[hidden]{ display:none; }
+.vl-aw-card{ min-width:320px; max-width:70%; padding:22px 26px; border-radius:14px;
+  background:rgba(18,23,32,.94); border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 18px 48px rgba(0,0,0,.5); color:#e8eef7; text-align:center; }
+.vl-aw-title{ font-size:15px; font-weight:600; letter-spacing:.3px; margin-bottom:14px; }
+.vl-aw-bar{ height:4px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden; }
+.vl-aw-bar > i{ display:block; height:100%; width:2%; border-radius:999px;
+  background:linear-gradient(90deg,#3ddc84,#5da9ff); transition:width .4s var(--ease-out); }
+.vl-aw-sub{ margin-top:12px; font-size:12.5px; opacity:.9; font-variant-numeric:tabular-nums; }
+.vl-aw-hint{ margin-top:6px; font-size:11.5px; opacity:.55; }
+.vl-aw-cancel{ margin-top:16px; height:28px; padding:0 16px; border-radius:999px; cursor:pointer;
+  border:1px solid rgba(255,255,255,.2); background:rgba(255,255,255,.06); color:#dfe7f2; font-size:12px; }
+.vl-aw-cancel:hover{ background:rgba(255,255,255,.14); }
+.vl-aw-cancel.primary{ border-color:transparent; color:#06210f; font-weight:600;
+  background:linear-gradient(180deg,#57e08c,#33c973); }
+.vl-aw-cancel.primary:hover{ filter:brightness(1.06); }
+.vl-aw-cancel[disabled]{ opacity:.55; cursor:default; }
+
+/* mini 热力条（手机端 MiniHeatStrip 同构）：只在控件隐藏（.idle）时出现，
+   贴在画面底部 20px 内，含底部衬底渐变 + 8px 能量条 + 播放位置白线。 */
+/* 尺寸/位置由 JS 按"视频画面实际渲染区域"写入(left/width/bottom)，
+   CSS 只给默认值(未计算前不显示)与过渡。 */
+.vl-miniheat{ position:absolute; left:0; bottom:0; height:20px; width:100%;
+  pointer-events:none; z-index:4; opacity:0; transition:opacity var(--dur-base) var(--ease-out); }
+.vl-vwrap.idle .vl-miniheat{ opacity:1; }
+
+/* 进度条 + 热力曲线（对齐手机端 HeatCurve 叠在滑条上方 12dp 的位置） */
+.vl-seekwrap{ flex:1; min-width:0; position:relative; display:flex; flex-direction:column;
+  justify-content:flex-end; height:28px; }
+.vl-heatcurve{ position:absolute; left:6px; right:6px; bottom:14px; height:12px;
+  width:calc(100% - 12px); pointer-events:none; opacity:.95; }
+
+/* AI 实时识别状态条（叠在播放器顶部，与底部控制栏同一套视觉语言） */
+.vl-aivision{ position:absolute; left:14px; top:12px; z-index:5; display:flex; align-items:center; gap:8px;
+  padding:7px 12px; border-radius:999px; background:rgba(6,9,14,.72);
+  backdrop-filter:blur(8px); color:#e8eef7; font-size:12px; letter-spacing:.2px;
+  border:1px solid rgba(255,255,255,.10); }
+.vl-aivision[hidden]{ display:none; }
+.vl-av-dot{ width:7px; height:7px; border-radius:50%; flex:none; background:#8a93a3; }
+.vl-av-dot.ok{ background:#3ddc84; box-shadow:0 0 8px rgba(61,220,132,.55); }
+.vl-av-dot.warm{ background:#f0b429; box-shadow:0 0 8px rgba(240,180,41,.5); }
+.vl-av-dot.err{ background:#ef4b4b; }
+.vl-av-m{ opacity:.66; font-variant-numeric:tabular-nums; }
+.vl-cbtn.on{ background:rgba(93,169,255,.30); color:#cfe4ff; }
+
 .vl-cbtn{ width:30px; height:30px; flex:none; display:grid; place-items:center; border:0; border-radius:50%;
   background:rgba(255,255,255,.12); color:#fff; cursor:pointer; transition:background var(--dur-fast); }
 .vl-cbtn:hover{ background:rgba(255,255,255,.24); }

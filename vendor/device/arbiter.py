@@ -52,6 +52,19 @@ class DeviceArbiter:
             # （看护把脚本拉回来 → 脚本停缓动 → 缓动"点一下立马自动取消"）。
         return res
 
+    def start_live(self, source: str) -> dict:
+        """AI 实时模式：动作由识别引擎灌入，不走磁盘脚本。
+
+        与 start_script 同一套仲裁语义（清预设、不碰缓动/爆发），差别只在
+        SyncEngine 的动作来源。爆发活动中同样让路。
+        """
+        if self.quick.is_orgasm:
+            return {"ok": True, "deferred": True, "live": True}
+        res = self.sync.start_live(source)
+        if res.get("ok"):
+            self.preset.stop()
+        return res
+
     def start_preset(self) -> dict:
         self._stop_all_except("preset")      # = 三件事里的"清脚本 + 停快捷动作"
         self.quick.discard_resume()          # 预设在播，视频再播放不许把爆发/缓动拉起来抢设备

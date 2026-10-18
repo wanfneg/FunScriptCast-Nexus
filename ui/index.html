@@ -17,7 +17,7 @@ try {
 } catch (e) {}
 </script>
 <link rel="stylesheet" href="fonts.css">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=20261018b">
 </head>
 <body>
 
@@ -432,26 +432,51 @@ try {
                   <button class="lc-opt" id="lcEn" data-lc-lang="en">英语</button>
                   <div class="lc-panel-hint" id="lcHint">实时转写并翻译为中文；识别由 Windows 实时字幕完成（不占显存）</div>
                 </div>
-                <button class="vl-vback" id="vlVBack"><svg class="ic"><use href="#i-chevron-left"/></svg><span>返回媒体库</span></button>
                 <div class="vl-voff" id="vlVOff" hidden>
                   <div class="vl-voff-t">内置播放器打不开这个文件</div>
                   <div class="vl-voff-d" id="vlVOffD">内置播放器打不开这个文件：可能是编码不受支持（HEVC/10bit），或 DLNA 服务没在跑</div>
                 </div>
+                <div class="vl-aivision" id="vlAiVision" hidden>
+                  <span class="vl-av-dot" id="vlAvDot"></span>
+                  <span class="vl-av-t" id="vlAvText">AI 识别：预热中</span>
+                  <span class="vl-av-m" id="vlAvMeta"></span>
+                </div>
+                <!-- 顶部功能区（对齐手机端 PlayerTopBar：返回 | 标题 | 字幕·AI字幕·AI识别·更多） -->
+                <div class="vl-vtop" id="vlVTop">
+                  <button class="vl-cbtn" id="vlVBack2" title="返回媒体库"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
+                  <div class="vl-vtitle" id="vlVTitle">—</div>
+                  <div class="vl-vpills">
+                    <button class="vl-pill" id="vlCcPill" title="字幕">字幕</button>
+                    <button class="vl-pill" id="vlAiSub2" title="AI 字幕（日语→中文）">AI字幕</button>
+                    <button class="vl-pill" id="vlAiScript2" title="AI 实时识别（边播边生成脚本）">AI识别</button>
+                    <button class="vl-cbtn" id="vlMore" title="更多"><svg class="ic"><use href="#i-more-horizontal"/></svg></button>
+                  </div>
+                </div>
+
+                <!-- AI 识别预热遮罩：暂停画面 + 明确进度（转码/识别/自动继续） -->
+                <div class="vl-aiwarm" id="vlAiWarm" hidden>
+                  <div class="vl-aw-card">
+                    <div class="vl-aw-title">AI 实时识别预热中</div>
+                    <div class="vl-aw-bar"><i id="vlAiWarmBar"></i></div>
+                    <div class="vl-aw-sub" id="vlAiWarmSub">正在启动识别服务…</div>
+                    <div class="vl-aw-hint" id="vlAiWarmHint"></div>
+                    <button class="vl-aw-cancel" id="vlAiWarmCancel">取消（直接播放）</button>
+                  </div>
+                </div>
+                <!-- mini 热力条（对齐手机端 MiniHeatStrip）：控件隐藏时贴在画面底部 -->
+                <canvas class="vl-miniheat" id="vlMiniHeat"></canvas>
+                <!-- 底栏（对齐手机端 PlayerBottomBar 单行）：
+                     小窗/竖屏 | 当前时间 | [热力曲线 + 进度条] | 时长 | 全屏 -->
                 <div class="vl-vchrome" id="vlVChrome">
-                  <button class="vl-cbtn" id="vlPrev" title="上一个视频"><svg class="ic"><use href="#i-skip-back"/></svg></button>
-                  <button class="vl-cbtn big" id="vlPlay" title="播放/暂停（空格）"><svg class="ic"><use href="#i-play"/></svg></button>
-                  <button class="vl-cbtn" id="vlNext" title="下一个视频"><svg class="ic"><use href="#i-skip-fwd"/></svg></button>
+                  <button class="vl-cbtn" id="vlPip" title="小窗模式"><svg class="ic"><use href="#i-pip"/></svg></button>
                   <span class="vl-ctime" id="vlVPos">0:00</span>
-                  <div class="vl-slider vl-vseek" id="vlVSeek" data-single="1" data-min="0" data-max="1" data-val="0">
-                    <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
+                  <div class="vl-seekwrap">
+                    <canvas class="vl-heatcurve" id="vlHeatCurve"></canvas>
+                    <div class="vl-slider vl-vseek" id="vlVSeek" data-single="1" data-min="0" data-max="1" data-val="0">
+                      <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
+                    </div>
                   </div>
                   <span class="vl-ctime" id="vlVDur">0:00</span>
-                  <button class="vl-cbtn" id="vlAiSub" title="AI 字幕（Win11 实时字幕 · 日语→中文）"><svg class="ic"><use href="#i-captions"/></svg></button>
-                  <button class="vl-cbtn" id="vlMute" title="静音"><svg class="ic"><use href="#i-volume"/></svg></button>
-                  <div class="vl-slider vl-vvol" id="vlVVol" data-single="1" data-min="0" data-max="100" data-val="100">
-                    <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
-                  </div>
-                  <button class="vl-cbtn" id="vlPip" title="画中画"><svg class="ic"><use href="#i-pip"/></svg></button>
                   <button class="vl-cbtn" id="vlFull" title="全屏"><svg class="ic"><use href="#i-maximize"/></svg></button>
                 </div>
               </div>
@@ -756,6 +781,16 @@ try {
               <label class="switch"><input type="checkbox" id="setSubAuto"><span class="track"></span><span class="knob"></span></label>
             </div>
             <div class="row flush">
+              <div class="grow">
+                <div class="name">AI 识别 Python 解释器</div>
+                <div class="sub">留空自动探测。需要 torch/timm/opencv（见识别模块 requirements.txt）</div>
+              </div>
+            </div>
+            <div class="row flush">
+              <input class="inp grow" id="setVisionPy" placeholder="留空=自动探测（例如 C:\Python310\python.exe）">
+              <button class="btn ghost" id="setVisionPyPick">浏览</button>
+            </div>
+            <div class="row flush">
               <div class="grow"><div class="name">点击关闭时最小化到托盘</div><div class="sub">关闭后从托盘图标恢复</div></div>
               <label class="switch"><input type="checkbox" id="setCloseTray"><span class="track"></span><span class="knob"></span></label>
             </div>
@@ -988,6 +1023,6 @@ try {
     </div>
   </div>
 </div>
-<script src="app.js"></script>
+<script src="app.js?v=20261018b"></script>
 </body>
 </html>

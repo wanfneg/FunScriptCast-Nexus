@@ -39,6 +39,12 @@ class SyncEngine:
         self._last_n: int | None = None      # 已发送的段索引（手机端 lastIndex）
         self._skip_n: int | None = None      # 已判定过"静止段跳播"的段索引（防重复 seek）
         self._seek_to: float | None = None   # 「跳过无动作」判定出的视频快进目标（秒）
+        # ---- AI 实时模式 ----
+        # 动作来自识别引擎的增量流, 而不是磁盘上的 .funscript。每拍(或每 N 拍)
+        # 用最新动作整体替换 self.actions —— 下发逻辑与脚本模式完全共用。
+        self.live = False
+        self.live_coverage_ms = 0.0          # 引擎已识别到的时间点
+        self.live_source = ""                # 引擎任务标识（视频路径）
 
     # ---- 脚本 ----
     def resolve_script(self, video_path: str) -> Path | None:
@@ -92,8 +98,41 @@ class SyncEngine:
         否则同一段内位置没变（<1% 不刷）会一直不发，设备停在半路。"""
         self._last_n = None
 
+    def start_live(self, source: str) -> dict:
+        """进入 AI 实时模式：动作由 feed_live() 灌入，不读磁盘脚本。"""
+        self.actions = []
+        self._times = []
+        self.path = ""
+        self.live = True
+        self.live_source = source
+        self.live_coverage_ms = 0.0
+        self.active = True
+        self.sent = 0
+        self.skipped = 0
+        self._last_n = None
+        self._skip_n = None
+        return {"ok": True, "live": True, "source": source}
+
+    def feed_live(self, actions: list, coverage_ms: float) -> int:
+        """用引擎返回的完整动作表替换（引擎侧已按前缀整体重算，天然有序）。
+
+        只在覆盖范围**变长**时重建 bisect 时间轴；动作表整体替换后 _last_n 必须
+        复位，否则同一段索引指向不同动作、会漏发或多发。
+        """
+        acts = [[float(a["at"]), float(a["pos"])] for a in actions]
+        acts.sort(key=lambda a: a[0])
+        grew = float(coverage_ms) > self.live_coverage_ms
+        self.live_coverage_ms = float(coverage_ms)
+        self.actions = acts
+        self._times = [a[0] for a in acts]
+        if grew:
+            self._last_n = None
+        return len(acts)
+
     def stop(self) -> dict:
         self.active = False
+        self.live = False
+        self.live_source = ""
         self._seek_to = None
         return {"ok": True}
 
@@ -152,7 +191,9 @@ class SyncEngine:
         return sk
 
     def state(self) -> dict:
-        return {"active": self.active, "script": Path(self.path).name if self.path else "",
+        return {"active": self.active, "live": self.live,
+                "live_coverage_ms": self.live_coverage_ms,
+                "script": Path(self.path).name if self.path else "",
                 "actions": len(self.actions), "sent": self.sent, "skipped": self.skipped,
                 "delay_ms": self.delay_ms, "skip_idle": self.skip_idle,
                 "idle_threshold": self.idle_threshold}

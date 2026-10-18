@@ -94,6 +94,12 @@ Type: files; Name: "{app}\vendor\subtitle\*.pyc"
 Type: files; Name: "{app}\vendor\subtitle\*.md"
 Type: files; Name: "{app}\vendor\subtitle\*.txt"
 Type: files; Name: "{app}\vendor\subtitle\*.bat"
+; AI 识别模块：升级时逐项删代码（cache 与 weights 不动——缓存会重建、权重是模型本体）
+Type: filesandordirs; Name: "{app}\vendor\vision\goblintrain"
+Type: filesandordirs; Name: "{app}\vendor\vision\__pycache__"
+Type: files; Name: "{app}\vendor\vision\*.py"
+Type: files; Name: "{app}\vendor\vision\*.md"
+Type: files; Name: "{app}\vendor\vision\*.txt"
 ; 开发机留下的历史备份（含开发机路径），早期版本曾随包发出，升级时顺手清掉
 Type: files; Name: "{app}\vendor\subtitle\config.json.bak-prompt"
 ; 外挂 mpv 播放器已整套删除（1.0.79）：升级时清掉旧版装的残留（player 目录里的
@@ -118,7 +124,7 @@ Source: "..\dist-app\ui\*"; DestDir: "{app}\ui"; \
 ;   audiocpp\gpu 排除（R101）：GPU 运行时 2.2GB 走界面下载条目（audiocpp-cuda），
 ;   开发机 vendor 里的 gpu\ 调试副本绝不能被卷进安装包（1.0.44 首编曾膨胀到 666MB）。
 Source: "..\dist-app\vendor\*"; DestDir: "{app}\vendor"; \
-    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp,llama\*,audiocpp\gpu\*"; \
+    Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp,llama\*,audiocpp\gpu\*,vision\cache\*,vision\__pycache__\*"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 ; 出厂种子：**只在新装时铺**（onlyifdoesntexist）。装了就不再动它——用户的 key、
 ; 以及界面上调过的参数都在这份文件里。配置在 data\ 里叫 subtitle_config.json。
