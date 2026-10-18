@@ -1,0 +1,201 @@
+# -*- coding: utf-8 -*-
+"""Nexus 视觉模块的 ONNX 推理后端（不依赖 PyTorch）。
+
+对应官方 GoblinScript 的 5 张图（bundle 由 goblintrain export 生成）：
+  vjepa_pca.onnx  帧窗口 -> 白化 int8 latent 行
+  transnet.onnx   帧 -> 镜头切点概率
+  head.onnx       int8 latent + cut -> vmarg/level/ext/plat/rev/conf + 主干特征 h
+  env_step.onnx   包络自回归的一步
+  mask.onnx       逐行注意力门（编码期 ROI，本后端暂不用）
+
+分块与包络语义逐行对照 src/heads.rs（MIT）：
+  * chunk=1024，两侧 ctx=1024，短尾用 min_chunk 回看；
+  * 包络状态每个 chunk 从 0 重新播种，base draw 按**绝对行号**取；
+  * shot 末行沿用前行速度；未覆盖的行给各自的中性值。
+"""
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import onnxruntime as ort
+
+_M64 = (1 << 64) - 1
+_DRAW_G = 0x9E3779B97F4A7C15
+
+
+def env_base_draw(row: int, seed: int, hi: float) -> np.float32:
+    """common.env_base_draw 的逐位移植（SplitMix64 finalizer）。"""
+    z = (int(row) + (int(seed) * _DRAW_G & _M64) + _DRAW_G) & _M64
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & _M64
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & _M64
+    z ^= z >> 31
+    return np.float32((z >> 11) * (2.0 ** -53) * float(hi))
+
+
+@dataclass
+class Pack:
+    name: str
+    v_std: float
+    chunk: int
+    min_chunk: int
+    ctx: int
+    env_state: int
+    env_flow: bool
+    env_seed: int
+    env_base_hi: float
+    pos_temp: float
+    still_eps: float
+    heads: dict
+
+
+def _providers() -> list[str]:
+    want = os.environ.get("FSC_VISION_EP", "").strip().lower()
+    avail = ort.get_available_providers()
+    if want in ("dml", "directml"):
+        for p in ("DmlExecutionProvider", "DirectMLExecutionProvider"):
+            if p in avail:
+                return [p, "CPUExecutionProvider"]
+    if want == "cuda" and "CUDAExecutionProvider" in avail:
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
+class OnnxBundle:
+    """一个 ONNX bundle（官方 six-pack 或我们自己的导出）。"""
+
+    def __init__(self, bundle_dir: str | Path, pack: str | None = None,
+                 providers: list[str] | None = None):
+        self.root = Path(bundle_dir)
+        man = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+        self.manifest = man
+        self.dim = int(man["dim"])
+        self.grid = int(man["grid"])
+        self.int8_scale = float(man["int8_scale"])
+        self.providers = providers or _providers()
+        self._so = ort.SessionOptions()
+        self._so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+        packs = man.get("packs", {})
+        name = pack or man.get("default") or next(iter(packs))
+        p = packs[name]
+        self.pack = Pack(
+            name=name, v_std=float(p["v_std"]), chunk=int(p["chunk"]),
+            min_chunk=int(p["min_chunk"]), ctx=int(p["ctx"]),
+            env_state=int(p["env_state"]), env_flow=bool(p.get("env_flow", False)),
+            env_seed=int(p.get("env_seed", 0)), env_base_hi=float(p.get("env_base_hi", 6.0)),
+            pos_temp=float(p.get("pos_temp", 1.0)), still_eps=float(p.get("still_eps", 22.0)),
+            heads=dict(p.get("heads", {})),
+        )
+        g = p["graphs"]
+        packdir = self.root / "packs" / name
+        self.packdir = packdir
+        self.head = self._session(packdir / g["head"])
+        self.env = self._session(packdir / g["env_step"])
+        self._enc_path = self.root / man["graphs"]["encoder"]
+        self._tn_path = self.root / man["graphs"]["transnet"]
+        self._enc: ort.InferenceSession | None = None
+        self._tn: ort.InferenceSession | None = None
+
+    def _session(self, path: Path) -> ort.InferenceSession:
+        return ort.InferenceSession(str(path), sess_options=self._so,
+                                    providers=self.providers)
+
+    @property
+    def encoder(self) -> ort.InferenceSession:
+        if self._enc is None:
+            self._enc = self._session(self._enc_path)
+        return self._enc
+
+    @property
+    def transnet(self) -> ort.InferenceSession:
+        if self._tn is None:
+            self._tn = self._session(self._tn_path)
+        return self._tn
+
+    # ---- 编码 ----
+    def encode_window(self, frames: np.ndarray) -> np.ndarray:
+        """(32,384,384,3) uint8 -> (16,64,24,24) float32 白化特征。"""
+        x = np.ascontiguousarray(frames[None, ...], dtype=np.uint8)
+        y = self.encoder.run(None, {"frames": x})[0]
+        return np.asarray(y, dtype=np.float32)
+
+    # ---- 切点 ----
+    def transnet_probs(self, frames: np.ndarray) -> np.ndarray:
+        """(1,100,27,48,3) uint8 -> (100,) 概率。"""
+        x = np.ascontiguousarray(frames, dtype=np.uint8)
+        return np.asarray(self.transnet.run(None, {"frames": x})[0]).reshape(-1)
+
+    # ---- 解码 ----
+    def decode_latents(self, lat: np.ndarray, n_rows: int,
+                       cut_rows: list[int] | np.ndarray) -> dict[str, np.ndarray]:
+        """按官方 chunk/ctx 语义跑 head + env，返回**原始**轨道（未乘 v_std）。"""
+        pack = self.pack
+        n_rows = int(n_rows)
+        cuts = np.asarray(sorted({int(r) for r in cut_rows if 0 < int(r) < n_rows}), np.int64)
+        cut = np.zeros(n_rows, np.float32)
+        cut[cuts] = 1.0
+
+        out: dict[str, np.ndarray] = {
+            k: np.full(n_rows, np.nan, np.float64)
+            for k in ("vmarg", "level", "env", "blo", "bhi",
+                      "plat_top", "plat_bot", "rev_top", "rev_bot", "conf")
+        }
+
+        def forward(fs: int, s: int, e: int, fe: int) -> None:
+            n = fe - fs
+            off = s - fs
+            keep = e - s
+            x = np.ascontiguousarray(np.asarray(lat[fs:fe])[None, ...], dtype=np.int8)
+            res = self.head.run(None, {"x_i8": x, "cut": cut[fs:fe][None, :]})
+            got = {o.name: r for o, r in zip(self.head.get_outputs(), res)}
+            for key, src in (("vmarg", "vmarg"), ("level", "level"),
+                             ("blo", "ext_lo"), ("bhi", "ext_hi"),
+                             ("plat_top", "plat_top"), ("plat_bot", "plat_bot"),
+                             ("rev_top", "rev_top"), ("rev_bot", "rev_bot")):
+                out[key][s:e] = got[src][0, off:off + keep]
+            if "conf" in got:
+                out["conf"][s:e] = got["conf"][0, off:off + keep]
+            if not pack.env_flow:
+                out["env"][s:e] = got.get("eg", np.zeros((1, n)))[0, off:off + keep]
+                return
+            h = got["h"][0]                        # (C, n)
+            c = h.shape[0]
+            state = np.zeros((1, pack.env_state), np.float32)
+            eg = np.empty(keep, np.float64)
+            for i in range(n):
+                ht = np.ascontiguousarray(h[:, i].reshape(1, c, 1), np.float32)
+                e0 = np.array([[env_base_draw(fs + i, pack.env_seed, pack.env_base_hi)]],
+                              np.float32)
+                ev = self.env.run(None, {"h_t": ht, "state": state, "e0": e0})
+                val = float(np.asarray(ev[0]).reshape(-1)[0])
+                if off <= i < off + keep:
+                    eg[i - off] = val
+                state = np.ascontiguousarray(np.asarray(ev[1], np.float32).reshape(1, -1))
+            out["env"][s:e] = eg
+
+        nxt = 0
+        while n_rows > nxt + pack.chunk:
+            s, e = nxt, nxt + pack.chunk
+            fs = max(0, s - pack.ctx)
+            fe = min(e + pack.ctx, n_rows)
+            forward(fs, s, e, fe)
+            nxt = e
+        if n_rows > nxt:
+            s, e = nxt, n_rows
+            mc = pack.min_chunk
+            fs = s if (e - s) >= mc else max(0, s - (mc - (e - s)))
+            fs = max(0, fs - pack.ctx)
+            if e - fs >= mc:
+                forward(fs, s, e, e)
+
+        # shot 末行沿用前行速度（在原始速度上做，与官方一致）
+        edges = [0] + [int(c) for c in cuts] + [n_rows]
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            if hi - lo >= 2 and np.isfinite(out["vmarg"][hi - 2]):
+                out["vmarg"][hi - 1] = out["vmarg"][hi - 2]
+        return out
