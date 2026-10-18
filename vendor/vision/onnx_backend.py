@@ -133,6 +133,84 @@ class OnnxBundle:
         return self._tn
 
     # ---- 编码 ----
+    def encode_video(self, video_path: str | Path, out_path: str | Path,
+                     total_rows: int, fps: float | None = None,
+                     res: int = 384, width: int | None = None) -> int:
+        """整片编码到 int8 latent（与官方 extract.ensure 同语义）。
+
+        分组：GROUP = (CLIP_LEN//2)*2*K = 64 帧；每次 flush 产 64 行。
+        EOF 时把末帧补 K 份再排空 —— 对应官方 extract.end()，保证最后 2~65 帧
+        仍然拥有自己的行（否则尾部缺行）。
+        """
+        import subprocess
+
+        f = float(fps or self.manifest["grid_fps"])
+        W = res
+        K, CLIP, N_ALIGN = 2, 32, 4
+        GROUP = (CLIP // 2) * 2 * K
+        scale = int(self.manifest.get("int8_scale", 8.0 / 127.0))
+        int8_scale = float(self.manifest["int8_scale"])
+        total_rows = int(total_rows)
+        out_path = Path(out_path)
+        mm = np.memmap(out_path, dtype=np.int8, mode="w+",
+                       shape=(total_rows, self.dim, self.grid, self.grid))
+        cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(video_path),
+               "-vf", f"fps={f},scale={W}:{W}", "-f", "rawvideo",
+               "-pix_fmt", "rgb24", "-"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        fb = W * W * 3
+        buf: list[np.ndarray] = []
+        written = 0
+
+        def flush() -> int:
+            nonlocal written
+            limit = min(GROUP, len(buf) - K)
+            if limit <= 0:
+                return 0
+            wins, aa_all = [], []
+            for j in range(N_ALIGN):
+                aa = list(range(j, limit, 2 * K))[:CLIP // 2]
+                if not aa:
+                    continue
+                idx = [i for a in aa for i in (a, a + K)]
+                wins.append(self.encode_window(np.stack([buf[i] for i in idx])))
+                aa_all.append(np.asarray(aa))
+            if not wins:
+                return 0
+            order = np.argsort(np.concatenate(aa_all), kind="stable")
+            q = np.concatenate(wins)[order]
+            q = np.clip(np.round(q / int8_scale), -127, 127).astype(np.int8)
+            n = min(len(q), total_rows - written)
+            if n > 0:
+                mm[written:written + n] = q[:n]
+                written += n
+            del buf[:limit]
+            return limit
+
+        try:
+            while written < total_rows:
+                raw = proc.stdout.read(fb)
+                if len(raw) < fb:
+                    break
+                buf.append(np.frombuffer(raw, np.uint8).reshape(W, W, 3).copy())
+                if len(buf) >= GROUP + K:
+                    flush()
+            # EOF：末帧补 K 份后排空（官方 extract.end 的等价）
+            if buf and written < total_rows:
+                for _ in range(K):
+                    buf.append(buf[-1])
+                while flush() > 0:
+                    pass
+        finally:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+            if proc.poll() is None:
+                proc.terminate()
+        mm.flush()
+        return written
+
     def encode_window(self, frames: np.ndarray) -> np.ndarray:
         """(32,384,384,3) uint8 -> (16,64,24,24) float32 白化特征。"""
         x = np.ascontiguousarray(frames[None, ...], dtype=np.uint8)
@@ -144,6 +222,81 @@ class OnnxBundle:
         """(1,100,27,48,3) uint8 -> (100,) 概率。"""
         x = np.ascontiguousarray(frames, dtype=np.uint8)
         return np.asarray(self.transnet.run(None, {"frames": x})[0]).reshape(-1)
+
+    def transnet_cuts(self, video_path: str | Path, fps: float | None = None,
+                      max_s: float | None = None) -> list[float]:
+        """整片切点（毫秒）。逐行对照官方 src/boundaries.rs：
+        30fps 解码到 27x48，前补 25 帧、尾补齐到步长整数倍；
+        窗口 100、步长 50，只保留每个窗口输出的第 25..75 行；
+        连续 prob>thr 的一段取峰值帧作为切点，按 min_gap 合并。
+        """
+        import subprocess
+
+        man = self.manifest
+        t = man["transnet"]
+        w, h = int(t["input_w"]), int(t["input_h"])
+        window, step, lead = int(t["window"]), int(t["step"]), 25
+        thr, gap_ms = float(t["thr"]), float(t["min_gap_s"]) * 1000.0
+        f = float(fps or man["grid_fps"])
+        cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(video_path)]
+        if max_s:
+            cmd += ["-t", f"{max_s:.3f}"]
+        cmd += ["-vf", f"fps={f},scale={w}:{h}", "-f", "rawvideo",
+                "-pix_fmt", "rgb24", "-"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        fb = w * h * 3
+        frames = []
+        try:
+            while True:
+                raw = proc.stdout.read(fb)
+                if len(raw) < fb:
+                    break
+                frames.append(np.frombuffer(raw, np.uint8).reshape(h, w, 3))
+        finally:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+            if proc.poll() is None:
+                proc.terminate()
+        n = len(frames)
+        if n == 0:
+            return []
+        tail = lead + step - (step if n % step == 0 else n % step)
+        padded = lead + n + tail
+
+        def frame_at(pi: int) -> np.ndarray:
+            if pi < lead:
+                return frames[0]
+            if pi >= lead + n:
+                return frames[n - 1]
+            return frames[pi - lead]
+
+        preds: list[float] = []
+        ptr = 0
+        while ptr + window <= padded:
+            x = np.stack([frame_at(ptr + k) for k in range(window)])[None, ...]
+            p = self.transnet_probs(x)
+            preds.extend(float(v) for v in p[lead:lead + step])
+            ptr += step
+        preds = preds[:n]
+
+        cuts: list[float] = []
+        i = 0
+        while i < len(preds):
+            if preds[i] <= thr:
+                i += 1
+                continue
+            j, peak = i, i
+            while j < len(preds) and preds[j] > thr:
+                if preds[j] > preds[peak]:
+                    peak = j
+                j += 1
+            time_ms = peak / f * 1000.0
+            if not cuts or time_ms - cuts[-1] >= gap_ms:
+                cuts.append(time_ms)
+            i = j
+        return cuts
 
     # ---- 解码 ----
     def decode_latents(self, lat: np.ndarray, n_rows: int,
