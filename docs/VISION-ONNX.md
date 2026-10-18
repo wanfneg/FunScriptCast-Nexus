@@ -47,3 +47,30 @@ cd _third_party/GoblinTrainingGrounds
 venv/Scripts/python.exe goblintrain.py export drafts --run v0.6.0 --no-parity \
     --bundle E:/Development/tmp/onnx-bundle --label nexus-onnx-test
 ```
+
+## 6. 整片验收（2026-10-19，K1cztm 39040 行）
+
+ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
+
+| 轨道 | 相关系数 | p99 偏差 |
+|---|---|---|
+| vmarg | 0.999977 | 0.012 |
+| level | 0.999900 | 0.91 |
+| env | 0.999949 | 0.022 |
+| blo / bhi | 0.999869 / 0.999962 | 1.46 / 0.29 |
+| plat_top / plat_bot | 0.999862 / 0.999948 | 0.006 |
+| rev_top / rev_bot | 0.999968 / 0.999971 | 0.003 |
+| conf | 0.999988 | 0.007 |
+
+| 指标 | 结果 |
+|---|---|
+| 动作数 | **3133（ONNX）= 3133（torch）** |
+| 双向覆盖（±100ms） | 98.9% / 98.9% |
+| 编码吞吐（DirectML fp16） | 54 fps ≈ **1.8× 实时**（39040 行 / 723 s） |
+| 解码耗时（CPU） | 44.9 s / 整片 |
+
+### 已知细节
+
+- 编码器必须走 GPU EP（packed-QKV 注意力 CPU 不支持）；head/env 走 CPU（int8 输入在 DML 上实测崩溃）。
+- 尾部 70 行未产出：整片编码还没实现官方 `extract.end()` 的静态尾帧补齐（生产接入时必须补）。
+- 短片段测试不可用于验收：`rev_bias` 在短前缀上拟合会让静音带偏置偏高（300 s 片段动作数翻倍），必须整片对比。

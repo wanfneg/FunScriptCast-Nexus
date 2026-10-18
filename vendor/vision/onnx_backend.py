@@ -54,15 +54,24 @@ class Pack:
 
 
 def _providers() -> list[str]:
+    """默认优先 DirectML（Windows 普及率最高，也是官方编码器的目标后端）。"""
     want = os.environ.get("FSC_VISION_EP", "").strip().lower()
     avail = ort.get_available_providers()
-    if want in ("dml", "directml"):
+    def _dml() -> list[str] | None:
         for p in ("DmlExecutionProvider", "DirectMLExecutionProvider"):
             if p in avail:
                 return [p, "CPUExecutionProvider"]
-    if want == "cuda" and "CUDAExecutionProvider" in avail:
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    return ["CPUExecutionProvider"]
+        return None
+    if want in ("cpu",):
+        return ["CPUExecutionProvider"]
+    if want in ("dml", "directml"):
+        return _dml() or ["CPUExecutionProvider"]
+    if want == "cuda":
+        if "CUDAExecutionProvider" in avail:
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        return _dml() or ["CPUExecutionProvider"]
+    return _dml() or (["CUDAExecutionProvider", "CPUExecutionProvider"]
+                      if "CUDAExecutionProvider" in avail else ["CPUExecutionProvider"])
 
 
 class OnnxBundle:
@@ -94,16 +103,22 @@ class OnnxBundle:
         g = p["graphs"]
         packdir = self.root / "packs" / name
         self.packdir = packdir
-        self.head = self._session(packdir / g["head"])
-        self.env = self._session(packdir / g["env_step"])
+        # head/env 走 CPU：int8 输入在 DirectML 上会崩（实测 access violation），
+        # 而 CPU 跑整片只要 ~34s；编码器才需要 GPU（packed-QKV 注意力）。
+        head_prov = os.environ.get("FSC_VISION_HEAD_EP", "cpu").strip().lower()
+        self.head_providers = (["DmlExecutionProvider", "CPUExecutionProvider"]
+                               if head_prov in ("dml", "directml")
+                               else ["CPUExecutionProvider"])
+        self.head = self._session(packdir / g["head"], self.head_providers)
+        self.env = self._session(packdir / g["env_step"], self.head_providers)
         self._enc_path = self.root / man["graphs"]["encoder"]
         self._tn_path = self.root / man["graphs"]["transnet"]
         self._enc: ort.InferenceSession | None = None
         self._tn: ort.InferenceSession | None = None
 
-    def _session(self, path: Path) -> ort.InferenceSession:
+    def _session(self, path: Path, providers: list[str] | None = None) -> ort.InferenceSession:
         return ort.InferenceSession(str(path), sess_options=self._so,
-                                    providers=self.providers)
+                                    providers=providers or self.providers)
 
     @property
     def encoder(self) -> ort.InferenceSession:
