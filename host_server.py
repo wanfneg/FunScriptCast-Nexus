@@ -327,8 +327,8 @@ DEFAULT_SETTINGS = {
     "library_roots": [],
     "video_link": {},
     "mini_heatmap": True,   # 控件隐藏时的画面底部 mini 热力条（对齐手机端 miniHeatmapEnabled）
-    # AI 识别服务用的 Python（空=自动探测）。安装版没有 torch 时用户在这里
-    # 指到自己已有的 Python（需装 vendor/vision/requirements.txt）。
+    # AI 识别服务用的 Python（空=自动探测）。按后端需要 numpy+onnxruntime（onnx）
+    # 或 torch 等（torch）；也可以在这里指到自己已有的解释器。
     "vision_python": "",
     "script_folder": "",
     "video_folder": "",
@@ -2164,14 +2164,14 @@ def _vision_python() -> Path:
     """识别服务用的解释器。
 
     **不能直接复用字幕的 SUBTITLE_VENV_PY**：安装包自带的 runtime\python.exe 只装了
-    fastapi/uvicorn/numpy（字幕 audiocpp 主路径够用），没有 torch —— 识别服务一
-    import 就 ModuleNotFoundError。torch 约 4GB，不可能塞进安装包，所以识别服务
-    有自己的一套候选顺序：
+    fastapi/uvicorn/numpy（字幕 audiocpp 主路径够用），没有识别后端依赖 —— 识别服务
+    一 import 就 ModuleNotFoundError。torch 后端约 4GB，不可能塞进安装包；onnx 后端
+    只要 numpy + onnxruntime，所以识别服务有自己的一套候选顺序：
 
-      1. vision-runtime\python.exe   专用运行时（界面下载，含 torch/timm/opencv）
+      1. vision-runtime\python.exe   专用运行时（界面下载；当前一键安装仍是 torch 版）
       2. 应用目录 .venv             开发机 / 绿色版
       3. 上一级目录 .venv           源码仓库里的 dist-app（开发机）
-      4. SUBTITLE_VENV_PY          最后兜底（缺 torch 时由服务报明确错误）
+      4. SUBTITLE_VENV_PY          最后兜底（缺后端依赖时由服务报明确错误）
 
     选中的来源记进 VISION_PY_SOURCE，启动日志会打出来——"识别服务起不来"时
     第一眼看的就是它到底用了哪个解释器。
@@ -2202,26 +2202,42 @@ def _vision_python() -> Path:
         (APP_DIR.parent / ".venv" / "Scripts" / "python.exe", "上一级目录的 .venv"),
         (APP_DIR.parent / ".venv" / "bin" / "python", "上一级目录的 .venv"),
     ]
+    backend = _vision_backend()
+    first_any = None
     for c, src in candidates:
-        if c.exists():
-            VISION_PY_SOURCE = src
-            return c
+        if not c.exists():
+            continue
+        # 按后端验证依赖：老版 torch 运行时在 onnx 后端下会被跳过，继续找下一个
+        # 装了 onnxruntime 的解释器。只在拉起识别服务时探测一次，不是轮询路径。
+        if _vision_missing_deps(c, backend):
+            if first_any is None:
+                first_any = (c, src)
+            continue
+        VISION_PY_SOURCE = src
+        return c
+    if first_any is not None:
+        VISION_PY_SOURCE = first_any[1] + "（依赖不全）"
+        return first_any[0]
     # 系统 Python：安装到 %LOCALAPPDATA% 时既没有仓库 .venv，也没有上一级 .venv。
-    # 这一步**必须验证 torch 可用**，不能像字幕那样"找到 python 就用"——字幕主路径
-    # 只需要 fastapi/uvicorn/numpy，识别服务缺 torch 直接起不来，还会在 60s 超时后
-    # 只留一句"启动即退出"。逐个试 PATH 上的解释器，挑第一个 import torch 成功的。
+    # 这一步**必须验证后端依赖可用**，不能像字幕那样"找到 python 就用"——字幕主路径
+    # 只需要 fastapi/uvicorn/numpy，识别服务缺依赖直接起不来，还会在 60s 超时后
+    # 只留一句"启动即退出"。逐个试 PATH 上的解释器，挑第一个能 import 后端依赖的。
+    probe = ("import onnxruntime, numpy; print(onnxruntime.__version__)"
+             if backend == "onnx"
+             else "import torch, timm, cv2; print(torch.__version__)")
+    tag = "onnxruntime" if backend == "onnx" else "torch"
     for exe in ("python", "python3", "py"):
         found = shutil.which(exe)
         if not found:
             continue
         try:
             r = subprocess.run(
-                [found, "-c", "import torch, timm, cv2; print(torch.__version__)"],
+                [found, "-c", probe],
                 capture_output=True, timeout=25, text=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
             )
             if r.returncode == 0:
-                VISION_PY_SOURCE = f"PATH 上的 {exe}（已验证 torch {r.stdout.strip()}）"
+                VISION_PY_SOURCE = f"PATH 上的 {exe}（已验证 {tag} {r.stdout.strip()}）"
                 return Path(found)
         except Exception:  # noqa: BLE001
             continue
@@ -2233,36 +2249,56 @@ def _vision_python() -> Path:
 VISION_PY_SOURCE = ""
 
 
-# 识别服务必需的三方包：缺任一，run_server 一 import 就死（torch 是显存大户，
-# 安装包不可能带；其余是视觉管线）。启动前先问一遍，错误信息才能说人话。
-_VISION_DEPS = ("torch", "timm", "cv2", "einops", "transnetv2_pytorch")
-
-_VISION_PROBE = r"""
-import importlib
-out = []
-for m in ("torch", "timm", "cv2", "einops", "transnetv2_pytorch"):
-    try:
-        importlib.import_module(m)
-    except Exception:
-        out.append(m)
-print(",".join(out))
-"""
+def _vision_backend() -> str:
+    """识别后端：FSC_VISION_BACKEND 优先，其次 vendor/vision/config.json，默认 onnx。"""
+    raw = (os.environ.get("FSC_VISION_BACKEND") or "").strip().lower()
+    if not raw:
+        try:
+            cfg = json.loads((VISION_DIR / "config.json").read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            cfg = {}
+        raw = str((cfg.get("engine") or {}).get("backend") or "onnx").strip().lower()
+    return raw if raw in ("onnx", "torch") else "onnx"
 
 
-def _vision_missing_deps(py: Path) -> list[str]:
+def _vision_deps(backend: str | None = None) -> tuple[str, ...]:
+    """跑对应后端所必需的三方包（启动前逐个 import 探测）。"""
+    if (backend or _vision_backend()) == "onnx":
+        # ONNX 链路只依赖 numpy + onnxruntime；编码器要求 GPU，
+        # Windows 打包用 onnxruntime-directml（模块名仍是 onnxruntime）。
+        return ("numpy", "onnxruntime")
+    return ("torch", "timm", "cv2", "einops", "transnetv2_pytorch")
+
+
+def _vision_probe_script(backend: str | None = None) -> str:
+    mods = _vision_deps(backend)
+    return (
+        "import importlib\n"
+        "out = []\n"
+        f"for m in {mods!r}:\n"
+        "    try:\n"
+        "        importlib.import_module(m)\n"
+        "    except Exception:\n"
+        "        out.append(m)\n"
+        "print(','.join(out))\n"
+    )
+
+
+def _vision_missing_deps(py: Path, backend: str | None = None) -> list[str]:
     """用目标解释器逐个 import，返回缺的包名（探测失败按"全缺"处理）。"""
+    deps = _vision_deps(backend)
     try:
         r = subprocess.run(
-            [str(py), "-c", _VISION_PROBE], capture_output=True, text=True,
+            [str(py), "-c", _vision_probe_script(backend)], capture_output=True, text=True,
             timeout=90,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
             if os.name == "nt" else 0,
         )
         if r.returncode != 0:
-            return list(_VISION_DEPS)
+            return list(deps)
         return [m for m in (r.stdout or "").strip().split(",") if m]
     except Exception:  # noqa: BLE001
-        return list(_VISION_DEPS)
+        return list(deps)
 
 
 def _vision_base() -> str:
@@ -2330,10 +2366,14 @@ def vision_state() -> dict:
         "note": (st or {}).get("note", ""),
         "elapsed_sec": (st or {}).get("elapsed_sec", 0),
         "py_source": VISION_PY_SOURCE,
+        "backend": _vision_backend(),
     }
 
 
 # ---------------- AI 识别运行时（vision-runtime）一键安装 ----------------
+# TODO(onnx)：默认后端已是 onnx，但下边的一键安装仍是 torch 版（torch/timm/cv2）。
+# 打包阶段要按后端分开：onnx → 只装 numpy + onnxruntime-directml，不再装 torch。
+#
 # 安装包不可能带 torch（4GB+），但**也绝不该每次都从零下载**：
 # 本机往往已经有一份 torch（仓库 .venv、系统 Python、其他项目环境）。
 #
@@ -2653,16 +2693,17 @@ def vision_start() -> dict:
     def worker() -> None:
         try:
             py = _vision_python()
-            RT.add_log(f"识别服务解释器：{py}（来源：{VISION_PY_SOURCE}）", "info")
+            backend = _vision_backend()
+            RT.add_log(f"识别服务解释器：{py}（来源：{VISION_PY_SOURCE}，后端 {backend}）", "info")
             if not py.exists():
                 raise RuntimeError(f"找不到 Python 解释器：{py}")
-            miss = _vision_missing_deps(py)
+            miss = _vision_missing_deps(py, backend)
             if miss:
                 raise RuntimeError(
-                    f"该解释器缺少 AI 识别依赖：{', '.join(miss)}。"
+                    f"该解释器缺少 AI 识别依赖（后端 {backend}）：{', '.join(miss)}。"
                     f"请在设置里把「AI 识别 Python」指到已安装这些依赖的解释器"
                     f"（在识别模块目录执行 pip install -r requirements.txt），"
-                    f"或给当前解释器装上它们。")
+                    f"或给当前解释器装上它们；也可以设 FSC_VISION_BACKEND=torch 回退。")
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             env = dict(os.environ)
             env.setdefault("PYTHONIOENCODING", "utf-8")

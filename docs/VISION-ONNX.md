@@ -177,7 +177,8 @@ ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
 
 bundle 解析顺序：`FSC_VISION_BUNDLE` → `config.model.onnx_bundle`（默认
 `bundles/v0.6.0`）→ 模块内 `bundles/v0.6.0`。`/health` 新增 `backend` 与 `bundle`
-字段，宿主可据此显示当前后端。
+字段，宿主可据此显示当前后端。宿主启动前的依赖探测也按后端走：onnx 只查
+`numpy + onnxruntime`，并会自动跳过依赖不全的旧 torch 运行时。
 
 运行前提（2026-10-19 起产品 `.venv` 已按此配置）：
 
