@@ -142,8 +142,10 @@ ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
 
 ### 版本约束（重要）
 
-- **必须钉住 `onnxruntime(-gpu)==1.24.4`**：1.31.0 上 packed-QKV 的 MultiHeadAttention
+- **CUDA 必须钉住 `onnxruntime-gpu==1.24.4`**：1.31.0 上 packed-QKV 的 MultiHeadAttention
   在 CUDA 后端会退回 CPU 并报 “not implemented for CPU”。
+- DirectML 版本随 Python：3.10 用 `onnxruntime-directml==1.23.0`（1.24.4 起不再提供 cp310），
+  3.11+ 用 `1.24.4`；两条都已实测跑通。
 - 编码器只能走 GPU（DirectML / CUDA）；head/env 走 CPU（int8 在 DML 元素上会崩）。
 - CUDA 运行库（cublasLt 约 0.5GB + cuDNN 约 0.9GB）**不放进主安装包**，作为 NVIDIA 用户的可选组件。
 
@@ -152,6 +154,7 @@ ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
 | 组件 | 版本 / 来源 |
 |---|---|
 | onnxruntime-gpu | 1.24.4（CUDA venv `E:\Development\tmp\ortgpu`，Python 3.11.9，无 torch） |
+| onnxruntime-directml | 1.23.0（产品 `.venv`，Python 3.10.0；默认后端） |
 | cudart64_12 | 6.14.11.12090 |
 | cublas64_12 / cublasLt64_12 | 6.14.11.1292 |
 | cuDNN | 9.10.2.21（cudnn64_9 + cnn / ops / graph / heuristic / engines_* 共 9 个 DLL） |
@@ -169,24 +172,25 @@ ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
 `vendor/vision/service.py` 按 `FSC_VISION_BACKEND=torch|onnx` 选择引擎（也可写
 `config.json` 的 `engine.backend`，环境变量优先）：
 
-- `torch`（默认）：`stream_engine.StreamEngine`，行为不变；
-- `onnx`：`onnx_stream.OnnxStreamEngine`，全程不 import torch。
+- `onnx`（默认）：`onnx_stream.OnnxStreamEngine`，全程不 import torch；
+- `torch`（仅对照/回退）：`stream_engine.StreamEngine`，行为与重构前一致。
 
 bundle 解析顺序：`FSC_VISION_BUNDLE` → `config.model.onnx_bundle`（默认
 `bundles/v0.6.0`）→ 模块内 `bundles/v0.6.0`。`/health` 新增 `backend` 与 `bundle`
 字段，宿主可据此显示当前后端。
 
-运行前提：onnx 后端要 `onnxruntime-directml==1.24.4`（Windows）或
-`onnxruntime-gpu==1.24.4`（NVIDIA）。宿主 `.venv` 目前是 CPU 版 onnxruntime 1.23.2，
-切到 onnx 前必须替换，否则编码器会落 CPU 并报 packed-QKV 不支持。
+运行前提（2026-10-19 起产品 `.venv` 已按此配置）：
 
-**已验证（2026-10-19）**：在无 torch 的环境（`E:\Development\tmp\ortgpu`，Python 3.11.9）
-里用 `onnxruntime-directml==1.24.4` 走服务层 30 s 冒烟——`open()` 正常、
-`DmlExecutionProvider`、`state=done`、21 个动作，`/health` 返回 `backend=onnx` 与
-bundle 路径。切后端只需：
+| 平台 | 包 |
+|---|---|
+| Windows 默认（Python 3.10） | `onnxruntime-directml==1.23.0` |
+| Windows（Python 3.11+） | `onnxruntime-directml==1.24.4` |
+| NVIDIA CUDA | `onnxruntime-gpu==1.24.4` + 系统 CUDA 12 / cuDNN 9 |
 
-```powershell
-$env:FSC_VISION_BACKEND = "onnx"
-$env:FSC_VISION_EP       = "dml"      # 或 cuda（需 CUDA 12 + cuDNN 9）
-vendor\vision\run_server.py
-```
+**已验证**：
+
+- Python 3.11 `ortgpu` + DirectML 1.24.4：服务层 30 s 冒烟 `state=done`、21 个动作；
+- 产品 `.venv`（Python 3.10）+ DirectML 1.23.0：默认后端 30 s 冒烟 `state=done`、
+  21 个动作，进程内 `torch` 从未被导入（`torch_loaded: False`）。
+
+切回 torch 对照只需 `$env:FSC_VISION_BACKEND = "torch"`。

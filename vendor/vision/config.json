@@ -7,8 +7,8 @@
   },
   "engine": {
     "device": "cuda",
-    "backend": "torch",
-    "_backend_note": "推理后端: torch | onnx。环境变量 FSC_VISION_BACKEND 优先；onnx 不加载 torch。",
+    "backend": "onnx",
+    "_backend_note": "推理后端: onnx（默认，不加载 torch）| torch（仅对照/回退）。环境变量 FSC_VISION_BACKEND 优先。",
     "publish_rows": 256,
     "_publish_rows_note": "每批发布的视频行数(30行/秒)。256=8.5秒一批, 越小越新鲜但冲程越碎; 官方语义是1024。",
     "ctx_rows": 1024,

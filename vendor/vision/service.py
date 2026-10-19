@@ -20,7 +20,7 @@
 设计要点：宿主每 100~200ms 拉一次 /actions 增量，用和现有脚本联动完全相同的
 下发路径（/api/sync/tick）驱动设备 —— 引擎与设备解耦，BLE 只由宿主碰。
 
-推理后端：FSC_VISION_BACKEND=torch|onnx（默认 torch，也可写 config.engine.backend）。
+推理后端：FSC_VISION_BACKEND=onnx|torch（默认 onnx，也可写 config.engine.backend）。
 onnx 后端不加载 torch；bundle 默认 vendor/vision/bundles/v0.6.0，FSC_VISION_BUNDLE 可覆盖。
 """
 from __future__ import annotations
@@ -115,7 +115,8 @@ class VisionService:
                 eng.stop(cleanup=True)
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
-        _release_cuda()
+        if self.backend == "torch":       # onnx 后端不碰 torch
+            _release_cuda()
         return {"ok": True}
 
     def _note(self, s: str) -> None:
@@ -170,7 +171,7 @@ class VisionService:
             "backend": self.backend,
             "bundle": str(self.bundle_dir) if self.backend == "onnx" else None,
             "device": self.engine_cfg.get("device", "cuda"),
-            "gpu_used_gb": _gpu_used_gb(),
+            "gpu_used_gb": _gpu_used_gb() if self.backend == "torch" else None,
             "idle_sec": round(time.time() - self.idle_since, 1),
             "error": self.last_error,
         }
@@ -257,12 +258,12 @@ BACKENDS = ("torch", "onnx")
 
 
 def _resolve_backend(engine_cfg: dict | None = None) -> str:
-    """推理后端：FSC_VISION_BACKEND 优先，其次 config.engine.backend，默认 torch。"""
+    """推理后端：FSC_VISION_BACKEND 优先，其次 config.engine.backend，默认 onnx。"""
     raw = (os.environ.get("FSC_VISION_BACKEND")
-           or str((engine_cfg or {}).get("backend") or "torch")).strip().lower()
+           or str((engine_cfg or {}).get("backend") or "onnx")).strip().lower()
     if raw not in BACKENDS:
-        print(f"[vision] 未知 FSC_VISION_BACKEND={raw!r}，回退 torch", flush=True)
-        return "torch"
+        print(f"[vision] 未知 FSC_VISION_BACKEND={raw!r}，回退 onnx", flush=True)
+        return "onnx"
     return raw
 
 

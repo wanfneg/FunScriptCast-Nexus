@@ -1,10 +1,12 @@
 # 推理侧依赖
 #
-# 后端由 FSC_VISION_BACKEND 选择（默认 torch）：
-#   torch 后端：宿主 .venv 已含 torch/torchvision；下列是视觉管线补充。
-#   onnx 后端：不需要 torch。Windows 用 onnxruntime-directml==1.24.4，
-#              NVIDIA 用 onnxruntime-gpu==1.24.4（配 CUDA 12 + cuDNN 9）。
-#              打包时按平台二选一安装，并去掉 torch。
+# 后端由 FSC_VISION_BACKEND 选择（默认 onnx）：
+#   onnx 后端（默认，不需要 torch）：
+#     Python 3.10 → onnxruntime-directml==1.23.0（1.24.4 起不再提供 cp310）
+#     Python 3.11+ → onnxruntime-directml==1.24.4
+#     NVIDIA CUDA → onnxruntime-gpu==1.24.4（配 CUDA 12 + cuDNN 9）
+#   torch 后端（仅对照/回退）：宿主 .venv 已含 torch/torchvision。
+#   打包时按平台只装对应的 onnxruntime，并去掉 torch。
 einops==0.8.2
 timm==1.0.27
 transnetv2-pytorch==1.0.5
