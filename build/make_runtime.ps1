@@ -75,6 +75,15 @@ try {
     $env:NO_PROXY = '*'
     $env:no_proxy = '*'
     & $venvPy -m pip install --target $sitePkgs "fastapi" "uvicorn" "numpy" "faster-whisper"
+    # 视觉 ONNX 后端要 GPU 执行器：替换 faster-whisper 依赖拉下来的 CPU 版 onnxruntime。
+    # 1.24.4 起没有 cp310 轮子，所以 Python 3.10 运行时固定 1.23.0（DirectML）。
+    $ortDir = Join-Path $sitePkgs 'onnxruntime'
+    if (Test-Path $ortDir) { Remove-Item $ortDir -Recurse -Force }
+    Get-ChildItem $sitePkgs -Directory -Filter 'onnxruntime-*.dist-info' -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force
+    Write-Host "  安装 onnxruntime-directml（视觉 ONNX 后端）…" -ForegroundColor DarkGray
+    & $venvPy -m pip install --no-deps --target $sitePkgs --upgrade "onnxruntime-directml==1.23.0"
+    if ($LASTEXITCODE -ne 0) { throw "onnxruntime-directml 安装失败（exit $LASTEXITCODE）" }
 # ---- BLE 设备通道（M2）：bleak + WinRT 依赖 ----
 # 注意：本机 .venv 的 pip 21.2.3 在 TLS 下会报 "check_hostname requires server_hostname"，
 # 所以优先用离线轮子（tools\wheels\bleak\*.whl，cp310）；没有再退常规 pip。

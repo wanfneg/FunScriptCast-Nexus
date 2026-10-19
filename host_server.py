@@ -2272,6 +2272,17 @@ def _vision_deps(backend: str | None = None) -> tuple[str, ...]:
 
 def _vision_probe_script(backend: str | None = None) -> str:
     mods = _vision_deps(backend)
+    extra = ""
+    if (backend or _vision_backend()) == "onnx":
+        extra = (
+            "try:\n"
+            "    import onnxruntime as _ort\n"
+            "    _p = _ort.get_available_providers()\n"
+            "    if not any(x in _p for x in ('DmlExecutionProvider','CUDAExecutionProvider')):\n"
+            "        out.append('onnxruntime(GPU EP)')\n"
+            "except Exception:\n"
+            "    pass\n"
+        )
     return (
         "import importlib\n"
         "out = []\n"
@@ -2280,6 +2291,7 @@ def _vision_probe_script(backend: str | None = None) -> str:
         "        importlib.import_module(m)\n"
         "    except Exception:\n"
         "        out.append(m)\n"
+        + extra +
         "print(','.join(out))\n"
     )
 

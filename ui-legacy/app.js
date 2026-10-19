@@ -1982,7 +1982,7 @@
     var w = Math.max(4, Math.round(cv.clientWidth * (window.devicePixelRatio || 1)));
     var h = Math.max(4, Math.round(cv.clientHeight * (window.devicePixelRatio || 1)));
     var dur = v.duration || 0;
-    var acts = (SYNC && SYNC.live && SYNC.liveActions) ? SYNC.liveActions : vlScriptActions;
+    var acts = (SYNC && SYNC.live && SYNC.liveActions) ? SYNC.liveActions : heatActions();
     var key = (vlMed.path || "") + "|" + Math.round(dur) + "|" + w + "|" +
               (acts ? acts.length : 0);
     if (HEAT.key !== key) {
