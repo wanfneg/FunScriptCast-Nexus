@@ -1,5 +1,8 @@
 # 静止段“幻影动作”：复核与静止门方案
 
+> **2026-10-19 已落地**：combo（conf 0.70 / vm 50 / score 0.70）已接进
+> `vendor/vision/onnx_stream.py`，开关见 `engine.still_gate` / `FSC_VISION_STILL_GATE`。
+
 > 数据：E:/testvideo/funscript test/ 的 K1cztm（3100 点 / 1296s）与 K1drsp（4432 点 / 1307s）。
 > **2026-10-19 全套重跑**：重新转码、重新提取 latent、按官方语义重新解码，
 > 不依赖任何旧缓存。复现命令见 §5。

@@ -62,10 +62,22 @@ class OnnxStreamEngine:
     def __init__(self, video: str, duration_ms: float, device: str = "cpu",
                  ckpt: str | None = None, on_note=None,
                  cache_dir: str | Path | None = None,
-                 bundle: str | Path | None = None):
+                 bundle: str | Path | None = None,
+                 still_gate: str | None = None,
+                 still_conf_thr: float = 0.70,
+                 still_vm_thr: float = 50.0,
+                 still_score_thr: float = 0.70):
         self.video = video
         self.duration_ms = float(duration_ms)
         self.device = device
+        # 置信度+速度静止门（research: still_gate.py），默认 combo。
+        # FSC_VISION_STILL_GATE=off 可关闭；and/or 为另外两种口径。
+        self.still_gate = str(
+            still_gate if still_gate is not None
+            else os.environ.get("FSC_VISION_STILL_GATE", "combo")).strip().lower()
+        self.still_conf_thr = float(still_conf_thr)
+        self.still_vm_thr = float(still_vm_thr)
+        self.still_score_thr = float(still_score_thr)
         self.buffer = ActionBuffer()
         self.on_note = on_note or (lambda s: None)
         self.cache_dir = Path(cache_dir) if cache_dir else Path(video).parent
@@ -290,6 +302,25 @@ class OnnxStreamEngine:
             if final:
                 break
 
+    def _apply_still_gate(self, actions, times, n: int, vstd: float):
+        """置信度+速度静止门：静音区不出点（research/vendor/vision/still_gate.py）。"""
+        mode = self.still_gate
+        if mode in ("", "off", "none", "0", "false"):
+            return actions
+        from still_gate import signals, gate_actions
+        trk = {"vmarg": self._trk["vmarg"][:n], "conf": self._trk["conf"][:n]}
+        vm, conf = signals(trk, vstd)
+        # still_gate.keep_flags 用"秒"取窗（视频 at 是 ms，内部再 /1000）；
+        # times 必须同样给秒，否则窗口落在 5ms 处、conf/速度全取 0，动作会被全删。
+        kept, _stats = gate_actions(
+            actions, np.asarray(times, float) / 1000.0, vm, conf,
+            conf_thr=self.still_conf_thr, vm_thr=self.still_vm_thr,
+            mode=mode, score_thr=self.still_score_thr)
+        if len(kept) != len(actions):
+            self.rev_bias_log.append(
+                f"still_gate[{mode}] {len(actions)}->{len(kept)}")
+        return kept
+
     def _style(self, sty: int) -> None:
         import sys
         here = Path(__file__).resolve().parent
@@ -349,6 +380,7 @@ class OnnxStreamEngine:
         actions = jepa_infer.extrema_actions(
             p, times, edges, sub=sub if sub else None, force=frc,
             cut_ease=jepa_infer.CUT_EASE, rdp_eps=jepa_infer.RDP_EPS, stats={})
+        actions = self._apply_still_gate(actions, times, n, vstd)
         spd = [(x, y) for x, y in zip(actions, actions[1:]) if y["at"] > x["at"]]
         if spd:
             over = [abs(y["pos"] - x["pos"]) * 1000.0 / (y["at"] - x["at"])

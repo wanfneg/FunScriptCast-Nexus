@@ -95,6 +95,11 @@ class VisionService:
                 on_note=self._note,
                 cache_dir=str(self.cache_dir),
                 bundle=str(self.bundle_dir),
+                still_gate=(os.environ.get("FSC_VISION_STILL_GATE")
+                            or self.engine_cfg.get("still_gate")),
+                still_conf_thr=float(self.engine_cfg.get("still_conf_thr", 0.70)),
+                still_vm_thr=float(self.engine_cfg.get("still_vm_thr", 50.0)),
+                still_score_thr=float(self.engine_cfg.get("still_score_thr", 0.70)),
             )
         from stream_engine import StreamEngine  # 延迟导入(torch 很重)
         return StreamEngine(
@@ -169,6 +174,9 @@ class VisionService:
             "coverage_ms": st.get("coverage_ms", 0),
             "model": self.model_cfg.get("checkpoint") or "v0.6.0",
             "backend": self.backend,
+            "still_gate": ((os.environ.get("FSC_VISION_STILL_GATE")
+                            or self.engine_cfg.get("still_gate") or "combo")
+                           if self.backend == "onnx" else None),
             "bundle": str(self.bundle_dir) if self.backend == "onnx" else None,
             "device": self.engine_cfg.get("device", "cuda"),
             "gpu_used_gb": _gpu_used_gb() if self.backend == "torch" else None,
