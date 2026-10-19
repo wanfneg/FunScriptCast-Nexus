@@ -2357,8 +2357,12 @@ def vision_state() -> dict:
         starting = RT.vis_starting
         err = RT.vis_error
         auto = RT.vis_auto
-    running = proc is not None and proc.poll() is None
-    h = vision_health() if running else None
+        ready = RT.vis_ready
+    owned = proc is not None and proc.poll() is None
+    # 复用外部服务时 vis_proc 为空：必须探测 /health，否则 UI 永远看到 idle，
+    # 预热完成也不会自动继续播放（本会话实测踩中）。
+    h = vision_health() if (owned or ready) else None
+    running = bool(h) or owned
     st = _vision_http("/state", timeout=1.5) if h else None
     return {
         "ok": True,
