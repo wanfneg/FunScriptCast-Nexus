@@ -163,3 +163,30 @@ ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
 （`dump_tracks_*` / `extract_latent`），产品运行时不得依赖它。
 
 产品侧不受影响：默认 DirectML（ORT 自带，无需任何额外运行库），CUDA 运行库仍作为可选组件。
+
+## 10. 服务后端开关（2026-10-19）
+
+`vendor/vision/service.py` 按 `FSC_VISION_BACKEND=torch|onnx` 选择引擎（也可写
+`config.json` 的 `engine.backend`，环境变量优先）：
+
+- `torch`（默认）：`stream_engine.StreamEngine`，行为不变；
+- `onnx`：`onnx_stream.OnnxStreamEngine`，全程不 import torch。
+
+bundle 解析顺序：`FSC_VISION_BUNDLE` → `config.model.onnx_bundle`（默认
+`bundles/v0.6.0`）→ 模块内 `bundles/v0.6.0`。`/health` 新增 `backend` 与 `bundle`
+字段，宿主可据此显示当前后端。
+
+运行前提：onnx 后端要 `onnxruntime-directml==1.24.4`（Windows）或
+`onnxruntime-gpu==1.24.4`（NVIDIA）。宿主 `.venv` 目前是 CPU 版 onnxruntime 1.23.2，
+切到 onnx 前必须替换，否则编码器会落 CPU 并报 packed-QKV 不支持。
+
+**已验证（2026-10-19）**：在无 torch 的环境（`E:\Development\tmp\ortgpu`，Python 3.11.9）
+里用 `onnxruntime-directml==1.24.4` 走服务层 30 s 冒烟——`open()` 正常、
+`DmlExecutionProvider`、`state=done`、21 个动作，`/health` 返回 `backend=onnx` 与
+bundle 路径。切后端只需：
+
+```powershell
+$env:FSC_VISION_BACKEND = "onnx"
+$env:FSC_VISION_EP       = "dml"      # 或 cuda（需 CUDA 12 + cuDNN 9）
+vendor\vision\run_server.py
+```

@@ -4,7 +4,8 @@
 接口（全部回 JSON；`/health` 始终开放，其余受 auth_token 保护）：
 
   GET  /health
-      {ok, pid, engine_state, warmup, model, device, gpu_used_gb, job, ...}
+      {ok, pid, engine_state, warmup, backend, bundle, model, device,
+       gpu_used_gb, job, ...}
   POST /open      {video, duration_ms?, start_ms?}
       打开一个识别任务（异步）：转码 → 加载模型 → 边播边推理。
   GET  /state
@@ -18,10 +19,14 @@
 
 设计要点：宿主每 100~200ms 拉一次 /actions 增量，用和现有脚本联动完全相同的
 下发路径（/api/sync/tick）驱动设备 —— 引擎与设备解耦，BLE 只由宿主碰。
+
+推理后端：FSC_VISION_BACKEND=torch|onnx（默认 torch，也可写 config.engine.backend）。
+onnx 后端不加载 torch；bundle 默认 vendor/vision/bundles/v0.6.0，FSC_VISION_BUNDLE 可覆盖。
 """
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import traceback
@@ -39,6 +44,9 @@ class VisionService:
         self.auth_token = str(srv.get("auth_token") or "")
         self.model_cfg = self.cfg.get("model") or {}
         self.engine_cfg = self.cfg.get("engine") or {}
+        # 推理后端：torch（默认）或 onnx（不加载 torch）。见 _resolve_backend。
+        self.backend = _resolve_backend(self.engine_cfg)
+        self.bundle_dir = _resolve_bundle_dir(self.cfg)
         self.cache_dir = Path(
             (self.cfg.get("paths") or {}).get("cache_dir")
             or (BASE / "cache"))
@@ -60,16 +68,9 @@ class VisionService:
             if not Path(video).is_file():
                 return {"ok": False, "error": f"视频不存在: {video}"}
             try:
-                from stream_engine import StreamEngine  # 延迟导入(torch 很重)
                 if duration_ms is None:
                     duration_ms = _probe_duration_ms(video)
-                eng = StreamEngine(
-                    video, duration_ms,
-                    device=str(self.engine_cfg.get("device", "cuda")),
-                    ckpt=self.model_cfg.get("checkpoint"),
-                    on_note=self._note,
-                    cache_dir=str(self.cache_dir),
-                )
+                eng = self._build_engine(video, duration_ms)
                 eng.start()
                 self.engine = eng
                 self.job = {"video": video, "started_at": time.time(),
@@ -82,6 +83,27 @@ class VisionService:
                 self.last_error = f"{type(e).__name__}: {e}"
                 traceback.print_exc()
                 return {"ok": False, "error": self.last_error}
+
+    def _build_engine(self, video: str, duration_ms: float):
+        """按选定后端构造引擎（不 start，便于单测与惰性导入）。"""
+        device = str(self.engine_cfg.get("device", "cuda"))
+        if self.backend == "onnx":
+            from onnx_stream import OnnxStreamEngine  # 不依赖 torch
+            return OnnxStreamEngine(
+                video, duration_ms,
+                device=device,
+                on_note=self._note,
+                cache_dir=str(self.cache_dir),
+                bundle=str(self.bundle_dir),
+            )
+        from stream_engine import StreamEngine  # 延迟导入(torch 很重)
+        return StreamEngine(
+            video, duration_ms,
+            device=device,
+            ckpt=self.model_cfg.get("checkpoint"),
+            on_note=self._note,
+            cache_dir=str(self.cache_dir),
+        )
 
     def close(self) -> dict:
         with self.lock:
@@ -145,6 +167,8 @@ class VisionService:
             "n_actions": st.get("n_actions", 0),
             "coverage_ms": st.get("coverage_ms", 0),
             "model": self.model_cfg.get("checkpoint") or "v0.6.0",
+            "backend": self.backend,
+            "bundle": str(self.bundle_dir) if self.backend == "onnx" else None,
             "device": self.engine_cfg.get("device", "cuda"),
             "gpu_used_gb": _gpu_used_gb(),
             "idle_sec": round(time.time() - self.idle_since, 1),
@@ -227,6 +251,27 @@ class VisionService:
                     self._json({"ok": False, "error": "not found"}, 404)
 
         return H
+
+
+BACKENDS = ("torch", "onnx")
+
+
+def _resolve_backend(engine_cfg: dict | None = None) -> str:
+    """推理后端：FSC_VISION_BACKEND 优先，其次 config.engine.backend，默认 torch。"""
+    raw = (os.environ.get("FSC_VISION_BACKEND")
+           or str((engine_cfg or {}).get("backend") or "torch")).strip().lower()
+    if raw not in BACKENDS:
+        print(f"[vision] 未知 FSC_VISION_BACKEND={raw!r}，回退 torch", flush=True)
+        return "torch"
+    return raw
+
+
+def _resolve_bundle_dir(cfg: dict | None = None) -> Path:
+    """ONNX bundle：FSC_VISION_BUNDLE > config.model.onnx_bundle > 模块内 bundles/v0.6.0。"""
+    raw = (os.environ.get("FSC_VISION_BUNDLE")
+           or str(((cfg or {}).get("model") or {}).get("onnx_bundle") or "")).strip()
+    p = Path(raw) if raw else (BASE / "bundles" / "v0.6.0")
+    return p if p.is_absolute() else (BASE / p)
 
 
 def _probe_duration_ms(video: str) -> float:

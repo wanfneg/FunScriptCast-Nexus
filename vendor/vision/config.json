@@ -7,6 +7,8 @@
   },
   "engine": {
     "device": "cuda",
+    "backend": "torch",
+    "_backend_note": "推理后端: torch | onnx。环境变量 FSC_VISION_BACKEND 优先；onnx 不加载 torch。",
     "publish_rows": 256,
     "_publish_rows_note": "每批发布的视频行数(30行/秒)。256=8.5秒一批, 越小越新鲜但冲程越碎; 官方语义是1024。",
     "ctx_rows": 1024,
@@ -15,7 +17,9 @@
   "model": {
     "checkpoint": "",
     "_checkpoint_note": "空=用 weights/checkpoints/v0.6.0.pt",
-    "bundle_dir": "weights"
+    "bundle_dir": "weights",
+    "onnx_bundle": "bundles/v0.6.0",
+    "_onnx_bundle_note": "onnx 后端的 bundle 目录（相对 vendor/vision）；环境变量 FSC_VISION_BUNDLE 优先。"
   },
   "paths": {
     "cache_dir": "",

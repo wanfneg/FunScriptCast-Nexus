@@ -35,6 +35,7 @@ CLIP_LEN = 32
 N_ALIGN = 4
 GROUP = (CLIP_LEN // 2) * 2 * K          # 64
 W = H = 384
+DEFAULT_BUNDLE = Path(__file__).resolve().parent / "bundles" / "v0.6.0"
 
 
 class ActionBuffer:
@@ -69,7 +70,8 @@ class OnnxStreamEngine:
         self.on_note = on_note or (lambda s: None)
         self.cache_dir = Path(cache_dir) if cache_dir else Path(video).parent
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.bundle_path = Path(bundle or os.environ.get("FSC_VISION_BUNDLE", ""))
+        self.bundle_path = Path(bundle) if bundle else Path(
+            os.environ.get("FSC_VISION_BUNDLE") or DEFAULT_BUNDLE)
         self.total_rows = int(duration_ms / 1000.0 * ROW_HZ) + 8
         self.lat_path = self.cache_dir / (Path(video).stem + ".onnx.lat.bin")
         self.lat = np.memmap(self.lat_path, dtype=np.int8, mode="w+",
