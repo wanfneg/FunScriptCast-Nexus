@@ -1,0 +1,12 @@
+{
+  "video": "E:/testvideo/funscript test/K1cztm.mp4",
+  "rows": 39110,
+  "row_hz": 30.0,
+  "n_actions": 3133,
+  "rev_bias": 3.070230100198159,
+  "v_std": 193.57327270507812,
+  "stats": {
+    "raw": 3504,
+    "rdp": 3133
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "video": "E:/testvideo/funscript test/K1drsp.mp4",
+  "rows": 40967,
+  "row_hz": 30.0,
+  "n_actions": 4002,
+  "rev_bias": 2.866351404622356,
+  "v_std": 193.57327270507812,
+  "stats": {
+    "raw": 4409,
+    "rdp": 4002
+  }
+}

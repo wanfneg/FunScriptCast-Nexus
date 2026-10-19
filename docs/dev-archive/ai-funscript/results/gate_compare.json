@@ -1,0 +1,148 @@
+{
+ "K1cztm": {
+  "manual": {
+   "label": "人工",
+   "n": 3100,
+   "overall": 3.28,
+   "still_per_s": 0.3,
+   "motion_per_s": 3.28,
+   "recall_100ms": 1.0,
+   "recall_200ms": 1.0,
+   "precision_100ms": 1.0
+  },
+  "raw": {
+   "label": "生成(未门控)",
+   "n": 3133,
+   "overall": 3.31,
+   "still_per_s": 1.29,
+   "motion_per_s": 3.34,
+   "recall_100ms": 0.846,
+   "recall_200ms": 0.951,
+   "precision_100ms": 0.772
+  },
+  "strict": {
+   "label": "生成(严格门)",
+   "n": 2251,
+   "overall": 2.39,
+   "still_per_s": 0.01,
+   "motion_per_s": 2.78,
+   "recall_100ms": 0.761,
+   "recall_200ms": 0.854,
+   "precision_100ms": 0.951
+  },
+  "balanced": {
+   "label": "生成(平衡门)",
+   "n": 2425,
+   "overall": 2.56,
+   "still_per_s": 0.1,
+   "motion_per_s": 2.98,
+   "recall_100ms": 0.803,
+   "recall_200ms": 0.901,
+   "precision_100ms": 0.935
+  },
+  "gentle": {
+   "label": "生成(温和门)",
+   "n": 2681,
+   "overall": 2.83,
+   "still_per_s": 0.45,
+   "motion_per_s": 3.2,
+   "recall_100ms": 0.826,
+   "recall_200ms": 0.929,
+   "precision_100ms": 0.875
+  },
+  "stats_balanced": {
+   "n_in": 3133,
+   "n_out": 2425,
+   "dropped": 708,
+   "conf_median_dropped": 0.5228084623813629,
+   "vm_median_dropped": 10.377019449422903
+  },
+  "stats_strict": {
+   "n_in": 3133,
+   "n_out": 2251,
+   "dropped": 882,
+   "conf_median_dropped": 0.5600005835294724,
+   "vm_median_dropped": 13.340842350578896
+  },
+  "stats_gentle": {
+   "n_in": 3133,
+   "n_out": 2681,
+   "dropped": 452,
+   "conf_median_dropped": 0.25937288999557495,
+   "vm_median_dropped": 9.897100284085269
+  }
+ },
+ "K1drsp": {
+  "manual": {
+   "label": "人工",
+   "n": 4432,
+   "overall": 4.24,
+   "still_per_s": 0.3,
+   "motion_per_s": 4.24,
+   "recall_100ms": 1.0,
+   "recall_200ms": 1.0,
+   "precision_100ms": 1.0
+  },
+  "raw": {
+   "label": "生成(未门控)",
+   "n": 4002,
+   "overall": 3.83,
+   "still_per_s": 2.06,
+   "motion_per_s": 4.12,
+   "recall_100ms": 0.844,
+   "recall_200ms": 0.957,
+   "precision_100ms": 0.735
+  },
+  "strict": {
+   "label": "生成(严格门)",
+   "n": 2654,
+   "overall": 2.54,
+   "still_per_s": 0.17,
+   "motion_per_s": 3.34,
+   "recall_100ms": 0.738,
+   "recall_200ms": 0.833,
+   "precision_100ms": 0.942
+  },
+  "balanced": {
+   "label": "生成(平衡门)",
+   "n": 3050,
+   "overall": 2.92,
+   "still_per_s": 0.35,
+   "motion_per_s": 3.77,
+   "recall_100ms": 0.809,
+   "recall_200ms": 0.915,
+   "precision_100ms": 0.91
+  },
+  "gentle": {
+   "label": "生成(温和门)",
+   "n": 3268,
+   "overall": 3.13,
+   "still_per_s": 0.69,
+   "motion_per_s": 3.92,
+   "recall_100ms": 0.826,
+   "recall_200ms": 0.936,
+   "precision_100ms": 0.872
+  },
+  "stats_balanced": {
+   "n_in": 4002,
+   "n_out": 3050,
+   "dropped": 952,
+   "conf_median_dropped": 0.4637442082166672,
+   "vm_median_dropped": 13.129696335149191
+  },
+  "stats_strict": {
+   "n_in": 4002,
+   "n_out": 2654,
+   "dropped": 1348,
+   "conf_median_dropped": 0.5325317829847336,
+   "vm_median_dropped": 20.337188053554655
+  },
+  "stats_gentle": {
+   "n_in": 4002,
+   "n_out": 3268,
+   "dropped": 734,
+   "conf_median_dropped": 0.38129428029060364,
+   "vm_median_dropped": 12.447345308076535
+  }
+ }
+}

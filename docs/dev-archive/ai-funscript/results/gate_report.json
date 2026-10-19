@@ -1,0 +1,282 @@
+[
+ {
+  "name": "K1cztm",
+  "rows": 39110,
+  "v_std": 193.57327270507812,
+  "still_rows": 4169,
+  "motion_rows": 22360,
+  "p50": {
+   "vmarg": 120.8934,
+   "conf": 0.9651,
+   "plat": 0.067,
+   "combo": 0.9412
+  },
+  "signals": {
+   "vmarg pos/s": {
+    "auc": 0.9656,
+    "median_motion": 169.6484,
+    "median_still": 6.1905,
+    "sep": 27.4
+   },
+   "conf(head)": {
+    "auc": 0.9528,
+    "median_motion": 0.9791,
+    "median_still": 0.4049,
+    "sep": 2.42
+   },
+   "plat_prob(反向：越高越静)": {
+    "auc": 0.8482,
+    "median_motion": -0.052,
+    "median_still": -0.1919,
+    "sep": 0.27
+   },
+   "rev_prob": {
+    "auc": 0.4257,
+    "median_motion": 0.0407,
+    "median_still": 0.0534,
+    "sep": 0.76
+   },
+   "env/(vmarg+1)": {
+    "auc": 0.7282,
+    "median_motion": 1.0591,
+    "median_still": 0.0,
+    "sep": null
+   },
+   "combo=(vm/p50)*conf": {
+    "auc": 0.9801,
+    "median_motion": 1.3517,
+    "median_still": 0.0167,
+    "sep": 81.01
+   }
+  },
+  "vmarg_best": {
+   "thr": 20.23320374687428,
+   "f1": 0.7966348850252384,
+   "prec": 0.7482090181205225,
+   "recall": 0.8517630127128808,
+   "k_p50": 0.16736401673640167
+  },
+  "still_eps_ref": {
+   "recall": 0.8666346845766371,
+   "fp": 0.05787119856887299
+  },
+  "baseline": {
+   "n": 2874,
+   "plat_per_s": 1.29,
+   "out_per_s": 3.34
+  },
+  "gate": {
+   "vmarg": {
+    "k=0.30": {
+     "thr": 36.268,
+     "plat_per_s": 0.17,
+     "out_per_s": 3.11
+    },
+    "k=0.50": {
+     "thr": 60.4467,
+     "plat_per_s": 0.1,
+     "out_per_s": 2.96
+    },
+    "k=0.75": {
+     "thr": 90.67,
+     "plat_per_s": 0.07,
+     "out_per_s": 2.83
+    },
+    "k=1.00": {
+     "thr": 120.8934,
+     "plat_per_s": 0.05,
+     "out_per_s": 2.64
+    }
+   },
+   "conf": {
+    "k=0.30": {
+     "thr": 0.2895,
+     "plat_per_s": 0.97,
+     "out_per_s": 3.34
+    },
+    "k=0.50": {
+     "thr": 0.4825,
+     "plat_per_s": 0.66,
+     "out_per_s": 3.31
+    },
+    "k=0.75": {
+     "thr": 0.7238,
+     "plat_per_s": 0.38,
+     "out_per_s": 3.11
+    },
+    "k=1.00": {
+     "thr": 0.9651,
+     "plat_per_s": 0.0,
+     "out_per_s": 2.27
+    }
+   },
+   "combo": {
+    "k=0.30": {
+     "thr": 0.2824,
+     "plat_per_s": 0.08,
+     "out_per_s": 3.07
+    },
+    "k=0.50": {
+     "thr": 0.4706,
+     "plat_per_s": 0.06,
+     "out_per_s": 2.93
+    },
+    "k=0.75": {
+     "thr": 0.7059,
+     "plat_per_s": 0.01,
+     "out_per_s": 2.79
+    },
+    "k=1.00": {
+     "thr": 0.9412,
+     "plat_per_s": 0.0,
+     "out_per_s": 2.59
+    }
+   }
+  },
+  "manual": {
+   "n": 3100,
+   "plat_per_s": 0.3,
+   "out_per_s": 3.28
+  }
+ },
+ {
+  "name": "K1drsp",
+  "rows": 40967,
+  "v_std": 193.57327270507812,
+  "still_rows": 8114,
+  "motion_rows": 21985,
+  "p50": {
+   "vmarg": 100.18,
+   "conf": 0.9386,
+   "plat": 0.0901,
+   "combo": 0.8648
+  },
+  "signals": {
+   "vmarg pos/s": {
+    "auc": 0.9341,
+    "median_motion": 176.7578,
+    "median_still": 10.8605,
+    "sep": 16.28
+   },
+   "conf(head)": {
+    "auc": 0.9245,
+    "median_motion": 0.9756,
+    "median_still": 0.3948,
+    "sep": 2.47
+   },
+   "plat_prob(反向：越高越静)": {
+    "auc": 0.8578,
+    "median_motion": -0.0649,
+    "median_still": -0.1938,
+    "sep": 0.33
+   },
+   "rev_prob": {
+    "auc": 0.4764,
+    "median_motion": 0.0639,
+    "median_still": 0.0697,
+    "sep": 0.92
+   },
+   "env/(vmarg+1)": {
+    "auc": 0.4777,
+    "median_motion": 1.2717,
+    "median_still": 1.944,
+    "sep": 0.65
+   },
+   "combo=(vm/p50)*conf": {
+    "auc": 0.948,
+    "median_motion": 1.6202,
+    "median_still": 0.0374,
+    "sep": 43.32
+   }
+  },
+  "vmarg_best": {
+   "thr": 41.916319478891694,
+   "f1": 0.7786776126026181,
+   "prec": 0.7079887028444624,
+   "recall": 0.8650480650727138,
+   "k_p50": 0.41841004184100417
+  },
+  "still_eps_ref": {
+   "recall": 0.7204831156026621,
+   "fp": 0.07559699795314988
+  },
+  "baseline": {
+   "n": 3745,
+   "plat_per_s": 2.06,
+   "out_per_s": 4.12
+  },
+  "gate": {
+   "vmarg": {
+    "k=0.30": {
+     "thr": 30.054,
+     "plat_per_s": 0.7,
+     "out_per_s": 3.99
+    },
+    "k=0.50": {
+     "thr": 50.09,
+     "plat_per_s": 0.4,
+     "out_per_s": 3.88
+    },
+    "k=0.75": {
+     "thr": 75.135,
+     "plat_per_s": 0.23,
+     "out_per_s": 3.7
+    },
+    "k=1.00": {
+     "thr": 100.18,
+     "plat_per_s": 0.1,
+     "out_per_s": 3.58
+    }
+   },
+   "conf": {
+    "k=0.30": {
+     "thr": 0.2816,
+     "plat_per_s": 1.79,
+     "out_per_s": 4.08
+    },
+    "k=0.50": {
+     "thr": 0.4693,
+     "plat_per_s": 1.27,
+     "out_per_s": 3.98
+    },
+    "k=0.75": {
+     "thr": 0.7039,
+     "plat_per_s": 0.59,
+     "out_per_s": 3.65
+    },
+    "k=1.00": {
+     "thr": 0.9386,
+     "plat_per_s": 0.13,
+     "out_per_s": 3.0
+    }
+   },
+   "combo": {
+    "k=0.30": {
+     "thr": 0.2595,
+     "plat_per_s": 0.46,
+     "out_per_s": 3.91
+    },
+    "k=0.50": {
+     "thr": 0.4324,
+     "plat_per_s": 0.24,
+     "out_per_s": 3.79
+    },
+    "k=0.75": {
+     "thr": 0.6486,
+     "plat_per_s": 0.14,
+     "out_per_s": 3.65
+    },
+    "k=1.00": {
+     "thr": 0.8648,
+     "plat_per_s": 0.09,
+     "out_per_s": 3.47
+    }
+   }
+  },
+  "manual": {
+   "n": 4432,
+   "plat_per_s": 0.3,
+   "out_per_s": 4.24
+  }
+ }
+]
