@@ -2,8 +2,8 @@
 
 > **⚠️ 第一轮审查存档**：本文是 2026-10-02 凌晨的第 1 轮审查（当时尚未以手机端为
 > 真源），**其中部分结论已被修正或推翻**——修正记录见
-> `review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
-> 实施状态以 `review/最终修复清单-R2.md` 为准。
+> `docs/review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
+> 实施状态以 `docs/review/最终修复清单-R2.md` 为准。
 
 
 - 任务：task-1（owner: backend-reviewer）
@@ -224,7 +224,7 @@ UI 只做了单向防护：进入预设前二次确认并 `syncStop()`（`app.js
 
 UI 的联动卡从不写 `video_link.reversed`（`app.js:1959-1987` 只写 range/idle/burst 系列），
 唯一写反转到磁盘的是 `device.reversed`（`app.js:2366` → `host_server.py:2525-2526`）。
-此处 `vl.get("reversed")` 之前已被探针独立记录：`review/probes/probe_device_settings.py:8-14`。
+此处 `vl.get("reversed")` 之前已被探针独立记录：`docs/review/probes/probe_device_settings.py:8-14`。
 
 - 影响：双份真相 + 静默覆盖。任何调用方（含头显/手机端）写 `video_link.reversed=true` 都不生效；
   读代码的人会以为反转来自联动页。

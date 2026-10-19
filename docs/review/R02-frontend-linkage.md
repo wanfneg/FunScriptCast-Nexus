@@ -2,8 +2,8 @@
 
 > **⚠️ 第一轮审查存档**：本文是 2026-10-02 凌晨的第 1 轮审查（当时尚未以手机端为
 > 真源），**其中部分结论已被修正或推翻**——修正记录见
-> `review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
-> 实施状态以 `review/最终修复清单-R2.md` 为准。
+> `docs/review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
+> 实施状态以 `docs/review/最终修复清单-R2.md` 为准。
 
 
 - 审查人：frontend-reviewer（共享任务 task-2）
@@ -386,7 +386,7 @@ if (Math.abs(cv.width - Math.round(w * d)) > 2 ||
 
 | 检查项 | 结论 | 依据 |
 |---|---|---|
-| 双重乘 dpr / 改元素宽度 | ✅ 已修好 | `app.js:2138-2139` backing = CSS×dpr；不再写 `cv.style.width`；`.vl-wave{width:100%; flex:1; min-height:0}`（`styles.css:970`）保证布局尺寸不被 backing store 反向影响 → 不会出现"波形只占左边 1/dpr"，与 `design/_shots/98-预设波形.png` 的期望表现一致（波形满宽、两列） |
+| 双重乘 dpr / 改元素宽度 | ✅ 已修好 | `app.js:2138-2139` backing = CSS×dpr；不再写 `cv.style.width`；`.vl-wave{width:100%; flex:1; min-height:0}`（`styles.css:970`）保证布局尺寸不被 backing store 反向影响 → 不会出现"波形只占左边 1/dpr"，与 `docs/design/_shots/98-预设波形.png` 的期望表现一致（波形满宽、两列） |
 | 重画判据完整性 | ❌ **不彻底** | D10：两处判据（`app.js:2126`、`2482`）都只比较 `cv.width`，而 canvas 的 CSS 高度只随窗口高度变化（`gridAutoRows`，`2469-2470`）→ 只改窗口高度的 resize 不触发重画；`!cv.height \|\| cv.height < 20` 对已画过的 backing（≥40）恒为假，兜底不住 |
 | canvas 0 尺寸 | ⚠️ 部分 | 隐藏页 `clientWidth=0` → `redrawPresetWaves` 早退；`renderPresetCards` 首次绘制在隐藏时以 `w=130,h=40` 兜底（可见后按宽度纠正；**高度纠正不了**，见 D10/§3-2） |
 | backing store 反复重分配 | ✅ 无 | `redrawPresetWaves` 只在尺寸不符时调用 `drawPresetWave`；`drawHeat` 只在 `cv.width!==pw` 时赋值（`app.js:1762`）→ 不会每帧重置画布 |
@@ -443,7 +443,7 @@ if (Math.abs(cv.width - Math.round(w * d)) > 2 ||
 
 1. **`showPage` 增加 `requestAnimationFrame(redrawPresetWaves)`（app.js:135）** — 方向正确（切页后按新尺寸重画），rAF 注册顺序也正确（`layoutVl` 在前）。函数声明提升，`vlApplyHash` 在启动期调用它不会报未定义。遗留：判据只看宽度（D10）。
 2. **移除 `#vlBoost`/`#vlRandom` 的 `vlPresetButton` 包装（app.js:2073-2074）** — 判定为**正确修正**（详见 Q3），不是回退；真正的护栏盲区在 `syncStart`/快捷动作（D2）。
-3. **`drawPresetWave` 的 DPR 修复（app.js:2132-2141）** — 主体正确：backing = CSS×dpr、保留 `setTransform(dpr,…)`、不再写 `style.width/height`、不再双重乘 dpr。与 `design/_shots/98-预设波形.png` 的期望（波形满宽、卡片两列、无左侧偏移）一致。不彻底处见 Q4/D10。
+3. **`drawPresetWave` 的 DPR 修复（app.js:2132-2141）** — 主体正确：backing = CSS×dpr、保留 `setTransform(dpr,…)`、不再写 `style.width/height`、不再双重乘 dpr。与 `docs/design/_shots/98-预设波形.png` 的期望（波形满宽、卡片两列、无左侧偏移）一致。不彻底处见 Q4/D10。
 4. **`layoutVl` 内新增按宽度重画块（app.js:2478-2486）** — 与 `redrawPresetWaves` 逻辑重复且判据更弱（不查高度、不查 `!w`）；建议合并成一个函数（D9/D10 一起修）。
 5. **`setInterval(redrawPresetWaves, 1500)`（app.js:2523）** — 无内存增长、空转成本低（D14）；有了正确的判据与 resize/切页触发后即可删除。
 6. `version.json` 1.0.61→1.0.62（版本号同步，无风险）。

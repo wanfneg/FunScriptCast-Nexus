@@ -75,7 +75,7 @@ Nexus/
 - [x] 视觉默认后端切 onnx（DirectML，`FSC_VISION_BACKEND=onnx`），torch 仅保留为对照
 - [x] 宿主启动前的依赖检查按后端判定（onnx → numpy + onnxruntime；torch → 原依赖）
 - [x] 仓库 `.venv` 移除 torch/torchvision/torchaudio 与 torch-only 包（备份 `tmp\torch-backup-2.11.0`）
-- [ ] 安装包把 `app/`、`web/dist` 一并带入（`build/build_exe.ps1` + `installer/setup.iss`）
+- [ ] 安装包把 `app/`、`web/dist` 一并带入（`build/build_exe.ps1` + `build/installer/setup.iss`）
 - [ ] 打包只装对应平台 onnxruntime，不再安装 torch（`.venv` 可减约 4.2 GB；vision-runtime 同理）
 
 ## 5. 约定

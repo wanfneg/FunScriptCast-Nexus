@@ -4,7 +4,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const URL = 'file:///E:/Development/FunScriptCast-Nexus/design/prototype.html';
+const URL = 'file:///E:/Development/FunScriptCast-Nexus/docs/design/prototype.html';
 const PORT = 9333;
 
 function get(path) {

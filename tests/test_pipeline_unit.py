@@ -601,7 +601,7 @@ def t_hybrid_vad_cut():
 def t_hybrid_partial_snapshot_and_vad_calls():
     """评审 F17。**先量了再改**，结论与报告有出入，如实记在这里。
 
-    量到的（本机 CPU、repo 自带 audiocpp_cli + silero，见 iteration_shturl.md R92）：
+    量到的（本机 CPU、repo 自带 audiocpp_cli + silero，见 docs/dev-history/iteration_shturl.md R92）：
     单次 VAD 调用 2s≈28ms / 3.5s≈32ms / 5s≈39ms / 7s≈48ms / 10s≈62ms，纯进程启动≈7ms。
     报告里"超时下限 30s"是**上限不是成本**，据此估算会把这一条放大两个数量级。
 

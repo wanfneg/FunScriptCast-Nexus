@@ -11,9 +11,9 @@
 | 档案 | 位置 | 内容 |
 |---|---|---|
 | **本文件**（迭代日志·全量） | `iteration_shturl.md` | 全部开发轮次（R1→R117+），本项目开发档案的完整版 |
-| 审查报告与修复清单 | `review/` | R01-R14 分册、全面审查报告、设备写入所有权设计、一致性核对清单、里程碑后续项、探针 |
+| 审查报告与修复清单 | `docs/review/` | R01-R14 分册、全面审查报告、设备写入所有权设计、一致性核对清单、里程碑后续项、探针 |
 | **开发文档归档** | `docs/dev-archive/` | 2026-10-02 从 ZCode 会话产物归集的历史开发文档：**四大功能规划报告（讨论稿 v1，含 19 条挑刺）**、Central 开发方案/调研报告、仓库卫生审计、AI 字幕模型评测、全项目安全版审查 |
-| 设计规格 | `design/` | DESIGN_SPEC、视频联动草图规格 |
+| 设计规格 | `docs/design/` | DESIGN_SPEC、视频联动草图规格 |
 | 状态与合规 | `docs/` | AI-SUBTITLE-STATUS、THIRD-PARTY-NOTICES（许可台账） |
 | 发布说明 | `tools/release_notes.md` | 面向用户的版本说明（**停在 1.0.42，发版时需补齐**） |
 
@@ -387,7 +387,7 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
 | R13 | **keep_from 跨块丢句修复**（判据放宽为整句在重叠区才丢） | audiocpp_backend.py |
 | R6+R18 | 逐句 MT 模式（Sakura）+ 免费兜底繁体守卫 | translate_engine.py, free_translators.py |
 | R17前置 | asr_engine torch/qwen_asr 懒加载 + runtime\ 解释器优先 | asr_engine.py, host_server.py |
-| 安装器 | build_installer.ps1 + make_runtime.ps1 + installer/setup.iss | 新增 |
+| 安装器 | build_installer.ps1 + make_runtime.ps1 + build/installer/setup.iss | 新增 |
 
 ## 四、实验结论（负结果也有价值）
 
@@ -654,7 +654,7 @@ SIVR-002 泛化验证：召回 92.1%、覆盖 0.512、时序 −182ms、硬缺�
   - `host_server.py:44 APP_DIR`（打包版=exe 所在目录）、`:47 MODELS_DIR = APP_DIR/"models"`、
     `:739 env.setdefault("ASR_MODEL", str(MODELS_DIR/"Qwen3-ASR-0.6B"))` ← README 里那句「模型：./models（绝对路径注入）」；
   - 配置内模型一律相对路径（相对 `vendor/subtitle/`）：`asr.model = ../../models/Qwen3-ASR-0.6B`；
-  - `models/` 在 `.gitignore`（模型不入库），`installer/setup.iss` 不打模型（注释：「用户数据（cache\、models 配置）保留」）。
+  - `models/` 在 `.gitignore`（模型不入库），`build/installer/setup.iss` 不打模型（注释：「用户数据（cache\、models 配置）保留」）。
 - **落地**：
   1. 模型迁入安装目录：`models\Sakura-7B-Qwen2.5-v1.0\…iq4xs.gguf`（4,053 MB）、
      `models\Sakura-1.5B-Qwen2.5-v1.0\…q5ks.gguf`（1,201 MB）——同盘移动=改名（瞬时），
@@ -3322,7 +3322,7 @@ if not WizardIsTaskSelected('desktopicon') → FileExists 才 DeleteFile({autode
 
 ### 验证：`tests/installer_tasks.ps1`（真跑安装器，15 项断言）
 
-Inno 脚本不能"单元测试"，但可以**真跑**：脚本从 `installer\setup.iss` **抽原文的**
+Inno 脚本不能"单元测试"，但可以**真跑**：脚本从 `build\installer\setup.iss` **抽原文的**
 `[Tasks]/[Icons]/[Registry]/[Code]` 四段（不复制一份，避免日后两边各说各话），配上
 **测试身份**（独立 AppId/AppName 全部换掉、独立安装目录、独立桌面链接名、独立卸载
 注册项），载荷换成 1KB 假 exe，然后：
@@ -3334,7 +3334,7 @@ Inno 脚本不能"单元测试"，但可以**真跑**：脚本从 `installer\set
 | ③ | 再跑一次全不勾 | 幂等不报错 ✓（没有可删的东西也不能失败） |
 | 清理 | 跑卸载器 + 强制清 Run 值/.lnk/卸载注册项/临时目录 | 三项都不残留 ✓ |
 
-对着**旧 `setup.iss`**（`git stash push installer/setup.iss`）跑同一脚本：
+对着**旧 `setup.iss`**（`git stash push build/installer/setup.iss`）跑同一脚本：
 结构断言 4 条 FAIL + **行为断言 2 条 FAIL**（"② 取消勾选后 Run 值被回删"、
 "② 取消勾选后桌面快捷方式被回删"）—— 这就是 F30 的**行为级复现**：旧安装器真的把
 用户取消掉的勾选无视了。新代码 15 项全过。
@@ -3488,7 +3488,7 @@ code 39→40）→ API Key 哨兵全树扫描（通过）→ `make_runtime.ps1`�
 ### 校验（发布前）
 
 1. **载荷含本轮修复**：`dist-app\vendor\subtitle\{hybrid_segmenter,translate_engine,stream_bridge}.py`
-   分别含 F17/F23/F14 的标记；`installer\setup.iss` 含 F30 的 `CurStepChanged`。
+   分别含 F17/F23/F14 的标记；`build\installer\setup.iss` 含 F30 的 `CurStepChanged`。
 2. **打包运行时冒烟**（R52 那条教训的正面验证）：`dist-app\runtime\python.exe` 是**封闭
    `._pth`**（sys.path 只有 3 项、不含脚本目录）——正是 R49 "No module named 'user_paths'"
    的现场。在这个解释器下跑
@@ -3649,7 +3649,7 @@ FileVersion=1.0.40）。提交 `8cc17b6` 推送后，release `v1.0.40` 建在主
 
 | 步骤 | 安装器 | 场景 | 结果 |
 |---|---|---|---|
-| ② | **修复前**（`git show HEAD:installer/setup.iss`，无 PrepareToInstall） | 安装目录里的 python 当安装器父进程 | 复现 `RestartManager found an application using one of our files: Python` |
+| ② | **修复前**（`git show HEAD:build/installer/setup.iss`，无 PrepareToInstall） | 安装目录里的 python 当安装器父进程 | 复现 `RestartManager found an application using one of our files: Python` |
 | ③ | 新版 | 新版交接脚本 + 假"字幕服务"占着 8756 | 等端口释放 47.4s → 一次装成 → **无 RM 命中、无回滚**、拉起应用 |
 | ④ | 新版 | 同样的"旧式交接进程"占着安装目录 | 安装器先把它清掉 → **无 RM 命中** → 安装成功、不回滚 |
 
@@ -3801,7 +3801,7 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 
 **历史考古（重要）**：268 提交全历史零真实密钥（双方法交叉：token 前缀/私钥块/Bearer/api_key 赋值全 0 命中，仅单测占位符与 README 示例；config.json 历史 api_key 恒空）→ **无需为密钥改写历史**。本地 .git 1.73GB 瘦身方案：两巨型 zip 仅被 refs/original/refs/heads/main 持活（未推送），update-ref -d + reflog expire + gc 即回落 ~0.2-0.3GB（无强推无远端影响；先 bundle 备份）。若要从公开历史抹 140MB 构建产物/报告/赞助码痕迹才需 filter-repo+强推（268 hash 全变、7 tags 重打、fork 失效）——不建议（无密钥）。赞助码旧图历史可取，担心则换收款码。
 
-**存疑未动（等主人定夺）**：iteration_shturl.md（3645 行内部日志，被 AI-SUBTITLE-STATUS.md/hybrid_segmenter.py/test_pipeline_unit.py 引用，删则悬空）、sim_*.json（含本机 IP/GPU 型号，轻微机器信息）、design/**、qq-promo 系列图（与 docs/screenshots 字节级重复，~7MB 冗余）、build/_readme_*（过时残留，含 QQ 号）、tools/release_notes.md。
+**存疑未动（等主人定夺）**：iteration_shturl.md（3645 行内部日志，被 AI-SUBTITLE-STATUS.md/hybrid_segmenter.py/test_pipeline_unit.py 引用，删则悬空）、sim_*.json（含本机 IP/GPU 型号，轻微机器信息）、docs/design/**、qq-promo 系列图（与 docs/screenshots 字节级重复，~7MB 冗余）、build/_readme_*（过时残留，含 QQ 号）、tools/release_notes.md。
 
 **Community Standards 剩余缺口**：description 空、topics 空、无 CoC/contributing/issue_template（个人项目可不做）。
 
@@ -3919,7 +3919,7 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 
 ## R110（2026-10-02）：全面审查修复——F1-F32 四批次全落地
 
-**审查**：以手机端（E:\Development\FunScriptCast）/头显端为真源的第二轮全面审查（6 条分线），产出 61 条跨端对照 + 阻断 1/高 5/中 8/低 10；审查工件在 `review/`（R01-R14 分册、REVIEW-全面审查报告-R2.md、设备写入所有权设计.md、最终修复清单-R2.md）。探针全只读、假通道单测，产品代码在验证期零改动。
+**审查**：以手机端（E:\Development\FunScriptCast）/头显端为真源的第二轮全面审查（6 条分线），产出 61 条跨端对照 + 阻断 1/高 5/中 8/低 10；审查工件在 `docs/review/`（R01-R14 分册、REVIEW-全面审查报告-R2.md、设备写入所有权设计.md、最终修复清单-R2.md）。探针全只读、假通道单测，产品代码在验证期零改动。
 
 **修复（F1-F32 四批，回归测试 `tests/test_device_arbiter.py` 30 条）**：
 - 第 1 批（安全/阻断）：急停 500 复活（`q.is_stop` 属性不存在）；**22/24 预设空转解锁**（漏 `toSegments` keyframes→segments 派生，空段列表纯 CPU 自旋锁死 BLE 事件循环）；**DeviceArbiter 单一写者**（会话互斥矩阵：脚本/预设/爆发/缓动）；`force` 三义性拆 `bypass_estop`；断开 try/finally + submit 超时取消 + `_cleanup` 复位；媒体库文件名 esc；路径 `resolve()+is_relative_to` 校验。
@@ -3939,13 +3939,13 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 5. **全板块一致性核对**（见 R112）逐项对齐：握手顺序 D0→限位→模式→**最后 ready**（旧序相反且注释写反）、delay 方向（t=clock+delay，旧代码取反）、Kotlin Math.round 舍入（`kotlin_round` 统一 4 处）、扫描窗口 10s、连接不补发 oc、关联复选框文案「关联输出」、手动移动未连接禁用、延迟秒显示、去掉自加 ±2000 夹紧。
 6. 其它：预设波形 DPR 重画、主题启动跳变（head 内联 localStorage）、设置页双栏分隔线重排（一次转换脚本写坏结构→整段重写+标签栈校验+浏览器截图验收）、预设选中态渲染链、同步看护（先播视频后连设备自动补起）。
 
-**教训集（已写进 review/ 与长期记忆）**：改「状态来源」必须同时接好渲染调用链；前端修复必须浏览器实测全链路（点一下看请求）；对齐手机端逐行读 Kotlin 原码，不许「觉得差不多」（20ms→40ms 被点名）；任何偏离真源的数值/语义先明说；改 BLE 连接路径必须真机连接验证（重排握手时手滑 `_start_notify(t.rx)` 被真机验证当场抓住）。
+**教训集（已写进 docs/review/ 与长期记忆）**：改「状态来源」必须同时接好渲染调用链；前端修复必须浏览器实测全链路（点一下看请求）；对齐手机端逐行读 Kotlin 原码，不许「觉得差不多」（20ms→40ms 被点名）；任何偏离真源的数值/语义先明说；改 BLE 连接路径必须真机连接验证（重排握手时手滑 `_start_notify(t.rx)` 被真机验证当场抓住）。
 
 ## R112（2026-10-02）：视频联动一致性核对清单（47 项）+ 文档归档
 
-- 产出 `review/视频联动-一致性核对清单.md`：**47 项 = 已逐条对齐 43 / 有意差异 3（用户拍板或平台性：急停从严 I6、进预设不关视频、集成页交互）/ 待拍板 1（mac 缓存直连——手机连过即缓存直连，PC 每次全扫描）**。
+- 产出 `docs/review/视频联动-一致性核对清单.md`：**47 项 = 已逐条对齐 43 / 有意差异 3（用户拍板或平台性：急停从严 I6、进预设不关视频、集成页交互）/ 待拍板 1（mac 缓存直连——手机连过即缓存直连，PC 每次全扫描）**。
 - VR 版更新日志对照：「待机缓动每隔几秒停一下」（自触发掐死循环——异步写帧/onMoving 晚到把缓动自己的帧误判为外部动作）→ **PC 经核查免疫**（`await _write()` 同步完成、cb 在 `_self_moving` 窗口内同步触发），新增 `test_slow_own_frames_do_not_reset_idle` 焊死该保证。其它 VR 项（滑杆样式统一/拖后不更新/波形点击）PC 早已对齐或结构无此问题。
-- **本文件自本轮恢复归档**：此前 10-02 的工作只记录在 review/ 内，违反「轮次信息写入 iteration_shturl.md」约定，现已补齐 R110-R112。
+- **本文件自本轮恢复归档**：此前 10-02 的工作只记录在 docs/review/ 内，违反「轮次信息写入 iteration_shturl.md」约定，现已补齐 R110-R112。
 
 ## R113（2026-10-02）：侧边栏重排（去序号 + 宽度贴合内容，1.0.75）
 
@@ -4028,7 +4028,7 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 - `vendor/subtitle/README.md`：默认组合 Ollama→本地 llama-server（Sakura-7B / Hy-MT2-7B 按语言路由）；
   /health 示例与字段说明按真实返回重写；配置组合表加 R98 生产档（1.7B+1.5B；1.7B+7B 同卡会爆压）；
   验证脚本改 `tools/` 实际路径、删已不存在的 validate_asr.py；实测数据指向 dev-archive。
-- `review/里程碑后续项-总览.md`：版本链 1.0.74→1.0.81、领先 77→94 提交。
+- `docs/review/里程碑后续项-总览.md`：版本链 1.0.74→1.0.81、领先 77→94 提交。
 
 **重大发现（合规回摆）**：R69 声称已移除的 **zhconv 1.4.3 实际仍在发行包内**——R69 当时只
 手删了产物、没改 `make_runtime.ps1`，之后每次重建 runtime 都被 pip 装回；且它以 **egg-info**
@@ -4044,14 +4044,14 @@ _audiocpp-stage 的旧条目）——`git rm -r --cached` + `--amend` + `gc --pr
 （改 fetch_mpv.ps1 一行 + `-Force` 重下 121MB；LGPL 构建对播放场景已足够）。
 
 **顶注（时效声明，防误导）**：`docs/AI-SUBTITLE-STATUS.md`（停 R45-R53；协议 / 踩坑章节仍有效）、
-`design/DESIGN_SPEC.md`（初版设计；令牌真源 = styles.css；顺带修标题错字 uunScriptCast→FunScriptCast）、
-`design/VIDEO-LINK-SKETCH-SPEC.md`（已实现）、`review/R01-R04` + `REVIEW-视频联动.md`（第 1 轮
+`docs/design/DESIGN_SPEC.md`（初版设计；令牌真源 = styles.css；顺带修标题错字 uunScriptCast→FunScriptCast）、
+`docs/design/VIDEO-LINK-SKETCH-SPEC.md`（已实现）、`docs/review/R01-R04` + `REVIEW-视频联动.md`（第 1 轮
 存档，修正见 R2 §7）、`tools/release_notes.md`（停 1.0.42，发版补齐）。
 
 **删**：`build/_readme_body.md` + `_readme_sponsor_block.txt`（无引用旧草稿，卫生审计已点名）、
 `vendor/audiocpp/-`（126B 垃圾文件，会被复制进安装包）。
 **新建**：`docs/文档地图.md`（权威文档 / 历史存档 / 开发纪律一页索引）。
-**有意不动**：`vendor/dlna/README.md`（vendored 原样）、`docs/dev-archive/`、`review/probes/`、`docs/screenshots/`。
+**有意不动**：`vendor/dlna/README.md`（vendored 原样）、`docs/dev-archive/`、`docs/review/probes/`、`docs/screenshots/`。
 
 **波及构建脚本**：`build/make_runtime.ps1`（去 zhconv：pip 行 + 冒烟 + 注释提醒勿加回）。
 **未打包未推送**（仅本地提交；D 盘运行环境不受影响，zhconv 已从 D 盘 runtime 同步删除）。

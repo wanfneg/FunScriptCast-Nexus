@@ -1,6 +1,6 @@
 /* R04 只读探针 2：index.html id ↔ app.js 选择器契约（task-4 verifier 独立编写）。
  *
- * 用法：node review/probes/v4_ui_contract.js
+ * 用法：node docs/review/probes/v4_ui_contract.js
  * 只读：不启动 GUI/服务器，不写文件。
  *
  * 判据：

@@ -2,12 +2,12 @@
 
 > **⚠️ 第一轮审查存档**：本文是 2026-10-02 凌晨的第 1 轮审查（当时尚未以手机端为
 > 真源），**其中部分结论已被修正或推翻**——修正记录见
-> `review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
-> 实施状态以 `review/最终修复清单-R2.md` 为准。
+> `docs/review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
+> 实施状态以 `docs/review/最终修复清单-R2.md` 为准。
 
 
-- 任务：task-4（owner: verifier）｜复核对象：`review/R01-backend-linkage.md`、`review/R02-frontend-linkage.md`、`review/R03-broad-audit.md`
-- 方法：只读源码逐条回核 + 5 个自写只读探针（`review/probes/v4_*.py|js`）+ 语法检查；**未启动 GUI/服务器、未改任何产品代码、未写任何设置文件**（探针首尾对 `data/*.json` 做 sha256 守卫，见 §6）
+- 任务：task-4（owner: verifier）｜复核对象：`docs/review/R01-backend-linkage.md`、`docs/review/R02-frontend-linkage.md`、`docs/review/R03-broad-audit.md`
+- 方法：只读源码逐条回核 + 5 个自写只读探针（`docs/review/probes/v4_*.py|js`）+ 语法检查；**未启动 GUI/服务器、未改任何产品代码、未写任何设置文件**（探针首尾对 `data/*.json` 做 sha256 守卫，见 §6）
 - 基线（复核时的工作副本，`git HEAD = cb81b21`，工作区有未提交改动 `ui/app.js` / `version.json`）：
 
 | 文件 | sha256(前16) | 备注 |
@@ -103,7 +103,7 @@
 | M1 | R01-A6 影响描述 | "连接会去订阅 Vorze 设备上不存在的特征（`CharacteristicNotFound`）"，暗示连不上 | **部分不成立（影响被夸大）**：`channel.connect` 有候选档案重试兜底 —— `toy = self._forced_toy or …`（`channel.py:131`）→ `cands = [t for t in (advertised, toy) if t]` 再补齐全部 TOYS（153-156）→ `for t in cands:` 逐个 `_start_notify` + `cmd_mode`，失败即换下一个（158-180）。所以实际后果是"多一次失败重试 + 档案与 A10 模式自相矛盾（GATT 用一套 UUID、S 指令报另一套）"，通常**仍能连上**。建议 A6 从**高降为中**。 | `channel.py:131,153-180,162`；探针输出 `_forced_toy=serveu / mode_override=1` |
 | M2 | R01-A2 影响描述 | "只有 `stop()` 能救" | **过强**：`/api/quick {kind:"orgasm"｜"slow"}` 的分支会先 `d["preset"].stop()`（`host_server.py:2555-2557`），`/api/device/disconnect` 也会 `preset.stop()`（2498）。"只有 stop() 能救"应改为"只有预设 stop 路径能救（`/api/preset{stop\|pause\|toggle_play}`、`/api/quick` 爆发/缓动、`/api/device/disconnect`）"。主结论（选中即锁死）不受影响。 | `host_server.py:2498,2555-2557,2578-2579` |
 | M3 | R02-Q3（Lead 特别问的第 2 条） | "移除 `vlBoost`/`vlRandom` 的联动二次确认 = 行为回退" | **误报（不是回退，R02 的判定正确）**。判据：①`toggle_boost`（`preset_player.py:114-125`）只翻 `boost` 标志并把 `speed` 记成 500，**不 `_spawn`**，该标志只在 `_play_one_loop` 的 `_effective_speed`（69,162）里被读；②`toggle_random`（103-112）只在 `if self.playing:` 时才重新起循环；③旧包装的第二击会先 `syncStop()`（`app.js:2058`）—— 即"用户按提示退出联动，结果设备什么都不做"（误伤）；④`#vlPresetToggle`（会真的 `start()`）保留两段式确认是必要的（`app.js:2076`）。**残余前提**：这条正确性依赖"BOOST/RANDOM 不启动预设循环"这个宿主不变量（今天成立，建议加注释锁住）；若将来 BOOST 改成"未播放也启动"，它就会变成绕过联动的真实通道。 | `preset_player.py:69,103-125,162`；`app.js:2058,2073-2076` |
-| M4 | R02-§5 计数 | "app.js 里 334 处 id 引用（195 个不同 id）" | **数字口径偏差，结论不变**：我用 `$("#id")`/`getElementById("id")` 严格静态匹配实测 **328 处 / 193 个唯一 id**（另外 6 处是 `"#sync"+cap`、`"#syncRun"+cap` 拼接型）。差异来自计数口径（是否把拼接前缀算作引用），**"缺失恰好 4 个 id"的核心结论已被独立复现（PASS）**。 | `review/probes/v4_ui_contract.js` 输出 |
+| M4 | R02-§5 计数 | "app.js 里 334 处 id 引用（195 个不同 id）" | **数字口径偏差，结论不变**：我用 `$("#id")`/`getElementById("id")` 严格静态匹配实测 **328 处 / 193 个唯一 id**（另外 6 处是 `"#sync"+cap`、`"#syncRun"+cap` 拼接型）。差异来自计数口径（是否把拼接前缀算作引用），**"缺失恰好 4 个 id"的核心结论已被独立复现（PASS）**。 | `docs/review/probes/v4_ui_contract.js` 输出 |
 
 ---
 
@@ -125,15 +125,15 @@
 |---|---|
 | `node --check ui/app.js` | **exit 0**（语法通过，与 R02 一致） |
 | `python -m py_compile host_server.py vendor\device\*.py`（`.venv` 3.10.0） | **exit 0** |
-| `node review/probes/v4_ui_contract.js` | 313 HTML id / 328 处引用 / 193 唯一 id；缺失恰 4 个；**断言 PASS** |
-| `python review/probes/v4_static_contract.py` | 10 条断言全 PASS（22/24 预设、映射倒置、键闭环、`is_stop` 不存在） |
-| `python review/probes/v4_runtime_semantics.py` | A1 `set_allow_move=[]` PASS；A6 `_forced_toy=serveu` PASS；A9 `reversed` 终值 False PASS；A12 后续项全跳过 PASS；**`data/*.json` sha256 前后一致 PASS** |
-| `python review/probes/v4_keyspin_bounded.py normal` | 心跳 31 次、正常返回、**exit 0** |
-| `python review/probes/v4_keyspin_bounded.py classic` | 心跳冻结在 1、4s 未越过 await、**exit 9**（看门狗强制收尾） |
-| `python review/probes/v4_safety_gate_bounded.py` | A3 急停后 2 帧 / A4 急停中 2 帧 / A5 外部帧后 0 帧且 `is_slow=True` / A17 首帧 0.31s；4 条断言全 PASS |
-| `python review/probes/v4_path_and_lan.py` | §1.2 穿越 PASS、§1.3 前缀绕过+开发放宽 PASS、§1.4 绑定/令牌/UI 缺失/Key 非空 PASS |
+| `node docs/review/probes/v4_ui_contract.js` | 313 HTML id / 328 处引用 / 193 唯一 id；缺失恰 4 个；**断言 PASS** |
+| `python docs/review/probes/v4_static_contract.py` | 10 条断言全 PASS（22/24 预设、映射倒置、键闭环、`is_stop` 不存在） |
+| `python docs/review/probes/v4_runtime_semantics.py` | A1 `set_allow_move=[]` PASS；A6 `_forced_toy=serveu` PASS；A9 `reversed` 终值 False PASS；A12 后续项全跳过 PASS；**`data/*.json` sha256 前后一致 PASS** |
+| `python docs/review/probes/v4_keyspin_bounded.py normal` | 心跳 31 次、正常返回、**exit 0** |
+| `python docs/review/probes/v4_keyspin_bounded.py classic` | 心跳冻结在 1、4s 未越过 await、**exit 9**（看门狗强制收尾） |
+| `python docs/review/probes/v4_safety_gate_bounded.py` | A3 急停后 2 帧 / A4 急停中 2 帧 / A5 外部帧后 0 帧且 `is_slow=True` / A17 首帧 0.31s；4 条断言全 PASS |
+| `python docs/review/probes/v4_path_and_lan.py` | §1.2 穿越 PASS、§1.3 前缀绕过+开发放宽 PASS、§1.4 绑定/令牌/UI 缺失/Key 非空 PASS |
 
-探针源码与原始输出（均在 `review/probes/`，可直接复跑）：
+探针源码与原始输出（均在 `docs/review/probes/`，可直接复跑）：
 
 - `v4_static_contract.py` / `.out.txt`
 - `v4_ui_contract.js`
@@ -157,8 +157,8 @@
 
 ## 6. 只读纪律核对
 
-- 本次只写了 `review/R04-verification.md` 与本报告引用的 `review/probes/v4_*`（含 `.out.txt` 输出）；
-- 未修改任何产品代码；`git status` 仍是 `M ui/app.js / M version.json / ?? review/`（与开工时一致）；
+- 本次只写了 `docs/review/R04-verification.md` 与本报告引用的 `docs/review/probes/v4_*`（含 `.out.txt` 输出）；
+- 未修改任何产品代码；`git status` 仍是 `M ui/app.js / M version.json / ?? docs/review/`（与开工时一致）；
 - 未写 `data/integrated_settings.json`：`v4_runtime_semantics.py` 用 `H.load_settings = lambda: settings` 注入假设置，且首尾对 3 个 `data/*.json` 做 sha256 守卫（**PASS**）；`v4_path_and_lan.py` 只做路径计算与 `os.scandir` 列目录；subtitle 的 api_key 只打印"是否非空/长度"，未回显明文；
 - 未启动 GUI、未启动任何服务器（8756/8790/8791/8899 均未监听）。
 

@@ -1,8 +1,8 @@
 # 开发档案（dev-archive）
 
 > 由 2026-10-02 从 ZCode 会话产物（`.zcode/cli/artifacts/`）归集而来——这些文档原先只存在于会话记录里，
-> 现收进仓库与 iteration_shturl.md（迭代日志·全量）配套；**原件保留在 .zcode 不动**。
-> 完整档案体系导览见 `iteration_shturl.md` 顶部的「开发档案导览」。
+> 现收进仓库与 docs/dev-history/iteration_shturl.md（迭代日志·全量）配套；**原件保留在 .zcode 不动**。
+> 完整档案体系导览见 `docs/dev-history/iteration_shturl.md` 顶部的「开发档案导览」。
 
 | 文档 | 内容 |
 |---|---|
@@ -16,5 +16,5 @@
 ## 未找到的一份（记录）
 
 - 《交接文档-视频联动M1.md》（M1 停工时的交接：剩余清单/八个坑/部署真实状态/浏览器自检方法）：
-  桌面与会话产物中均已不存在；其要点已被 iteration_shturl.md 的 R108-R117 与 review/ 吸收，无需恢复。
+  桌面与会话产物中均已不存在；其要点已被 docs/dev-history/iteration_shturl.md 的 R108-R117 与 docs/review/ 吸收，无需恢复。
 

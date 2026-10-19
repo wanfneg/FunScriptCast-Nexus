@@ -101,7 +101,7 @@ ASR_MODEL=... TRANSLATE_BACKEND=openai .venv/Scripts/python.exe run_server.py
 - 模型组合矩阵评测（0.6B/1.7B × 翻译档：召回 / 精度 / 盲评 / 显存）：
   `docs/dev-archive/2026-09-25-AI字幕模型组合评测报告.md`。
 - 评分口径大修（R98）、幻觉门控与 2s 延迟档位（R101）、混合切句上线（R63）：
-  见仓库根 `iteration_shturl.md`。
+  见 `docs/dev-history/iteration_shturl.md`。
 
 ## 7. 头显端使用（已实现）
 

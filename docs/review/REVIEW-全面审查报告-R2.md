@@ -305,7 +305,7 @@ Lead 实测：`normal`（有 segments）1 秒心跳 33 次正常返回；`classi
 
 ## 9. 改进方向（结构性建议）
 
-1. **建立"真源对照"机制**：本轮的 61 条四态对照说明——跨三端（手机/头显/PC）的功能语义必须有**机器可读的对照清单**。建议把 `review/R13-parity-phone.md` 的四态表纳入 `tools/check_cross_repo_consistency.py`，作为发布前的人工核对项（该脚本目前只比文件哈希）。
+1. **建立"真源对照"机制**：本轮的 61 条四态对照说明——跨三端（手机/头显/PC）的功能语义必须有**机器可读的对照清单**。建议把 `docs/review/R13-parity-phone.md` 的四态表纳入 `tools/check_cross_repo_consistency.py`，作为发布前的人工核对项（该脚本目前只比文件哈希）。
 2. **把"互斥矩阵"写进代码而不是散落在各处**：现状是 `preset.stop()` 只出现在 2 处、`allow_move` 语义被 `force` 破坏。建议在设备层引入一个显式的 `DeviceArbiter`：`acquire(owner)` / `release(owner)`，owner ∈ {script, preset, orgasm, slow}，所有写帧统一走它。两个 P0 与三条 P1 都能被它一次性解决。
 3. **前端状态回显必须"以宿主为准"且集中**：`S.settings`(1s) / `DEV`(2s) / `libPollTimer`(1s/8s) 三套轮询 + 多处本地乐观更新，是链 C 与多处"不回显"的根因。建议引入单一 `applyState(state)` 渲染函数，禁止在事件处理器里直接改 DOM 值。
 4. **协议层禁止"魔法布尔"**：`force=True` 同时承担"跳过重映射""跳过急停""强制写入"三种含义，是安全闸门失效的根因。建议改成独立的具名参数。

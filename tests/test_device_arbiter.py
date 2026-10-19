@@ -2,7 +2,7 @@
 """第 2 轮审查第 1 批修复的验收测试（F1-F6，判据 A1/A2/A7/A8 + F5/F6 回归）。
 
 用假通道跑，无需真机：python -m unittest tests.test_device_arbiter -v
-对应清单：review/最终修复清单-R2.md
+对应清单：docs/review/最终修复清单-R2.md
 """
 from __future__ import annotations
 

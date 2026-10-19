@@ -1,4 +1,4 @@
-﻿# F30 行为验证：附加任务"取消勾选"必须真的回删已装项
+# F30 行为验证：附加任务"取消勾选"必须真的回删已装项
 #
 #   用法：pwsh -File tests\installer_tasks.ps1        （纯 PowerShell，与 .venv 无关）
 #
@@ -17,7 +17,7 @@
 # 独立卸载注册项，并在结束时全部回收。**不碰**用户的真实安装（D:\FunScriptCast-Nexus）
 # 与真实的 `FunScriptCast-Nexus` Run 值名。
 #
-# 测的是 installer\setup.iss 里**原文的** [Tasks]/[Icons]/[Registry]/[Code] 段
+# 测的是 build\installer\setup.iss 里**原文的** [Tasks]/[Icons]/[Registry]/[Code] 段
 # （脚本从真文件里抽段，不复制一份，避免日后脚本与安装脚本各说各话）。
 # 抽段后会剔除 InitializeSetup（它会弹版本确认框，静默安装时会挂住等人点），
 # 只留 CurStepChanged —— F30 的逻辑全在那里。
@@ -49,7 +49,7 @@ function Assert-That([bool]$cond, [string]$what) {
 }
 function Get-Section([string]$text, [string]$name) {
     $m = [regex]::Match($text, "(?ms)^\[$name\][^\r\n]*\r?\n(.*?)(?=^\[|\Z)")
-    if (-not $m.Success) { throw "installer\setup.iss 里找不到 [$name] 段（结构变了？）" }
+    if (-not $m.Success) { throw "build\installer\setup.iss 里找不到 [$name] 段（结构变了？）" }
     return "[$name]`r`n" + $m.Groups[1].Value.TrimEnd() + "`r`n"
 }
 function Get-RunValue([string]$name) {
@@ -65,7 +65,7 @@ function Get-RunValue([string]$name) {
 
 try {
     # ── 1. 从真实 setup.iss 抽段（含 F30 逻辑原文）─────────────────────────────
-    $issText = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'installer\setup.iss')
+    $issText = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'build\installer\setup.iss')
     $tasks = Get-Section $issText 'Tasks'
     $icons = Get-Section $issText 'Icons'
     $registry = Get-Section $issText 'Registry'

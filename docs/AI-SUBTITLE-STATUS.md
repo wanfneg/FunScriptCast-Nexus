@@ -3,7 +3,7 @@
 > **⚠️ 时效声明（R118 / 2026-10-02 文档体检）**：本文档的系统性更新停在 **R45–R53**
 > （2026-09-18~20）。此后字幕链路经历了大量变更——whisper 后端弃用（全线 audiocpp）、
 > 混合切句上线（`asr.segmentation=hybrid`，R63）、1.7B+1.5B 生产组合（R98）、幻觉门控与
-> 延迟档位（R101）、预热/空闲回收语义（R104-R105）等。**现状以 `iteration_shturl.md`
+> 延迟档位（R101）、预热/空闲回收语义（R104-R105）等。**现状以 `docs/dev-history/iteration_shturl.md`
 > （逐轮归档）与 `vendor/subtitle/README.md`（模块说明）为准**。
 > 仍有效：§3 协议规格（头显↔Nexus↔audiocpp 硬契约）、§6 踩坑速查、§8 关键文件。
 > 已过时：§0-§2 现状与评测数字、§5 参考项目、§9 R42 变更摘要。
@@ -14,10 +14,10 @@
 > 事实来源：本文所有"实测"均来自真实运行；上游行为均读自 audio.cpp 源码（v0.7.4 二进制 + PR#553 源码克隆）
 > ⚠️ 本文 §0-§2 的栈描述停留在 Ollama/流式时代（2026-09-16），**最新事实**（Sakura-7B +
 >    llama.cpp + 云端、R43 重出基线、R44 参考项目实测、25 秒档真相）以桌面交接文档 R44 与
->    `iteration_shturl.md` Round 36-45 为准；R41/R45 速览见下。
+>    `docs/dev-history/iteration_shturl.md` Round 36-45 为准；R41/R45 速览见下。
 >
 > ⚠️ **R53（2026-09-20）起：术语表与字幕/翻译缓存功能已整体移除**（用户点名删除，见
->    `iteration_shturl.md` Round 53）——本文提到的术语表注入/修补、`is_glossary_echo`、
+>    `docs/dev-history/iteration_shturl.md` Round 53）——本文提到的术语表注入/修补、`is_glossary_echo`、
 >    `translate.cache`、`_CACHE_VERSION`、整片字幕缓存均为**历史机制**，已不存在。
 >    识别侧保留"上一句原文进热词"，回显判据用 `is_prompt_echo`。
 
@@ -342,7 +342,7 @@ PC（FunScriptCast-Nexus）
 
 ## 9. R42 变更摘要（下一步必须知道的行为变化）
 
-> 完整审查记录见 `iteration_shturl.md` Round 42。本轮共 6 个提交：
+> 完整审查记录见 `docs/dev-history/iteration_shturl.md` Round 42。本轮共 6 个提交：
 > `1191398`（字幕服务健壮性/安全）→ `c9468bb`（宿主+UI）→ `535bfc3`（文档）→
 > `a08f77a`（tests 评测链）→ `b0a82a4`（翻译调度）→ `827e899`（ASR 判据）→
 > `750dc6e`（DLNA）。

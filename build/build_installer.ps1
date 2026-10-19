@@ -5,7 +5,7 @@
 #
 # 流程：build_exe.ps1（PyInstaller + 组装 dist-app）
 #     → make_runtime.ps1（自带 Python 运行时：embeddable + 轻量依赖）
-#     → Inno Setup 编译 installer\setup.iss
+#     → Inno Setup 编译 build\installer\setup.iss
 #
 # 前置：Inno Setup 6（ISCC.exe）。查找顺序：NEXUS_ISCC 环境变量 →
 #       "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" → "C:\Program Files\Inno Setup 6\ISCC.exe"
@@ -138,16 +138,16 @@ try {
         throw "找不到 ISCC.exe。请安装 Inno Setup 6，或设置环境变量 NEXUS_ISCC 指向 ISCC.exe"
     }
 
-    # 中文字幕语言包（Inno 6.3 安装器尚未收录，随仓库分发：installer\Languages\）
+    # 中文字幕语言包（Inno 6.3 安装器尚未收录，随仓库分发：build\installer\Languages\）
     $isccDir = Split-Path -Parent $iscc
     $langDst = Join-Path $isccDir 'Languages\ChineseSimplified.isl'
     if (-not (Test-Path $langDst)) {
-        Copy-Item (Join-Path $root 'installer\Languages\ChineseSimplified.isl') $langDst -Force
+        Copy-Item (Join-Path $root 'build\installer\Languages\ChineseSimplified.isl') $langDst -Force
         Write-Host "  已安装中文语言包到 $langDst" -ForegroundColor Yellow
     }
 
     Write-Host "[4/4] 编译安装包…" -ForegroundColor Cyan
-    & $iscc "/DMyAppVersion=$version" (Join-Path $root 'installer\setup.iss')
+    & $iscc "/DMyAppVersion=$version" (Join-Path $root 'build\installer\setup.iss')
     $isccExit = $LASTEXITCODE
     $isccFailed = ($isccExit -ne 0)
 } finally {

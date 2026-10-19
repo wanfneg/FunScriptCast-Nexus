@@ -280,7 +280,7 @@ if ($("#setSlowIdle")) $("#setSlowIdle").value = SET_DEV.slow.idle_detect_second
 if ($("#setSlowSpeed")) $("#setSlowSpeed").value = SET_DEV.slow.max_speed;   // ← 死引用
 if ($("#setOrgasmSpeed")) $("#setOrgasmSpeed").value = SET_DEV.orgasm.max_speed; // ← 死引用
 ```
-结论：`DEFAULT_SETTINGS.device.{slow,orgasm}`（`host_server.py:326-329`）里的 `max_speed`/`min/max_percent`/`link_*` 全部是**只写不读的死键**：`/api/device/settings` 会合并存盘（`:2522-2524`），`_apply_device_settings()` 只读 `slow.idle_detect_seconds`（`:3854-3855`），真实设备参数一律取自 `video_link.{idle_*,burst_*}`（`:3844-3852`）；前端也从不 POST 它们。所以"死键"是真的，但**功能没丢**（`video_link` 那一份是活的且已接通）。平台性差异：否。建议：删死键与死引用（与 `review/设置页与联动页归属-对照手机端.md` §3.4 一致），并给 `video_link` 的读档加夹紧（手机端读档一律 `coerceIn`）：`slow.max_speed`→`[0,500]`、`idle_detect_seconds`→`[1,60]`、`min/max`→`[0,100]`。
+结论：`DEFAULT_SETTINGS.device.{slow,orgasm}`（`host_server.py:326-329`）里的 `max_speed`/`min/max_percent`/`link_*` 全部是**只写不读的死键**：`/api/device/settings` 会合并存盘（`:2522-2524`），`_apply_device_settings()` 只读 `slow.idle_detect_seconds`（`:3854-3855`），真实设备参数一律取自 `video_link.{idle_*,burst_*}`（`:3844-3852`）；前端也从不 POST 它们。所以"死键"是真的，但**功能没丢**（`video_link` 那一份是活的且已接通）。平台性差异：否。建议：删死键与死引用（与 `docs/review/设置页与联动页归属-对照手机端.md` §3.4 一致），并给 `video_link` 的读档加夹紧（手机端读档一律 `coerceIn`）：`slow.max_speed`→`[0,500]`、`idle_detect_seconds`→`[1,60]`、`min/max`→`[0,100]`。
 
 #### 2.2-8【中高】"移动到该位置"的速度不同（安全相关）
 ```kotlin
@@ -511,7 +511,7 @@ elif act in ("play", "start"):
 **四态计数：已对齐 28 · 语义不同 14 · 本仓库多出来 6 · 本仓库缺失 13 = 61 条。**
 
 对既有文档的修正（避免第 3 轮继续引用错误结论）：
-1. `review/设置页与联动页归属-对照手机端.md` §3.1 说"`host_server.py:3840` 从 `vl.get("reversed")` 取 → 任何设置保存都把它清零"——**不成立**：紧随其后的 `:3858` 又用 `dev["reversed"]` 赋了正确值，且 `:3841` 的 `apply_limits()` 只写 0x42 限位、不含反转。该参数是**死参数**，建议删掉以免误导，但不是 bug。
+1. `docs/review/设置页与联动页归属-对照手机端.md` §3.1 说"`host_server.py:3840` 从 `vl.get("reversed")` 取 → 任何设置保存都把它清零"——**不成立**：紧随其后的 `:3858` 又用 `dev["reversed"]` 赋了正确值，且 `:3841` 的 `apply_limits()` 只写 0x42 限位、不含反转。该参数是**死参数**，建议删掉以免误导，但不是 bug。
 2. 同一文档 §3.2（`("vorze","serveu")[a10]` 映射反了）**确认仍存在**（`host_server.py:3860` vs `protocols.py:41-42`：`serveu=0`、`vorze=1`）→ 伪装设备会切到**错误的 GATT 档案**。本报告未在第 2 节重复展开，保留第 1 轮结论为有效。
 3. 同一文档 §2 "方向 B 缺失"的结论**经本轮独立复核成立**，并已按用户要求升格为规范 P-2（§4）。
 4. 新增第 1 轮未发现的 4 条：急停对缓动无效（2.2-1）、缓动速度滑轨无效（2.2-2）、手动移动 500 vs 200（2.2-8）、遥控器键位无绑定（2.4-9）。

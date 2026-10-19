@@ -7,9 +7,9 @@
 
 
 > 来源：`C:\Users\admin\Downloads\视频联动页UI草图（集成预设）.html`（drawio 内嵌 mxGraphModel，已解出为
-> `design/video-link-sketch.drawio.xml`）。
+> `docs/design/video-link-sketch.drawio.xml`）。
 > 本文件 = 草图的**几何真相**；视觉细节以手机端本体为准（Screens.kt Steel 组件 / ScriptHeatmap.kt / PresetTile）。
-> 原型：`design/video-link-sketch-v1.html`（可交互，6 个评审开关）。
+> 原型：`docs/design/video-link-sketch-v1.html`（可交互，6 个评审开关）。
 
 ---
 

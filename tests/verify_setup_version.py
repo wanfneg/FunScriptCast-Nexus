@@ -3,7 +3,7 @@
 
 为什么要有这个：ISCC 只能证明 Pascal 语法与类型正确，证明不了"旧版本判定成升级"这种
 语义。把同一套算法逐行抄成 Python 跑一遍用例，能把符号搞反、段落取错这类错误挡住。
-（Pascal 原文见 installer/setup.iss 的 [Code] 段，两边逻辑必须一致。）
+（Pascal 原文见 build/installer/setup.iss 的 [Code] 段，两边逻辑必须一致。）
 
     .venv/Scripts/python.exe tests/verify_setup_version.py
 """

@@ -2,12 +2,12 @@
 
 > **⚠️ 第一轮审查存档**：本文是 2026-10-02 凌晨的第 1 轮审查（当时尚未以手机端为
 > 真源），**其中部分结论已被修正或推翻**——修正记录见
-> `review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
-> 实施状态以 `review/最终修复清单-R2.md` 为准。
+> `docs/review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
+> 实施状态以 `docs/review/最终修复清单-R2.md` 为准。
 
 
 - 审查员：broad-auditor（task-3）
-- 范围：`host_server.py`（4139 行）、`vendor/subtitle/*`、`vendor/dlna/*`、`vendor/player/*`、`build/*`、`installer/*`、`.gitignore`、`tests/*`、`tools/check_cross_repo_consistency.py`、`ui/app.js` + `ui/index.html`（抽查）
+- 范围：`host_server.py`（4139 行）、`vendor/subtitle/*`、`vendor/dlna/*`、`vendor/player/*`、`build/*`、`build/installer/*`、`.gitignore`、`tests/*`、`tools/check_cross_repo_consistency.py`、`ui/app.js` + `ui/index.html`（抽查）
 - 方式：静态阅读 + grep 定点 + 只读命令复现（未启动 GUI/服务器，未改任何产品代码）
 - 版本基线：`version.json` = 1.0.62 / versionCode 63
 - 说明：视频联动新功能的功能正确性由 backend-reviewer / frontend-reviewer 负责，本报告只在其边界外做宽面覆盖
@@ -164,7 +164,7 @@ scandir would list -> E:\Windows
 35      os.add_dll_directory(d)
 ```
   注意 `ensure_dll()` 在文件缺失时**静默跳过**，不报错。
-- 证据 B（gitignore 排除它）：`.gitignore` 末行 `vendor/mpv/libmpv-2.dll`；构建脚本里无人调用 `tools\fetch_mpv.ps1`（`Select-String build\*.ps1,installer\*.iss,tools\*.ps1 -Pattern 'fetch_mpv|vendor\\mpv'` 只命中 `tools/fetch_mpv.ps1` 自身）。
+- 证据 B（gitignore 排除它）：`.gitignore` 末行 `vendor/mpv/libmpv-2.dll`；构建脚本里无人调用 `tools\fetch_mpv.ps1`（`Select-String build\*.ps1,build\installer\*.iss,tools\*.ps1 -Pattern 'fetch_mpv|vendor\\mpv'` 只命中 `tools/fetch_mpv.ps1` 自身）。
 - 证据 C（实际靠另一份兜底）：`git ls-files vendor/player` 包含 `libmpv-2.dll`（`git cat-file -s HEAD:vendor/player/libmpv-2.dll` = 121089024），`vendor/player/mpv.py:44-50` 会退回"与 mpv.py 同目录"的 DLL：
 ```python
 44  else:
@@ -265,7 +265,7 @@ scandir would list -> E:\Windows
 
 ### 1.19 【低】版本号分散在两处 HTTP Server 头与陈旧注释里
 
-- 证据：`host_server.py:2095` `server_version = "FSHost/1.0"`、`3003` `server_version = "FSHost-Headset/1.0"`，与 `version.json`(1.0.62) 无关联；`installer/setup.iss:3` 注释仍写 `/DMyAppVersion=1.0.12`；`tools/release_notes.md:3` 最新条目是 `## 1.0.42`。
+- 证据：`host_server.py:2095` `server_version = "FSHost/1.0"`、`3003` `server_version = "FSHost-Headset/1.0"`，与 `version.json`(1.0.62) 无关联；`build/installer/setup.iss:3` 注释仍写 `/DMyAppVersion=1.0.12`；`tools/release_notes.md:3` 最新条目是 `## 1.0.42`。
 - 影响：无功能影响；排查时容易被 `Server: FSHost/1.0` 误导（以为是 1.0 版）。版本能力判断本身已正确（`app_version()` 每次读 `version.json`，`_ver_tuple` 也剥掉了"（开发副本）"尾巴）。
 - 最小修复：`server_version` 由 `app_version()["code"]` 拼出；注释里的示例版本改成 `<version>`；`release_notes.md` 交给 `tools/bump_version.ps1` 追加。
 
@@ -337,7 +337,7 @@ scandir would list -> E:\Windows
 - **局域网回显脱敏**：`headset_status()` 的 `error`/`asr` 过 `scrub_paths`（`host_server.py:1397-1400`、`1340-1351`），头显接口只回标识类字段（`1374`）。
 - **8756 的三个中间件**：回环栅栏（`server_app.py:382-395`，fail-closed 写法正确）、可选令牌常数时间比较（`414-425`）、Origin 栅栏（`428-448`）、过载快速失败（`456-479`）、流式桥的阻塞调用确实进了 `run_in_threadpool`（`stream_bridge.py:406-417`、`443-445`）。
 - **打包密钥哨兵**：`build/build_installer.ps1:17-29`（仓库 config 带 key 即拒绝打包）+ `64-119`（dist-app 全树扫描，占位符白名单窄化到精确值）+ `46-53` + `153-173`（摘除/回填放 try/finally）。
-- **安装器数据保护**：`installer/setup.iss:74-98` 的 `[InstallDelete]` 只删代码，注释明确永不动 `data\ logs\ models\ cache\ run\`（`:77-84`）；`data` 种子为 `onlyifdoesntexist`（`:121-122`）；`AppId` 与卸载项一致（`:31`、`:150-153`）。
+- **安装器数据保护**：`build/installer/setup.iss:74-98` 的 `[InstallDelete]` 只删代码，注释明确永不动 `data\ logs\ models\ cache\ run\`（`:77-84`）；`data` 种子为 `onlyifdoesntexist`（`:121-122`）；`AppId` 与卸载项一致（`:31`、`:150-153`）。
 - **打包一致性（版本号）**：`version.json` 是唯一来源，`build_installer.ps1:125` 从 `dist-app\version.json` 读取并以 `-DMyAppVersion` 注入（`:150`），`setup.iss:26-27` 只在未注入时退 `0.0.0`；`build_exe.ps1:28-35` 把 bump 放在 EXE 产出之后避免空耗版本号。未发现"同一版本号被写成多个不同值"的实例（§1.19 只是注释陈旧）。
 
 ---

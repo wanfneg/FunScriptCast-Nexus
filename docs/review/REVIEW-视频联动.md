@@ -2,18 +2,18 @@
 
 > **⚠️ 第一轮审查存档**：本文是 2026-10-02 凌晨的第 1 轮审查（当时尚未以手机端为
 > 真源），**其中部分结论已被修正或推翻**——修正记录见
-> `review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
-> 实施状态以 `review/最终修复清单-R2.md` 为准。
+> `docs/review/REVIEW-全面审查报告-R2.md` §7 与用户裁定（Q1-Q4）；
+> 实施状态以 `docs/review/最终修复清单-R2.md` 为准。
 
 
 - 仓库：`E:\Development\FunScriptCast-Nexus`，基线 `HEAD = cb81b21`，工作区另有未提交改动 `ui/app.js`（+36/−7）与 `version.json`（1.0.61/62 → 1.0.62/63）
 - 审查方式：4 名审查员分线并行（后端链路 / 前端联动页+设置页 / 项目宽面 / 独立复核），外加 Lead 本人的只读探针复现
 - 覆盖产物（详细证据在各分册，本报告是**汇总与排序**）：
-  - `review/R01-backend-linkage.md` —— 后端链路 2 阻断 + 6 高 + 10 中 + 7 低
-  - `review/R02-frontend-linkage.md` —— 前端联动页/设置页 3 高 + 8 中 + 3 低
-  - `review/R03-broad-audit.md` —— 项目宽面 4 高 + 10 中 + 7 低
-  - `review/R04-verification.md` —— 上述高危结论的独立复核（确认/误报/存疑）
-  - `review/probes/` —— 本报告用到的可复现只读探针
+  - `docs/review/R01-backend-linkage.md` —— 后端链路 2 阻断 + 6 高 + 10 中 + 7 低
+  - `docs/review/R02-frontend-linkage.md` —— 前端联动页/设置页 3 高 + 8 中 + 3 低
+  - `docs/review/R03-broad-audit.md` —— 项目宽面 4 高 + 10 中 + 7 低
+  - `docs/review/R04-verification.md` —— 上述高危结论的独立复核（确认/误报/存疑）
+  - `docs/review/probes/` —— 本报告用到的可复现只读探针
 - 产品代码零改动；未启动 GUI/服务器；未写 `data/integrated_settings.json`
 
 ---
@@ -125,7 +125,7 @@ vendor/device/
 
 ### 4.1【已撤回·见第 2 轮更正】「反转方向」开关无效的说法不成立
 
-> **⛔ 本节结论已被第 2 轮审查 + 探针 `review/probes/probe_reversed_final.py` 推翻，请勿再引用。**
+> **⛔ 本节结论已被第 2 轮审查 + 探针 `docs/review/probes/probe_reversed_final.py` 推翻，请勿再引用。**
 >
 > 第 1 轮我只看 `host_server.py:3840` 的 `reversed_=bool(vl.get("reversed"))`，就断定"任何保存都把反转清零"。
 > 漏看了紧随其后的 **`:3858` `d["ch"].reversed = bool(dev.get("reversed"))`** —— 它才是最终生效的写入。
@@ -207,7 +207,7 @@ if kind == "stop":
 （classic/deep/tease/edge/rhythm/…，只有 `normal`/`mw` 有 segments）。空列表 ⇒ 循环体一次不执行 ⇒
 该协程**没有任何 await**，外层 `while self.playing` 变成纯 CPU 自旋，而它跑在**唯一**的 BLE 事件循环上。
 
-Lead 用 `review/probes/probe_preset_keyspin_bounded.py` 实测（同一进程、各起新循环）：
+Lead 用 `docs/review/probes/probe_preset_keyspin_bounded.py` 实测（同一进程、各起新循环）：
 ```
 {"preset": "normal",  "segments": [[0,100,100],[100,0,100]], "heartbeat_ticks_in_1s": 33}   → 正常返回
 [watchdog] 8s 到，仍在 phase='classic: sleep(1.0) 等待' —— 事件循环被饿死（进程强制退出）
@@ -245,7 +245,7 @@ Lead 用 `review/probes/probe_preset_keyspin_bounded.py` 实测（同一进程�
 |---|---|---|
 | `ui/app.js:135` | 切页后 `redrawPresetWaves()` | ✅ 方向正确 |
 | `ui/app.js:2073-2074` | **移除** BOOST/RANDOM 的"退出联动"二次确认 | ✅ **不是回退**：`toggle_boost`/`toggle_random`（preset_player.py:114-125/103-112）只翻标志、不启动循环，旧逻辑第二击会真的 `syncStop()` 却没有任何设备动作 = 误伤。正确做法是给 `syncStart`（R02-D2）加护栏 |
-| `ui/app.js:2118-2139` | `drawPresetWave` DPR 修复（backing = CSS×dpr，不再改 `style.width`） | ✅ **主因修对了**，与设计原型 `design/video-link-sketch-v1.html:722-727` 一致；⚠️ 但重画判据只看宽度（`:2126`、`:2482`），只改窗口高度后波形不按新高度重画（R02-D10） |
+| `ui/app.js:2118-2139` | `drawPresetWave` DPR 修复（backing = CSS×dpr，不再改 `style.width`） | ✅ **主因修对了**，与设计原型 `docs/design/video-link-sketch-v1.html:722-727` 一致；⚠️ 但重画判据只看宽度（`:2126`、`:2482`），只改窗口高度后波形不按新高度重画（R02-D10） |
 | `ui/app.js:2523` | `setInterval(redrawPresetWaves, 1500)` 兜底 | ⚠️ 治标；隐藏页时 24 次 `clientWidth` 后早退，成本≈0、无内存增长。建议改为 `ResizeObserver` 或把高度并入判据后删掉 |
 | `ui/app.js:2478-2486` | `layoutVl` 里重画波形 | ⚠️ 读写交错：读 `clientWidth`（强制布局）→ 写 `cv.width`（脏化布局）×24，resize 时抖动（R02-D9） |
 

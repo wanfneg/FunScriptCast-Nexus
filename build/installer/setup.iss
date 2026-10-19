@@ -1,6 +1,6 @@
 ; FunScriptCast-Nexus —— Windows 安装包（Inno Setup 6）
 ;
-;   ISCC.exe /DMyAppVersion=1.0.12 installer\setup.iss
+;   ISCC.exe /DMyAppVersion=1.0.12 build\installer\setup.iss
 ;   （版本号由 build\build_installer.ps1 从 version.json 注入）
 ;
 ; 产物：dist-installer\FunScriptCast-Nexus-Setup-<版本>.exe
@@ -50,7 +50,7 @@ VersionInfoDescription={#MyAppName} 安装程序
 VersionInfoCompany={#MyAppPublisher}
 ; 安装日志落到 %TEMP%\Setup Log*.txt：装失败时用户能把它发过来，不必靠回忆。
 SetupLogging=yes
-OutputDir=..\dist-installer
+OutputDir=..\..\dist-installer
 OutputBaseFilename={#MyAppName}-Setup-{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
@@ -108,10 +108,10 @@ Type: files; Name: "{app}\vendor\player\mpv_player.py"
 Type: files; Name: "{app}\vendor\player\libmpv-2.dll"
 
 [Files]
-Source: "..\dist-app\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist-app\runtime\*"; DestDir: "{app}\runtime"; \
+Source: "..\..\dist-app\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist-app\runtime\*"; DestDir: "{app}\runtime"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\dist-app\ui\*"; DestDir: "{app}\ui"; \
+Source: "..\..\dist-app\ui\*"; DestDir: "{app}\ui"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 ; ⚠ Excludes 里的 config.json 是**老用户的迁移源**（R49 之前它就住在这个目录里）：
 ;   升级那一刻，用户的云端 key 还在这份文件里，[Files] 整树覆盖会把它换成打包机
@@ -123,18 +123,18 @@ Source: "..\dist-app\ui\*"; DestDir: "{app}\ui"; \
 ;   audiocpp（ASR CPU 运行时，~27MB）相反**必须打进包**：全新安装的识别零下载依赖。
 ;   audiocpp\gpu 排除（R101）：GPU 运行时 2.2GB 走界面下载条目（audiocpp-cuda），
 ;   开发机 vendor 里的 gpu\ 调试副本绝不能被卷进安装包（1.0.44 首编曾膨胀到 666MB）。
-Source: "..\dist-app\vendor\*"; DestDir: "{app}\vendor"; \
+Source: "..\..\dist-app\vendor\*"; DestDir: "{app}\vendor"; \
     Excludes: "subtitle\config.json,subtitle\config.json.bak-prompt,subtitle\__pycache__\*,subtitle\logs\*,*.pyc,*.log,*.json.bak*,*.json.tmp,llama\*,audiocpp\gpu\*,vision\cache\*,vision\__pycache__\*"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 ; 出厂种子：**只在新装时铺**（onlyifdoesntexist）。装了就不再动它——用户的 key、
 ; 以及界面上调过的参数都在这份文件里。配置在 data\ 里叫 subtitle_config.json。
-Source: "..\dist-app\vendor\subtitle\config.json"; DestDir: "{app}\data"; \
+Source: "..\..\dist-app\vendor\subtitle\config.json"; DestDir: "{app}\data"; \
     DestName: "subtitle_config.json"; Flags: onlyifdoesntexist
-Source: "..\dist-app\tools\*"; DestDir: "{app}\tools"; \
+Source: "..\..\dist-app\tools\*"; DestDir: "{app}\tools"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\dist-app\version.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist-app\start.bat"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist-app\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist-app\version.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist-app\start.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist-app\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

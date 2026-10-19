@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """混合切句状态机（R63 立项实现）——RMS 静音定界 + silero VAD 赋时 + 段-组对齐。
 
-R61/R62 的实测依据（详见 iteration_shturl.md）：
+R61/R62 的实测依据（详见 docs/dev-history/iteration_shturl.md）：
   · 定长块管线的时序好（+30~50ms）但句子被 3s 一刀剁碎（85% 配对句多碎片、
     长度比 1.5、块内 vad_filter 有气声漏识之嫌）；
   · RMS 参考方案的句界干净（长度比 1.00 / 零越界）但时间戳是模型预测的（−260~−470ms）；

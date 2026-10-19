@@ -115,4 +115,5 @@
   `tests\test_device_arbiter.py`（设备单一写者仲裁 30 项）。
 - 架构、协议与排障史：[docs/AI-SUBTITLE-STATUS.md](docs/AI-SUBTITLE-STATUS.md)（注意其顶部时效说明）。
 - 文档全集、权威性与时效状态：[docs/文档地图.md](docs/文档地图.md)。
+- 仓库目录结构与新增文件该放哪：[docs/REPO-LAYOUT.md](docs/REPO-LAYOUT.md)。
 - 第三方组件与许可证台账：[docs/THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md)（含 libmpv 等大组件说明）。

@@ -1,4 +1,4 @@
-﻿# 就地更新（应用内「立即安装」）的沙盒验证 —— 复现 1.0.39 的失败 + 验证修复
+# 就地更新（应用内「立即安装」）的沙盒验证 —— 复现 1.0.39 的失败 + 验证修复
 #
 #   pwsh -NoProfile -File tests\update_inplace.ps1
 #
@@ -78,7 +78,7 @@ Get-Process -ErrorAction SilentlyContinue |
     Where-Object { $_.ProcessName -like 'sandbox-setup*' } |
     ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Milliseconds 500
-$issText = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'installer\setup.iss')
+$issText = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'build\installer\setup.iss')
 function Get-Section([string]$text, [string]$name) {
     $m = [regex]::Match($text, "(?ms)^\[$name\][^\r\n]*\r?\n(.*?)(?=^\[|\Z)")
     if (-not $m.Success) { throw "setup.iss 里找不到 [$name] 段" }
@@ -88,9 +88,9 @@ $tasks = Get-Section $issText 'Tasks'
 $icons = Get-Section $issText 'Icons'
 $registry = Get-Section $issText 'Registry'
 $files = Get-Section $issText 'Files'
-# [Files] 的 Source 是相对 installer\ 的（..\dist-app\…）。本脚本把 .iss 生成在
+# [Files] 的 Source 是相对 build\installer\ 的（..\..\dist-app\…）。本脚本把 .iss 生成在
 # tests\_sandbox-update\ 下，相对基准变了 ⇒ 换成绝对路径，否则报"源文件不存在"。
-$files = $files.Replace('..\dist-app', (Join-Path $repo 'dist-app'))
+$files = $files.Replace('..\..\dist-app', (Join-Path $repo 'dist-app'))
 $code = Get-Section $issText 'Code'
 # 只砍掉 `InitializeSetup`，**保留 CurStepChanged（F30 回删）与 PrepareToInstall（安装前
 # 清残留进程）** —— ④ 步要验的正是后者。
@@ -112,7 +112,11 @@ if ($codeUnderTest -notmatch 'CurStepChanged') { throw 'CurStepChanged 丢了（
 # 为什么要两份：新版安装器**自己就会**把安装目录里的残留 python 清掉，于是"用新版
 # 复现 RM 命中"已经不可能了（那正是修复生效的证明）。② 步要复现的是**当年那个坑**，
 # 就得用当年的安装器 —— 同一份载荷、同一个身份，只差 PrepareToInstall 这一段。
-$issPrev = & git -C $repo show 'HEAD:installer/setup.iss' | Out-String
+$issPrev = & git -C $repo show 'HEAD:build/installer/setup.iss' 2>$null | Out-String
+if (-not $issPrev.Trim()) {
+    # 兼容目录移动前的历史提交（当时路径是 installer/setup.iss）
+    $issPrev = & git -C $repo show 'HEAD:installer/setup.iss' 2>$null | Out-String
+}
 $codePrev = [regex]::Replace(
     (Get-Section $issPrev 'Code'), "(?ms)^function InitializeSetup\(.*?\r?\nend;\r?\n", "")
 if ($codePrev -match 'PrepareToInstall') { throw '上一版 setup.iss 里居然已有 PrepareToInstall（A/B 前提不成立）' }
