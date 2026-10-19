@@ -1,56 +1,57 @@
 # 仓库目录结构（2026-10-19 整理）
 
-> 目标：产品运行时 / 构建工具 / 产物 / 运行数据 / 文档 各有明确归属。
-> 维护：新增顶层目录或调整归属时，同步本文件与 `docs/文档地图.md`。
+> 目标：产品源码 / 文档 / 构建工具 / 构建产物 / 运行数据 各有唯一归属。
+> 维护：调整顶层目录时同步本文件与 `docs/文档地图.md`。
 
 ## 顶层
 
-| 路径 | 分类 | 说明 | 入库 |
-|---|---|---|---|
-| `app/` | 产品源码 | 新底座（config / log / bridge / registry / routes / web static） | ✅ |
-| `web/` | 产品源码 | 新前端（Vite + React + TS），`dist/` 为构建产物 | ✅（dist/ 忽略） |
-| `ui/` | 产品源码 | 旧前端（迁移期保留，`/` 仍走它） | ✅ |
-| `vendor/` | 产品源码 | 运行性子系统：subtitle / vision / dlna / device / mpv / llama / audiocpp | ✅（运行库按 .gitignore） |
-| `models/` | 资产 | 识别/翻译模型（下载后放这里） | ❌ |
-| `host_server.py` | 产品源码 | 宿主入口（HTTP / DLNA / 托盘 / 子进程） | ✅ |
-| `start.bat` / `version.json` | 入口/版本 | 绿色版启动器与版本号 | ✅ |
-| `tools/` | 开发工具 | 下载/构建/同步/校验脚本 + `tools/vision` 分析工具 | ✅ |
-| `tests/` | 测试 | 自检脚本（不启动服务器） | ✅ |
-| `build/` | 构建 | 构建脚本 + `installer/setup.iss` | ✅（暂存目录忽略） |
-| `docs/` | 文档 | 见下 | ✅ |
-| `dist-app/` | 构建产物 | 应用组装目录（EXE + ui + vendor + runtime） | ❌ |
-| `dist-installer/` | 构建产物 | 安装包输出 | ❌ |
-| `dist-modules/` | 构建产物 | 模块 zip（vision 等） | ❌ |
-| `data/` | 运行数据 | 配置 / 设置 / 术语表 / DLNA 数据 | ❌ |
-| `logs/` | 运行数据 | host.log / 服务日志 | ❌ |
-| `run/` | 运行数据 | 子进程配置、临时文件 | ❌ |
-| `backup/` | 运行数据 | 术语表换表备份 | ❌ |
-| `.venv/` | 开发环境 | 本机 Python 环境（默认 onnx 后端，torch-free） | ❌ |
-| `.zcode/` / `.zcodeignore` | 工具状态 | zcode 工作流 | ❌ |
+```
+Nexus/
+├─ app/             新底座（Python 包：config / log / bridge / registry / routes / web static）
+├─ web/             新前端（Vite + React + TS；dist/ 为构建产物）
+├─ ui-legacy/       旧前端（迁移期保留，`/` 仍由它提供）
+├─ vendor/          运行性子系统（subtitle / vision / dlna / device / mpv / llama / audiocpp）
+├─ models/          模型资产（识别 / 翻译 / HF 缓存；gitignore）
+├─ host_server.py   宿主入口
+├─ start.bat        绿色版启动器
+├─ version.json     版本号
+├─ tools/           开发与运维脚本（含 tools/vision 分析工具）
+├─ tests/           自检与测试（不启动服务器）
+├─ docs/            全部文档（见下）
+├─ build/           构建脚本 + build/installer/setup.iss + build/.cache/（暂存，gitignore）
+├─ artifacts/       构建产物：app/ installer/ modules/（gitignore）
+├─ var/             运行数据：data/ logs/ run/ backup/（gitignore）
+└─ .venv/ .zcode/   开发环境 / 工具状态（gitignore）
+```
 
 ## docs/
 
 | 路径 | 说明 |
 |---|---|
 | `docs/文档地图.md` | 文档索引与权威性（**先看这个**） |
+| `docs/REPO-LAYOUT.md` | 本文件 |
 | `docs/design/` | 设计规格与过程截图（原 `design/`） |
 | `docs/review/` | 审查与修复台账 + 只读探针（原 `review/`） |
-| `docs/dev-history/iteration_shturl.md` | 逐轮开发档案（原仓库根 `iteration_shturl.md`） |
+| `docs/dev-history/iteration_shturl.md` | 逐轮开发档案（原仓库根） |
 | `docs/dev-archive/` | 历史报告存档（只读） |
 | `docs/VISION-ONNX.md`、`docs/REFACTOR-PLAN.md` 等 | 专项文档 |
 
-## 为什么这些留在根目录
+## 路径边界（重要）
 
-- `dist-app/`、`dist-installer/`、`dist-modules/`、`data/`、`logs/` 是安装包与运行时的**约定路径**：
-  `build/installer/setup.iss`、`host_server.py`、`vendor/subtitle/user_paths.py` 都按这个布局工作，
-  随意改名会破坏已安装用户的升级与配置。
-- `host_server.py` 固定在根：PyInstaller 入口与开发启动都依赖它。
-- `ui/` 与 `web/` 并存是迁移期设计（旧界面 `/`、新界面 `/app`），迁移完成后再收敛。
+- `var/` 是**安装目录运行数据**的统一根：宿主与字幕服务都从
+  `vendor/subtitle/user_paths.py` 取 `var/data`、`var/logs`、`var/run`。
+  旧版本把 `data/logs/run/backup` 直接放在安装目录根下，**首次运行会自动迁移**到 `var/`。
+- `artifacts/app` 是安装包组装的源目录（`build/build_exe.ps1` 产出），
+  `artifacts/installer` 是安装包输出，`artifacts/modules` 是模块 zip。
+- `build/installer/setup.iss` 的 `Source` 相对路径 = `..\..\artifacts\app\...`，
+  `OutputDir = ..\..\artifacts\installer`。
+- `ui-legacy/` 由宿主 `UI_DIR` 提供；新界面在 `web/dist`，由 `/app/` 提供。
+- `models/` 留在根目录：它是安装目录的模型根，升级与用户数据都依赖这个位置。
 
 ## 新增文件放哪
 
-- 新接口/底座代码 → `app/`；新前端页面 → `web/src/`；视觉/字幕等运行时 → `vendor/<子系统>/`。
-- 新构建脚本 → `build/`；安装器配置 → `build/installer/`。
-- 新文档 → `docs/`（并更新 `docs/文档地图.md`）；审查记录 → `docs/review/`。
-- 新工具 → `tools/`；测试 → `tests/`。
-- 构建产物只写 `dist-*`，运行数据只写 `data/ logs/ run/`，都已 gitignore。
+- 底座代码 → `app/`；新前端 → `web/src/`；运行性子系统 → `vendor/<子系统>/`。
+- 构建脚本 → `build/`；安装器配置 → `build/installer/`。
+- 文档 → `docs/`（并更新文档地图）；审查记录 → `docs/review/`。
+- 工具 → `tools/`；测试 → `tests/`。
+- 构建产物只写 `artifacts/`，运行数据只写 `var/`，暂存写 `build/.cache/`，都已 gitignore。

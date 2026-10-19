@@ -72,7 +72,7 @@ def main() -> int:
         return 2
     emit(f"视频: {video.name}  时长测试上限: {minutes} 分钟  ffmpeg: {ffmpeg}")
 
-    # 0) 端口必须空着，否则会打到别人的宿主（例如 dist-app 的 EXE）上
+    # 0) 端口必须空着，否则会打到别人的宿主（例如 artifacts/app 的 EXE）上
     import socket
     with socket.socket() as s:
         s.settimeout(1.0)
@@ -93,7 +93,7 @@ def main() -> int:
             emit(f"宿主未就绪：{st['_error']}")
             return 1
         sys.path.insert(0, str(APP_DIR))
-        import host_server as H  # 确认走的是源码目录而不是 dist-app
+        import host_server as H  # 确认走的是源码目录而不是 artifacts/app
         emit(f"宿主就绪 | SUBTITLE_DIR={H.SUBTITLE_DIR} | PY={H.SUBTITLE_VENV_PY}")
         # 2) 字幕服务
         post("/api/subtitle/start", {})

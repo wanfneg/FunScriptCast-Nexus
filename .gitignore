@@ -16,20 +16,13 @@ vendor/llama/
 *.log
 *.tmp
 _runtime/
-# 用户数据目录（R49 起数据都落安装目录，源码模式就是仓库根）：配置 / 术语表 /
-# 宿主设置 / DLNA 数据。见 vendor/subtitle/user_paths.py。
-/data/
-# 日志（宿主 host.log + 字幕服务 run_server.log 同处一处）
-/logs/
-# 运行时临时文件（子进程配置、VAD 转储、设备同步临时包、WebView2 profile）
-# 注意 data/webview 在 /data/ 之下，已被上面那条覆盖。
-/run/
+# 运行数据（安装目录约定：data/logs/run/backup 都在 var/ 下）：
+# 配置 / 术语表 / 宿主设置 / DLNA 数据 / 日志 / 临时文件 / 换表备份。
+# 见 vendor/subtitle/user_paths.py。
+/var/
 
 # 字幕缓存（运行时生成，不入库）
 /cache/
-
-# 术语表旧版备份（换表时留档，不入库）
-/backup/
 
 # 字幕测试产物
 /tests/subtitle_out/
@@ -37,7 +30,8 @@ _runtime/
 
 # 构建产物
 /dist/
-/dist-app/
+/artifacts/
+/build/.cache/
 /build/work/
 /build/__pycache__/
 
@@ -45,7 +39,7 @@ _runtime/
 .vscode/
 .idea/
 
-# Lucide 图标下载缓存（生成结果已经内联进 ui/index.html，缓存本身不入库）
+# Lucide 图标下载缓存（生成结果已经内联进 ui-legacy/index.html，缓存本身不入库）
 /tools/.lucide-cache/
 
 # 界面测试产物（截图与审计数据，可随时重新生成）
@@ -54,20 +48,19 @@ _runtime/
 /tests/_geo.json
 
 # 安装包产物
-/dist-installer/
 test-fresh-install/
 models/_download/
 
 # ASR 运行时（audio.cpp CPU 版，fetch_audiocpp.ps1 拉取/构建内置）
 vendor/audiocpp/
 nul
-build/_release-carry/
-build/_audiocpp-stage/llama-runtime-windows.zip
-build/qq-promo/*.zip
+build/.cache/release-carry/
+build/.cache/audiocpp-stage/llama-runtime-windows.zip
+build/.cache/qq-promo/*.zip
 build/_audiocpp-cuda-stage/
 
 # 内部产物（构建暂存区 / 评测样本与结果 / 运行日志 / 配置备份，不入库）
-build/_audiocpp-stage/
+build/.cache/audiocpp-stage/
 tests/_eval_*
 tests/_combo_judge_*
 vendor/subtitle/docs/*.txt
@@ -78,7 +71,7 @@ vendor/mpv/libmpv-2.dll
 # player 目录里的同名副本（外挂播放器弃用后已删；曾漏忽略被误提交 121MB）
 vendor/player/libmpv-2.dll
 build/_thumb-probe/
-build/_mpv-proto/
+build/.cache/mpv-proto/
 @AutomationLog.txt
 
 # ---- 2026-10-19 重构前整理 ----
@@ -88,7 +81,6 @@ build/_mpv-proto/
 # ONNX bundle（212MB，由 goblintrain export 生成，不入库）
 /vendor/vision/bundles/
 # 独立分发 zip（构建产物）
-/dist-modules/
 # 新前端（Vite）依赖与构建产物
 /web/node_modules/
 /web/dist/

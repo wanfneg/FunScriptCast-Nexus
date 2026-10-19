@@ -88,9 +88,9 @@ $tasks = Get-Section $issText 'Tasks'
 $icons = Get-Section $issText 'Icons'
 $registry = Get-Section $issText 'Registry'
 $files = Get-Section $issText 'Files'
-# [Files] 的 Source 是相对 build\installer\ 的（..\..\dist-app\…）。本脚本把 .iss 生成在
+# [Files] 的 Source 是相对 build\installer\ 的（..\..\artifacts/app\…）。本脚本把 .iss 生成在
 # tests\_sandbox-update\ 下，相对基准变了 ⇒ 换成绝对路径，否则报"源文件不存在"。
-$files = $files.Replace('..\..\dist-app', (Join-Path $repo 'dist-app'))
+$files = $files.Replace('..\..\artifacts/app', (Join-Path $repo 'artifacts/app'))
 $code = Get-Section $issText 'Code'
 # 只砍掉 `InitializeSetup`，**保留 CurStepChanged（F30 回删）与 PrepareToInstall（安装前
 # 清残留进程）** —— ④ 步要验的正是后者。

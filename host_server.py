@@ -41,11 +41,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 # 打包成 EXE（PyInstaller）后 __file__ 指向解包临时目录，必须用 exe 所在目录；
-# ui/ 与 vendor/ 作为**外置数据**跟 EXE 放一起，方便查看与替换，也避免每次
+# ui-legacy/ 与 vendor/ 作为**外置数据**跟 EXE 放一起，方便查看与替换，也避免每次
 # 启动解压几十 MB 到 %TEMP%。
 FROZEN = bool(getattr(sys, "frozen", False))
 APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
-UI_DIR = APP_DIR / "ui"
+UI_DIR = APP_DIR / "ui-legacy"
 VENDOR_DIR = APP_DIR / "vendor"
 MODELS_DIR = APP_DIR / "models"
 
@@ -62,10 +62,10 @@ def _subtitle_python() -> Path:
     """字幕服务用的解释器：自带 venv → 上级目录的 venv → PATH 上的 python。
 
     字幕服务依赖 torch/uvicorn（约 5 GB），不随 EXE 打包，仍走 .venv 子进程。
-    dist-app 里的 EXE 单独拿出来跑时没有 .venv，会一路退到系统 Python 而缺依赖
+    artifacts/app 里的 EXE 单独拿出来跑时没有 .venv，会一路退到系统 Python 而缺依赖
     （实测报 "No module named 'uvicorn'"）。
 
-    打包版额外看**上一级目录**的 .venv：dist-app 通常就放在源码仓库里，上一级
+    打包版额外看**上一级目录**的 .venv：artifacts/app 通常就放在源码仓库里，上一级
     那个 .venv 是现成的，没必要再复制 5 GB 一份。这不是"自包含"，所以挑中的
     来源会记进日志，免得以后误以为这个包拷到别的机器也能跑。
     """
@@ -217,7 +217,7 @@ def data_dir() -> Path:
             return Path(up.user_dir())
         except Exception:
             pass
-    return Path(os.environ.get("NEXUS_USER_DIR") or (APP_DIR / "data"))
+    return Path(os.environ.get("NEXUS_USER_DIR") or (APP_DIR / "var" / "data"))
 
 
 def _sub_path(fn: str, fallback: Path) -> Path:
@@ -241,7 +241,7 @@ def _download_dir() -> Path:
 
 
 DATA_DIR = data_dir()
-LOGS_DIR = _sub_path("logs_dir", APP_DIR / "logs")   # 日志规则也只在 user_paths 里写一份
+LOGS_DIR = _sub_path("logs_dir", APP_DIR / "var" / "logs")   # 日志规则也只在 user_paths 里写一份
 
 # HF 缓存（whisper 兜底模型约 1.4GB）也必须在安装目录里，否则装到 D 盘也压 C 盘。
 # **必须在 import huggingface_hub 之前设**（hub 在 import 时把缓存路径读成常量）。
@@ -262,12 +262,12 @@ except Exception as _e:      # pragma: no cover - 环境异常时不拦住宿主
 
 # ---------------------------------------------------------------- 版本
 def _is_dev_copy() -> bool:
-    """R66 防呆：exe 在 dist-app（构建产物）或 Development（源码树）下运行 =
+    """R66 防呆：exe 在 artifacts/app（构建产物）或 Development（源码树）下运行 =
     开发副本，UI 与日志必须亮明身份——用户曾因 E 盘构建产物与 D 盘安装版
     '长得一模一样'反复启动错（R66 实录）。"""
     try:
         low = str(Path(sys.executable if getattr(sys, "frozen", False) else __file__)).lower()
-        return "dist-app" in low or "development" in low
+        return ("artifacts" in low and "app" in low) or "development" in low
     except Exception:
         return False
 
@@ -958,7 +958,7 @@ def sub_start() -> dict:
             if not SUBTITLE_DIR.exists():
                 raise RuntimeError(f"字幕服务目录不存在：{SUBTITLE_DIR}")
             # 先确认这个解释器真的跑得起来字幕服务。
-            # dist-app 里没有 .venv 时 _subtitle_python() 会退回系统 Python，
+            # artifacts/app 里没有 .venv 时 _subtitle_python() 会退回系统 Python，
             # 而它多半没装 uvicorn——不先探一下的话，用户看到的是一句
             # "No module named 'uvicorn'"，完全指不出该做什么（本机实测过）。
             probe = subprocess.run([str(py), "-c", "import uvicorn, fastapi"],
@@ -2170,7 +2170,7 @@ def _vision_python() -> Path:
 
       1. vision-runtime\python.exe   专用运行时（界面下载；当前一键安装仍是 torch 版）
       2. 应用目录 .venv             开发机 / 绿色版
-      3. 上一级目录 .venv           源码仓库里的 dist-app（开发机）
+      3. 上一级目录 .venv           源码仓库里的 artifacts/app（开发机）
       4. SUBTITLE_VENV_PY          最后兜底（缺后端依赖时由服务报明确错误）
 
     选中的来源记进 VISION_PY_SOURCE，启动日志会打出来——"识别服务起不来"时
@@ -3862,7 +3862,7 @@ def update_install() -> dict:
     if st.get("state") != "ready" or not st.get("file"):
         return {"ok": False, "error": "安装包还没下载完成"}
     if not getattr(sys, "frozen", False):
-        return {"ok": False, "error": "开发副本不支持就地安装，请直接运行 dist-installer 里的安装包"}
+        return {"ok": False, "error": "开发副本不支持就地安装，请直接运行 artifacts/installer 里的安装包"}
     app_exe = Path(sys.executable)
     if not app_exe.is_file():
         return {"ok": False, "error": "找不到应用可执行文件"}
@@ -4883,7 +4883,7 @@ def _get_device() -> dict:
             _DEV["obj"] = {
                 "ch": ch,
                 "quick": QuickMoves(ch, ch._loop),
-                "preset": PresetPlayer(ch, ch._loop, APP_DIR / "ui" / "presets.json"),
+                "preset": PresetPlayer(ch, ch._loop, APP_DIR / "ui-legacy" / "presets.json"),
                 "sync": SyncEngine(ch, ch._loop),
             }
             from device.arbiter import DeviceArbiter             # noqa: PLC0415
@@ -4904,8 +4904,8 @@ def _get_library():
         sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
         from library import Library   # noqa: PLC0415
 
-        LIB = Library(APP_DIR / "data" / "library_index.json",
-                      APP_DIR / "data" / "library_thumbs")
+        LIB = Library(DATA_DIR / "library_index.json",
+                      DATA_DIR / "library_thumbs")
     return LIB
 
 
@@ -5061,7 +5061,7 @@ def run(open_window: bool = True) -> None:
 
     RT.add_log(f"FunScriptCast-Nexus 启动（{lan_ip()}）", "ok")
     # 字幕服务的解释器来源：自包含的包和"借用上级 .venv"的包在日志里要能一眼区分，
-    # 否则把 dist-app 拷到别的机器上才发现少依赖，会很莫名其妙。
+    # 否则把 artifacts/app 拷到别的机器上才发现少依赖，会很莫名其妙。
     if SUBTITLE_PY_SOURCE:
         log.info("字幕服务解释器来源：%s → %s", SUBTITLE_PY_SOURCE, SUBTITLE_VENV_PY)
         if "非自包含" in SUBTITLE_PY_SOURCE:

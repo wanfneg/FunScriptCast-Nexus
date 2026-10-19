@@ -1,8 +1,8 @@
-﻿# 构建字幕服务的自包含轻量运行时 → dist-app\runtime\
+﻿# 构建字幕服务的自包含轻量运行时 → artifacts/app\runtime\
 #
 #   powershell -ExecutionPolicy Bypass -File build\make_runtime.ps1
 #
-# 产出 dist-app\runtime\（fastapi/uvicorn/numpy/zhconv 约 60-80 MB；
+# 产出 artifacts/app\runtime\（fastapi/uvicorn/numpy/zhconv 约 60-80 MB；
 # faster-whisper 是耳语兜底的可选依赖，连带 ctranslate2/onnxruntime 会再涨数百 MB）：
 #   python.exe + python310.dll   官方 embeddable 发行版
 #   Lib\site-packages\           上述依赖（torch 不装——audiocpp 主路径不需要，
@@ -17,7 +17,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if (-not $OutDir) { $OutDir = Join-Path $root 'dist-app\runtime' }
+if (-not $OutDir) { $OutDir = Join-Path $root 'artifacts/app\runtime' }
 $tmp = Join-Path $env:TEMP ("nexus-runtime-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
 # 冒烟表达式：必须覆盖**实际安装**的全部直接依赖。半成品 runtime（pip 中途失败

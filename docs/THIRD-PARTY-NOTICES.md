@@ -15,10 +15,10 @@
 | tools/adb（adb.exe、AdbWinApi.dll、AdbWinUsbApi.dll） | Apache-2.0 | The Android Open Source Project | `tools\adb\LICENSE.txt` + `NOTICE` | ✅ 已补 |
 | vendor/llama（llama.cpp 运行时：llama-server.exe、ggml/cublas 等 DLL） | MIT | (c) 2023 Georgi Gerganov 及贡献者 | `vendor\llama\LICENSE-llama.cpp`（✅ 已补）；`LICENSE-LLVM-OpenMP`（原有 ✓） | ✅ 已补 |
 | NVIDIA CUDA 运行库（vendor/llama 及识别 GPU 运行时下载包内的 cublas64_12.dll、cublasLt64_12.dll、cudart64_12.dll、cufft64_11.dll） | NVIDIA CUDA Toolkit 补充许可（可再分发） | NVIDIA Corporation | 随 NVIDIA CUDA Toolkit 分发的再分发组件，完整条款以 https://docs.nvidia.com/cuda/eula/ 为准 | ✅ R96 补记（此前 cublas 等 DLL 混在 llama.cpp MIT 行下，不准确） |
-| ui/fonts/Inter | SIL OFL-1.1 | The Inter Project Authors (rsms) | `ui\fonts\LICENSE-Inter-OFL.txt` | ✅ 已补 |
-| ui/fonts/JetBrains Mono | SIL OFL-1.1 | The JetBrains Mono Project Authors | `ui\fonts\LICENSE-JetBrainsMono-OFL.txt` | ✅ 已补 |
-| ui/fonts/Space Grotesk | SIL OFL-1.1 | The Space Grotesk Project Authors | `ui\fonts\LICENSE-SpaceGrotesk-OFL.txt` | ✅ 已补 |
-| ui 图标（index.html 内联 SVG sprite） | ISC | (c) 2026 Lucide Icons and Contributors | `ui\LICENSE-Lucide-ISC.txt`；生成脚本 `tools\gen_lucide_sprite.py` 逐字取自官方 svg | ✅ 已补 |
+| ui-legacy/fonts/Inter | SIL OFL-1.1 | The Inter Project Authors (rsms) | `ui-legacy\fonts\LICENSE-Inter-OFL.txt` | ✅ 已补 |
+| ui-legacy/fonts/JetBrains Mono | SIL OFL-1.1 | The JetBrains Mono Project Authors | `ui-legacy\fonts\LICENSE-JetBrainsMono-OFL.txt` | ✅ 已补 |
+| ui-legacy/fonts/Space Grotesk | SIL OFL-1.1 | The Space Grotesk Project Authors | `ui-legacy\fonts\LICENSE-SpaceGrotesk-OFL.txt` | ✅ 已补 |
+| ui 图标（index.html 内联 SVG sprite） | ISC | (c) 2026 Lucide Icons and Contributors | `ui-legacy\LICENSE-Lucide-ISC.txt`；生成脚本 `tools\gen_lucide_sprite.py` 逐字取自官方 svg | ✅ 已补 |
 | vendor/mpv（libmpv-2.dll，桌面播放器运行时，约 96MB） | **LGPL-2.1+**（zhongfly/mpv-winbuild 的 `mpv-dev-lgpl-x86_64` 变体，`-Dgpl=false` 构建） | mpv 项目及贡献者；构建方 zhongfly/mpv-winbuild | `vendor\mpv\LICENSE.LGPL-2.1.txt`（适用）+ `LICENSE.GPL-2.0.txt`（保留备查）+ `mpv-Copyright.txt` | ✅ R118：补记时发现初版取的是 GPL 变体，当日换 lgpl 并落盘文本（下次打包随包） |
 | vendor/audiocpp（audio.cpp CPU 运行时，随包内置；gpu\ 变体不随包） | Apache-2.0 | ShugoAI LLC | `vendor\audiocpp\LICENSE`（随包 ✓） | 无 |
 | 宿主 exe 打包器：PyInstaller | GPL-2.0-or-later **含运行时例外** | PyInstaller 贡献者 | 例外条款允许以任意许可分发打出的 exe；完整文本以 https://pyinstaller.org/en/stable/license.html 为准 | 无（例外覆盖） |
@@ -64,7 +64,7 @@ winrt_windows_storage_streams==3.2.1(MIT)
 > **zhconv 曾被 R69 移除、后被构建脚本装回**——`make_runtime.ps1` 的安装清单当时未同步，
 > 此后每次重建 runtime 都把它装回（以 `egg-info` 形式落盘，易被 dist-info 口径的清单扫描
 > 漏掉，R118 实测发现其仍在发行包内）。已修正：构建脚本不再安装、冒烟表达式同步删除，
-> `dist-app` 构建产物与已装机 runtime 均已删除该包（降级路径 `free_translators._to_hans`
+> `artifacts/app` 构建产物与已装机 runtime 均已删除该包（降级路径 `free_translators._to_hans`
 > 保留，ImportError 时原样返回，免费兜底默认关闭）。
 > **av 与 faster-whisper 依赖链**在耳语兜底保留后随包：faster-whisper 1.2.1
 > （`whisper_fallback.py` 懒加载）→ ctranslate2 / onnxruntime / tokenizers / av 17.1.0

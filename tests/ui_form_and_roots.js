@@ -1,6 +1,6 @@
 // 前端回归（评审 F08 / F09）：表单回填护栏 与 媒体根目录增删的丢更新。
 //
-// 沿用 ui_update_modal.js 的套路：静态托管 ui/ + 在页面脚本运行前注入 fetch 桩，
+// 沿用 ui_update_modal.js 的套路：静态托管 ui-legacy/ + 在页面脚本运行前注入 fetch 桩，
 // 走**真实的轮询与事件路径**，不需要启动宿主。
 //
 // F08：模型下载完成时只许刷新模型下拉，**绝不能整表重填**——否则用户在"准备填云端 key"
@@ -17,7 +17,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const UI_DIR = path.join(__dirname, '..', 'ui');
+const UI_DIR = path.join(__dirname, '..', 'ui-legacy');
 const HTTP_PORT = 8801;
 const CDP_PORT = 9343;
 

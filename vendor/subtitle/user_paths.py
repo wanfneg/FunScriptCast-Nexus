@@ -62,6 +62,11 @@ CFG_NAME = "subtitle_config.json"
 # 安装目录：本文件在 <安装目录>\vendor\subtitle\ 下，所以上两级就是安装目录
 _ROOT = Path(__file__).resolve().parents[2]
 
+# 运行数据全部收进 <安装目录>\var\（data / logs / run / backup），
+# 旧版本直接放在安装目录根下；首次运行自动迁过去（见 _migrate_legacy_layout）。
+_VAR = _ROOT / "var"
+_migrated_layout = False
+
 # R48 过渡版把用户数据放在这里；现在要迁回安装目录（见模块注释"首次运行迁移"）。
 _OLD_APPDATA = "FunScriptCast-Nexus"
 
@@ -69,12 +74,37 @@ _migrate_lock = threading.Lock()
 _migrated: set = set()
 
 
+def _migrate_legacy_layout() -> None:
+    """把旧版安装目录根下的 data/logs/run/backup 并进 var\（升级兼容，幂等）。"""
+    global _migrated_layout
+    if _migrated_layout:
+        return
+    _migrated_layout = True
+    try:
+        _VAR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    for name in ("data", "logs", "run", "backup"):
+        old, new = _ROOT / name, _VAR / name
+        if not old.exists():
+            continue
+        try:
+            if not new.exists():
+                old.rename(new)
+            elif name == "data":
+                # 升级安装可能已铺了出厂种子：以旧目录为准覆盖/补齐
+                shutil.copytree(old, new, dirs_exist_ok=True)
+        except OSError as e:
+            print(f"[paths] 迁移 {old} -> {new} 失败（忽略）：{type(e).__name__}: {e}", flush=True)
+
+
 def user_dir() -> Path:
-    """用户数据目录：`<安装目录>\\data`（`NEXUS_USER_DIR` 可整体覆盖）。"""
+    """用户数据目录：`<安装目录>\\var\\data`（`NEXUS_USER_DIR` 可整体覆盖）。"""
     env = os.environ.get("NEXUS_USER_DIR")
     if env:
         return Path(env)
-    return _ROOT / "data"
+    _migrate_legacy_layout()
+    return _VAR / "data"
 
 
 def models_dir() -> Path:
@@ -83,8 +113,9 @@ def models_dir() -> Path:
 
 
 def logs_dir() -> Path:
-    """日志目录：`<安装目录>\\logs`（宿主与字幕服务共用一处，排查时只看一个地方）。"""
-    return _ROOT / "logs"
+    """日志目录：`<安装目录>\\var\\logs`（宿主与字幕服务共用一处，排查时只看一个地方）。"""
+    _migrate_legacy_layout()
+    return _VAR / "logs"
 
 
 def run_dir() -> Path:
@@ -95,7 +126,8 @@ def run_dir() -> Path:
     同一卷上 rename 是瞬时的，跨卷搬运要真拷一遍。
     内容随时可删（进程停掉后没有需要保留的东西）。
     """
-    d = _ROOT / "run"
+    _migrate_legacy_layout()
+    d = _VAR / "run"
     try:
         d.mkdir(parents=True, exist_ok=True)
     except OSError:

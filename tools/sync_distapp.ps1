@@ -1,24 +1,24 @@
-﻿# 仓库 → dist-app 同步工具（ui + vendor，递归比对）
+﻿# 仓库 → artifacts/app 同步工具（ui + vendor，递归比对）
 #
 #   powershell -ExecutionPolicy Bypass -File tools\sync_distapp.ps1              # 同步 + 报告
 #   powershell -ExecutionPolicy Bypass -File tools\sync_distapp.ps1 -Restart     # 同步后重启字幕服务
 #   powershell -ExecutionPolicy Bypass -File tools\sync_distapp.ps1 -Check       # 只报告差异（有差异 exit 1，可做门禁）
 #   powershell -ExecutionPolicy Bypass -File tools\sync_distapp.ps1 -SyncConfig  # 连 config.json 一起覆盖（默认排除！）
 #
-# 背景：Nexus 打包版（dist-app\FunScriptCast-Nexus.exe）拉起的服务跑 dist-app 里的
-# 独立快照（ui\ 与 vendor\）——仓库改动不同步过去就完全无效
+# 背景：Nexus 打包版（artifacts/app\FunScriptCast-Nexus.exe）拉起的服务跑 artifacts/app 里的
+# 独立快照（ui-legacy\ 与 vendor\）——仓库改动不同步过去就完全无效
 # （2026-09-16 一整轮修复因此"看起来无效"，见 README「⚠️ 运行形态」）。
 #
-# ⚠️ 运行数据默认**排除**：dist-app 侧不是"仓库的副本"，而是用户正在用的实例——
+# ⚠️ 运行数据默认**排除**：artifacts/app 侧不是"仓库的副本"，而是用户正在用的实例——
 #    · config.json          UI 里填的云端 API Key / 本地调过的参数（仓库那份只是模板）
 #    · *.json.bak / .tmp    宿主的自保备份、写入途中的临时文件
 #    用仓库模板覆盖 = 抹掉 key（与 build_exe 的坑 #12 同族）。
 #    确要覆盖时显式给 -SyncConfig。
 #
 # 🚫 **R49 之后这些排除仍然必须保留，别删**：用户数据的**真身**现在在
-#    `<安装目录>\data\`（见 vendor\subtitle\user_paths.py），dist-app 这两份看着像
+#    `<安装目录>\data\`（见 vendor\subtitle\user_paths.py），artifacts/app 这两份看着像
 #    "没用的副本"了——但它们还有两个用处：① 老用户升级那一刻，他真正的 key 与词表
-#    **还躺在这里**，这是首次迁移的源；② 安装包拿 dist-app 这份当**出厂种子**
+#    **还躺在这里**，这是首次迁移的源；② 安装包拿 artifacts/app 这份当**出厂种子**
 #    （setup.iss 的 onlyifdoesntexist）。覆盖它 = 迁移读到空模板 = 静默丢 key。
 #
 # 数据搬进 data\ 之后，本脚本要同步的仍然只有代码（ui / vendor），**不碰 data\** ——
@@ -32,7 +32,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$out = Join-Path $root 'dist-app'
+$out = Join-Path $root 'artifacts/app'
 if (-not (Test-Path $out)) { throw "打包目录不存在：$out（先运行 build\build_exe.ps1）" }
 
 # 端口与宿主保持同源（host_server.py 读同名环境变量）
@@ -41,7 +41,7 @@ $hostPort = if ($env:FS_HOST_PORT)     { [int]$env:FS_HOST_PORT }     else { 879
 
 # 同步对（递归）。运行产物（logs / __pycache__ / *.log）双向忽略。
 $pairs = @(
-    @{ src = 'ui';              dst = 'ui' },
+    @{ src = 'ui-legacy';              dst = 'ui-legacy' },
     @{ src = 'vendor\subtitle'; dst = 'vendor\subtitle' },
     @{ src = 'vendor\dlna';     dst = 'vendor\dlna' }
 )
@@ -52,7 +52,7 @@ if ($SyncConfig)   { $skipNames = @($skipNames | Where-Object { $_ -ne 'config.j
 Write-Host ("[sync] 运行数据不参与比对/覆盖（要覆盖请显式给开关）：{0}" -f ($skipNames -join '、')) -ForegroundColor DarkGray
 
 # 排除规则只此一份，src 与 dst **共用**：此前两侧各写一遍，dst 侧一旦漏了
-# skipNames 就会把 dist-app 的运行配置当"仓库已删的多余文件"删掉（R41 差点出的事）。
+# skipNames 就会把 artifacts/app 的运行配置当"仓库已删的多余文件"删掉（R41 差点出的事）。
 # *.log 也在此统一（build_exe 清产物时删所有 *.log）：只排 logs 目录段的话，
 # 仓库里被 .gitignore 忽略的 vendor\dlna\vr_dlna_access.log 会被当源码推回快照。
 function Test-Excluded([string]$name, [string[]]$seg) {
@@ -145,7 +145,7 @@ if ($Check) {
 if ($ClearCache) {
     $cc = Join-Path $out 'cache\subtitles'
     if (Test-Path $cc) { Remove-Item (Join-Path $cc '*.json') -Force -ErrorAction SilentlyContinue }
-    Write-Host "[sync] 已清 dist-app\cache\subtitles"
+    Write-Host "[sync] 已清 artifacts/app\cache\subtitles"
 }
 
 # ---- 重启字幕服务（先停旧实例；宿主 API 优先，宿主不在则借 .venv python 手动拉起）----

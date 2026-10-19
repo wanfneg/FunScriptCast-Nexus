@@ -37,14 +37,14 @@ audiocpp；切换=配置一行或 `NEXUS_ASR_BACKEND` 环境变量。`/health` �
 三个 P0：`#mtModel` 轮询清空导致保存覆盖配置、术语表未加载时可被空表一键清库、
 本机 API 无 Origin 校验 + cache/clear 路径遍历。两个自查 P1：llama_backend 超时收尾
 **死锁**（Lock→RLock）、流式桥阻塞事件循环。打包链路：build_exe 摘 junction 防递归删真身
-+ key 保留回填（坑 #12 关闭）、哨兵升级全树扫描、sync_distapp 重写（覆盖 ui/dlna、
++ key 保留回填（坑 #12 关闭）、哨兵升级全树扫描、sync_distapp 重写（覆盖 ui-legacy/dlna、
 config.json 默认排除、-Check exit 码）。**8756 加回环门卫**：非 `/transcribe*`/`/health`
 接口仅限本机（持明文 key 的服务不再向局域网开放管理面）。全部修复经单元测试（新增
 `tests/test_pipeline_unit.py`）与打包端到端实测验证，详见 Round 41。
 
 ## ⚠️ 先读这个：运行形态决定一切
 
-**用户日常运行的是打包版 `dist-app\FunScriptCast-Nexus.exe`，其字幕服务跑 `dist-app\vendor\subtitle` 的独立快照（run_server.py、系统 Python）**——仓库 `vendor\subtitle` 里的修改对它无效，必须同步文件到打包目录、清 `dist-app\cache\subtitles\`、再经宿主 API（POST :8791/api/subtitle/start）或界面"结束并重启"拉起。完整流程见 README「⚠️ 运行形态」一节。
+**用户日常运行的是打包版 `artifacts/app\FunScriptCast-Nexus.exe`，其字幕服务跑 `artifacts/app\vendor\subtitle` 的独立快照（run_server.py、系统 Python）**——仓库 `vendor\subtitle` 里的修改对它无效，必须同步文件到打包目录、清 `artifacts/app\cache\subtitles\`、再经宿主 API（POST :8791/api/subtitle/start）或界面"结束并重启"拉起。完整流程见 README「⚠️ 运行形态」一节。
 2026-09-16 一整轮修复因此延迟生效（陈旧实例 8164 + 打包快照不同步），此教训列为排障第一优先级（§6.0 / §6.0.5）。
 
 ---
@@ -265,9 +265,9 @@ adb -s 192.168.2.129:5555 logcat -d | Select-String 'AiSubtitle\] \+|跳过空�
    `/api/subtitle/start` 让宿主拉起服务，该进程会一直存活并持有 8756；之后磁盘上所有代码/配置修改它都**不知道**，
    而 Nexus UI 会警示"不是本程序启动的（PID xxx）"。排查：看 UI 警告 / 查进程 StartTime /
    `netstat -ano | findstr :8756`。改完代码必须**杀旧实例并经宿主 API 重启**（POST :8791/api/subtitle/start）。
-0.5 **宿主是打包版（dist-app\FunScriptCast-Nexus.exe），它拉起的服务跑 `dist-appendor\subtitle` 的独立快照
+0.5 **宿主是打包版（artifacts/app\FunScriptCast-Nexus.exe），它拉起的服务跑 `artifacts/appendor\subtitle` 的独立快照
    （入口 run_server.py），不是仓库代码**：仓库里改 vendor/subtitle 对它无效（快照缺新文件、config 独立、自带
-   `dist-app/cache/`）。仓库修复完成后必须同步这些文件到 dist-app/vendor/subtitle 并清 dist-app/cache/subtitles，
+   `artifacts/app/cache/`）。仓库修复完成后必须同步这些文件到 artifacts/app/vendor/subtitle 并清 artifacts/app/cache/subtitles，
    再经宿主 API 重启。判断当前进程跑的是哪份代码：`Get-CimInstance Win32_Process` 看命令行（run_server.py
    =打包快照；`-m uvicorn server_app:app`=仓库）。
 1. **覆盖 exe 前先停进程**：旧进程占用时 `Copy-Item` 失败会被 `-EA SilentlyContinue` 吞掉 ⇒ "升级了还是旧版"。
@@ -285,7 +285,7 @@ adb -s 192.168.2.129:5555 logcat -d | Select-String 'AiSubtitle\] \+|跳过空�
 8. **判据只写一份**：PyTorch/audiocpp 两侧共用的文本判据统一放 `vendor/subtitle/text_filters.py`（历史上漂移过两次）。
 9. **头显两 Unity 工程必须逐字节一致**：`unity-prototype`（Pico）与 `unity-prototype-meta`（Meta）各有全套 C#，改一份必须同步另一份，否则 `build_apks.ps1` 第 4 步 parity 门禁直接中止构建（本次实测被拦一次；同步后 OK）。
 10. **PS5.1 `Remove-Item -Recurse` 会跟随 junction 递归删除目标内容**（PowerShell#621）：
-    dist-app 里的 models/.venv 是指向仓库真身的链接，重编不先摘链接 = 删掉 8GB 模型/venv。
+    artifacts/app 里的 models/.venv 是指向仓库真身的链接，重编不先摘链接 = 删掉 8GB 模型/venv。
     build_exe.ps1 已脚本化防护（摘链接→删除→自动重建），别把这段防护当冗余删掉（R41）。
 11. **重写/编辑 .ps1 后必须复查 BOM**：R41 用工具重写 sync_distapp.ps1 就丢过一次 BOM
     （PS5.1 按 GBK 读中文 → 语法/字符串全错）。`head -c 3 | od` 查 `ef bb bf`。
@@ -303,13 +303,13 @@ adb -s 192.168.2.129:5555 logcat -d | Select-String 'AiSubtitle\] \+|跳过空�
 | 时间轴精确化 | **已解决（v1.6.12）**：改走离线 VAD 端点拿真实时间戳（中位偏差 −0.24s）； ForcedAligner 词级时间仍留作远期选项 |
 | 翻译质量天花板 | **R36-R40 已换代**：本地 Sakura-7B（llama.cpp，覆盖 0.457-0.478）；云端 OpenAI 兼容修完推理预算坑后 0.531（须配 25s 档）。数据见桌面交接文档 R40 §6 |
 | 头显档位与后端联动 | **未做（当前首推）**：切云端时应自动提示/切 25s 档（3s 块在云端结构性追不上） |
-| key 存放迁移 | **未做**：打包已带不走 key（R41），但仍明文在 dist-app 运行配置里，建议迁 `%LOCALAPPDATA%`/环境变量 |
+| key 存放迁移 | **未做**：打包已带不走 key（R41），但仍明文在 artifacts/app 运行配置里，建议迁 `%LOCALAPPDATA%`/环境变量 |
 | 12 句漏识（气声/耳语） | 换大 ASR 无效（R38 已证）⇒ 需音频侧手段（增益/VAD 调参） |
 | ASR 量化评测 | 需**日文参考文本**做 CER（现在只有中文参考，覆盖率天花板 ≈0.5 无法再归因） |
 | 影子播放器 | **已删除（v1.6.9）**：双声音根除、省一整份解码；代价是无提前量、字幕必然滞后。落点 `VideoPlayerBridge.ensurePlayerInstance`（tap 常驻主播放器 AudioSink）+ `AiSubtitleEngine.beginCapture/stopInternal`（消费者注入/摘除） |
 | 头显装机 | 装机命令 `C:\platform-tools\adb.exe -s 192.168.2.129:5555 install -r VRFunScriptCast\dist\VRFunScriptCast-Meta.apk`（**v1.6.16 为当前版本**；头显仓库 `funscriptcore` 提交 `8cce3be`） |
 | 上游新版本 | 关注 release；`/live` 端点进入正式版后再评估（届时桥可改持久推流，省每请求会话重建） |
-| 工作区未提交 | R41 起已按功能分批提交（cb4026e / d16a540 / 80e0850）；dist-app 已同步并重编 exe |
+| 工作区未提交 | R41 起已按功能分批提交（cb4026e / d16a540 / 80e0850）；artifacts/app 已同步并重编 exe |
 
 ## 8. 关键文件
 
@@ -368,7 +368,7 @@ PC（FunScriptCast-Nexus）
    `test_quit.py`/`test_tray_run.py` 会**把你的程序杀掉**、`test_frameless.py`/`test_tray_close.py`
    会同端口双绑（`allow_reuse_address=1`，Windows 允许双绑）。**现已全部补上 8790 占用预检**——
    但仍请记住：跑这些脚本前确认 8790 空闲。
-2. ~~**用户术语表是 dist-app 侧的运行数据**~~（**R48 保护、R49 根治**）。此前术语表与
+2. ~~**用户术语表是 artifacts/app 侧的运行数据**~~（**R48 保护、R49 根治**）。此前术语表与
    `config.json` 跟 `.py` 混在 `APP_DIR\vendor\subtitle` 里，一次 `sync_distapp` /
    `build_exe` 就可能用仓库旧副本静默替换你在 UI 里保存的术语表（R42 做的是工具侧保护，
    没治根）。R49 起**所有运行数据搬进 `<安装目录>\data\`**（配置 / 术语表 / 宿主设置 /
@@ -390,7 +390,7 @@ PC（FunScriptCast-Nexus）
    `<安装目录>\logs\`**（`host.log` + `run_server.log`，排查只看一处）。
 
 **注意：宿主本体在 exe 里**——`host_server.py` 的这些改动**必须重编 exe 才生效**
-（`build\build_exe.ps1`）；`ui\` 与 `vendor\` 外置，同步后生效。本轮**没有**重编、也没有
+（`build\build_exe.ps1`）；`ui-legacy\` 与 `vendor\` 外置，同步后生效。本轮**没有**重编、也没有
 重启你正在运行的程序。
 
 ### 9.1 重出的质量基线（R42 修复后整片实测，取代 §6 旧数字）

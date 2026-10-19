@@ -1,6 +1,6 @@
 ﻿import re, pathlib
-js = pathlib.Path("ui/app.js").read_text(encoding="utf-8")
-html = pathlib.Path("ui/index.html").read_text(encoding="utf-8")
+js = pathlib.Path("ui-legacy/app.js").read_text(encoding="utf-8")
+html = pathlib.Path("ui-legacy/index.html").read_text(encoding="utf-8")
 ids_js = sorted(set(re.findall(r'\$\("#([A-Za-z0-9_-]+)"\)', js)))
 ids_html = set(re.findall(r'id="([A-Za-z0-9_-]+)"', html))
 print(f"app.js 引用 {len(ids_js)} 个 id")

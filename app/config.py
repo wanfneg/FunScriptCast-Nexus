@@ -12,7 +12,7 @@ from pathlib import Path
 
 APP_ROOT: Path = Path(os.environ.get("FSC_APP_ROOT") or Path(__file__).resolve().parent.parent)
 WEB_DIST: Path = APP_ROOT / "web" / "dist"
-LEGACY_UI: Path = APP_ROOT / "ui"
+LEGACY_UI: Path = APP_ROOT / "ui-legacy"
 
 _runtime: dict = {}
 

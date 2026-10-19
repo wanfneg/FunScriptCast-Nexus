@@ -4,7 +4,7 @@ rem  FunScriptCast-Nexus -- launcher
 rem
 rem  Runs host_server.py with a venv Python.
 rem  The script may sit either in the project root or in a packaged
-rem  folder (dist-app), so it locates host_server.py itself instead of
+rem  folder (artifacts/app), so it locates host_server.py itself instead of
 rem  assuming "the script's folder is the project".
 rem
 rem  Override the interpreter with: set NEXUS_PY=<path to python.exe>

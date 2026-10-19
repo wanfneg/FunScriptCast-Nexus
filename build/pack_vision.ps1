@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File build\pack_vision.ps1
 #   powershell -ExecutionPolicy Bypass -File build\pack_vision.ps1 -NoWeights
 #
-# 产物：dist-modules\vision-<版本>.zip
+# 产物：artifacts/modules\vision-<版本>.zip
 #   vendor/vision/{run_server.py,service.py,stream_engine.py,goblintrain/,
 #                  weights/checkpoints/v0.6.0.pt,config.json,requirements.txt,README.md}
 #
@@ -27,7 +27,7 @@ if (Test-Path $vj) {
 }
 if (-not $ver) { $ver = '0.0.0' }
 
-$outDir = Join-Path $root 'dist-modules'
+$outDir = Join-Path $root 'artifacts/modules'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $zip = Join-Path $outDir ("vision-$ver.zip")
 $stage = Join-Path $env:TEMP ("vision-pack-" + [guid]::NewGuid().ToString('N').Substring(0, 8))

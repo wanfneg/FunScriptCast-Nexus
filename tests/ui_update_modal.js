@@ -1,7 +1,7 @@
 // 更新弹窗回归（评审 F07）：下载/检查失败必须能收尾，任何状态都要留一条关闭路径。
 //
 // 为什么不用 jsdom：项目的 UI 测试一律走「无头 Chrome + CDP」（见 ui_check.js），
-// 这里沿用同一套路，但**不需要启动宿主** —— 用一个静态服务器托管 ui/，并在页面脚本
+// 这里沿用同一套路，但**不需要启动宿主** —— 用一个静态服务器托管 ui-legacy/，并在页面脚本
 // 运行前注入 fetch 桩，把 /api/state 变成可控的输入，从而走**真实的轮询与弹窗代码路径**。
 //
 // 覆盖：
@@ -16,7 +16,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const UI_DIR = path.join(__dirname, '..', 'ui');
+const UI_DIR = path.join(__dirname, '..', 'ui-legacy');
 const HTTP_PORT = 8799;
 const CDP_PORT = 9341;
 
@@ -27,7 +27,7 @@ function check(ok, label, detail) {
   console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${label}${detail !== undefined ? '  — ' + detail : ''}`);
 }
 
-// ---- 静态服务器（只伺候 ui/，不需要宿主）----------------------------------
+// ---- 静态服务器（只伺候 ui-legacy/，不需要宿主）----------------------------------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
                '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const server = http.createServer((req, res) => {
