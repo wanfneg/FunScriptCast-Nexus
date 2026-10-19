@@ -2208,10 +2208,13 @@
   function aivStart() {
     if (!vlMed.path) { toast("AI 识别", "先打开一个视频", "warn"); return; }
     AIV.on = true; AIV._autoplayed = false; AIV._failShown = false;
-    /* 预热期间暂停画面：识别要先把视频转码+跑一遍模型，此时播放会与
-       "AI 跟上中"空转。暂停并给出明确提示，预热完再自动继续。 */
+    /* **不暂停视频**：识别是流式的，边播边算；而 WebView2 会拒绝无手势的
+       play()，一旦这里暂停，预热完就可能永远起不来（"没有继续"的根因）。
+       AI 按钮本身就是用户手势，若当前是暂停状态就立即恢复播放。 */
     var v0 = vlVid();
-    if (v0 && !v0.paused) { try { v0.pause(); } catch (e) {} }
+    if (v0 && v0.paused) {
+      try { var p0 = v0.play(); if (p0 && p0.catch) p0.catch(function () {}); } catch (e) {}
+    }
     aivShowWarm(true);
     aivRender();
     api("/api/vision/open", "POST", { video: vlMed.path }).then(function (r) {
