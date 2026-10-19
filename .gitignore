@@ -84,3 +84,4 @@ build/.cache/mpv-proto/
 # 新前端（Vite）依赖与构建产物
 /web/node_modules/
 /web/dist/
+native/vision/build/

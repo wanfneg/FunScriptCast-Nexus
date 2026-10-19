@@ -3360,11 +3360,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not addr:
                     self._json({"ok": False, "error": "缺少 address"}, 400)
                     return
-                self._json(d["ch"].submit(d["ch"].connect(addr, str(body.get("toy") or "") or None), timeout=60))
+                _conn = d["ch"].submit(d["ch"].connect(addr, str(body.get("toy") or "") or None), timeout=60)
                 # 重连成功后缓动从"现在"重新计时（I5 会话边界）：否则用断开前的旧
                 # 空闲时间戳，一连上缓动可能立刻开跑
                 if _DEV["obj"] and _DEV["obj"]["ch"].state.connected:
                     _DEV["obj"]["quick"].note_external()
+                # 用户常常"先开 AI、后连设备"：open 时没连上就不会进 live 模式，
+                # 这里补一次，否则识别在跑但动作永远不下发。
+                try:
+                    _st = vision_state()
+                    _job = (_st or {}).get("job") or {}
+                    if (_st or {}).get("running") and _job.get("video"):
+                        _r = d["arbiter"].start_live(str(_job["video"]))
+                        _conn = dict(_conn)
+                        _conn["live"] = bool(_r.get("ok"))
+                except Exception:  # noqa: BLE001
+                    pass
+                self._json(_conn)
             elif path == "/api/device/disconnect":
                 d = _get_device()
                 try:
