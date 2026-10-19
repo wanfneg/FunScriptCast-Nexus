@@ -57,6 +57,20 @@ check("SPA 回退到 index.html", hit and b'<div id="root">' in body, f"status={
 hit, st, hd, body = call("/app/../host_server.py")
 check("路径穿越被拒", hit is False, f"hit={hit}")
 
+# P1：只读状态路由（数据源由宿主注入，这里用桩）
+from app.api import services
+services.bind(
+    state=lambda: {"ok": True, "version": "test-1", "uptime": 1.5},
+    logs=lambda: [{"t": 1, "msg": "hello"}],
+    library_state=lambda: {"ok": True, "count": 3, "roots": ["E:/x"]},
+)
+hit, st, hd, body = call("/api/v2/state")
+check("GET /api/v2/state", hit and json.loads(body).get("version") == "test-1", body[:60].decode("utf-8", "replace"))
+hit, st, hd, body = call("/api/v2/logs")
+check("GET /api/v2/logs", hit and json.loads(body)["logs"][0]["msg"] == "hello")
+hit, st, hd, body = call("/api/v2/library/state")
+check("GET /api/v2/library/state", hit and json.loads(body).get("count") == 3)
+
 hit, st, hd, body = call("/api/v2/nope")
 check("未知 v2 接口回落", hit is False, f"hit={hit}")
 

@@ -3,13 +3,14 @@ import {
   LayoutDashboard, Library, Subtitles, Sparkles, Settings, type LucideIcon,
 } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
+import LibraryPage from "./pages/Library";
 import Placeholder from "./pages/Placeholder";
 
 type NavItem = { to: string; label: string; icon: LucideIcon; blurb: string };
 
 export const NAV: NavItem[] = [
   { to: "/", label: "总览", icon: LayoutDashboard, blurb: "系统状态与入口" },
-  { to: "/library", label: "媒体库", icon: Library, blurb: "目录、扫描、脚本索引（迁移中）" },
+  { to: "/library", label: "媒体库", icon: Library, blurb: "目录、扫描、脚本索引" },
   { to: "/subtitles", label: "AI 字幕", icon: Subtitles, blurb: "识别 / 翻译 / 模型中心（迁移中）" },
   { to: "/vision", label: "AI 识别", icon: Sparkles, blurb: "实时动作识别与置信度（迁移中）" },
   { to: "/settings", label: "设置", icon: Settings, blurb: "启动、设备、路径（迁移中）" },
@@ -40,12 +41,10 @@ export default function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          {NAV.filter((n) => n.to !== "/").map((n) => (
-            <Route
-              key={n.to}
-              path={n.to}
-              element={<Placeholder title={n.label} blurb={n.blurb} />}
-            />
+          <Route path="/library" element={<LibraryPage />} />
+          {NAV.filter((n) => n.to !== "/" && n.to !== "/library").map((n) => (
+            <Route key={n.to} path={n.to}
+                   element={<Placeholder title={n.label} blurb={n.blurb} />} />
           ))}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

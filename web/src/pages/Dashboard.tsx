@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getJson, type SystemInfo } from "../api/client";
+import { getJson, type LogEntry, type RuntimeState, type SystemInfo } from "../api/client";
 
 function Card({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
@@ -11,52 +11,79 @@ function Card({ label, value, hint }: { label: string; value: string; hint?: str
   );
 }
 
+function fmtUptime(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`;
+}
+
+function fmtTime(ts: number): string {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
 export default function Dashboard() {
   const [sys, setSys] = useState<SystemInfo | null>(null);
+  const [state, setState] = useState<RuntimeState | null>(null);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     const ac = new AbortController();
-    getJson<SystemInfo>("/api/v2/system", ac.signal)
-      .then(setSys)
+    Promise.all([
+      getJson<SystemInfo>("/api/v2/system", ac.signal),
+      getJson<RuntimeState>("/api/v2/state", ac.signal),
+      getJson<{ ok: boolean; logs: LogEntry[] }>("/api/v2/logs", ac.signal),
+    ])
+      .then(([s, st, lg]) => {
+        setSys(s);
+        setState(st);
+        setLogs(lg.logs ?? []);
+      })
       .catch((e: Error) => {
         if (e.name !== "AbortError") setErr(e.message);
       });
     return () => ac.abort();
   }, []);
 
+  const dlna = state?.dlna;
+  const recent = logs.slice(-12).reverse();
+
   return (
     <div className="page">
       <header className="page-head">
         <h1>总览</h1>
-        <p>新底座已接通：前端 Vite + React，后端 app/ 路由注册表，旧界面不受影响。</p>
+        <p>新底座已接通只读接口：系统、运行状态、日志、媒体库。</p>
       </header>
 
       {err ? <div className="alert">接口未通：{err}</div> : null}
 
       <section className="grid">
-        <Card label="版本" value={sys?.version || "—"} hint="version.json" />
-        <Card label="Python" value={sys?.python || "—"} hint={sys?.platform || ""} />
-        <Card
-          label="前端构建"
-          value={sys ? (sys.web_dist.built ? "已构建" : "未构建") : "—"}
-          hint={sys?.web_dist.path}
-        />
-        <Card
-          label="旧界面"
-          value={sys ? (sys.legacy_ui ? "存在" : "缺失") : "—"}
-          hint="ui/index.html（迁移完成前保留）"
-        />
+        <Card label="版本" value={state?.version || sys?.version || "—"}
+              hint={`Python ${sys?.python ?? "—"} · ${sys?.channel ?? ""}`} />
+        <Card label="运行时长" value={state ? fmtUptime(state.uptime) : "—"}
+              hint={state ? `端口 ${state.host.port} · 头显 ${state.host.lan_api_port}` : ""} />
+        <Card label="DLNA" value={dlna ? (dlna.running ? "运行中" : "未启动") : "—"}
+              hint={dlna?.url ?? dlna?.error ?? ""} />
+        <Card label="前端构建" value={sys?.web_dist.built ? "已构建" : "未构建"}
+              hint={sys?.web_dist.path} />
       </section>
 
       <section className="panel">
-        <h2>底座约定</h2>
-        <ul className="bullets">
-          <li><code>app/api/routes/*</code> 注册新接口，前缀 <code>/api/v2</code>。</li>
-          <li><code>app/bridge.py</code> 先新后旧：未命中的请求原样回落历史路由。</li>
-          <li><code>web/</code> 构建产物由宿主在 <code>/app/</code> 下托管。</li>
-          <li>开发期：<code>npm run dev</code>，<code>/api</code> 自动代理到 8790。</li>
-        </ul>
+        <h2>最近事件</h2>
+        {recent.length === 0 ? (
+          <p className="muted">暂无日志。</p>
+        ) : (
+          <ul className="log-list">
+            {recent.map((l, i) => (
+              <li key={`${l.ts}-${i}`} className={`log-${l.level}`}>
+                <span className="log-time">{fmtTime(l.ts)}</span>
+                <span className="log-msg">{l.msg}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );

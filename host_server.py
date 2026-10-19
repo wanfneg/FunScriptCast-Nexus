@@ -2792,6 +2792,17 @@ def vision_reclaim_idle() -> None:
         vision_stop()
 
 
+def library_state_payload() -> dict:
+    """媒体库只读状态（旧 /api/library/state 的实现，搬到新路由后复用）。"""
+    lib = _get_library()
+    with lib.lock:
+        n = len(lib._cards)   # 直接读字段，不调会二次加锁的 cards()
+    return {"ok": True,
+            "roots": [r for r in (load_settings().get("library_roots") or []) if r],
+            "scanning": lib.scanning, "progress": lib.scan_progress,
+            "last_scan": lib.last_scan, "count": n}
+
+
 def state_payload() -> dict:
     s = load_settings()
     with RT.lock:
@@ -3117,13 +3128,7 @@ class Handler(BaseHTTPRequestHandler):
                 st["available"] = _bleak_ok()
                 self._json({"ok": True, "device": st})
             elif path == "/api/library/state":
-                lib = _get_library()
-                with lib.lock:
-                    n = len(lib._cards)   # 直接读字段，不调会二次加锁的 cards()
-                self._json({"ok": True,
-                            "roots": [r for r in (load_settings().get("library_roots") or []) if r],
-                            "scanning": lib.scanning, "progress": lib.scan_progress,
-                            "last_scan": lib.last_scan, "count": n})
+                self._json(library_state_payload())
             elif path == "/api/lc/state":
                 st = _get_lc().state()
                 st["mt_ok"] = _lc_mt_ok()
@@ -5021,6 +5026,17 @@ def run(open_window: bool = True) -> None:
         if "非自包含" in SUBTITLE_PY_SOURCE:
             RT.add_log(f"字幕服务借用上级目录的 .venv（{SUBTITLE_VENV_PY.parent.parent}）；"
                        f"要把这个目录拷到别的机器，需先复制 .venv 进来", "warn")
+
+    # 新底座（app/）：把只读数据源注入给 /api/v2 路由（P1）
+    try:
+        from app.api import services as _app_services
+        _app_services.bind(
+            state=state_payload,
+            logs=lambda: list(RT.logs[-300:]),
+            library_state=library_state_payload,
+        )
+    except ImportError:
+        pass
 
     httpd = ExclusiveHTTPServer(("127.0.0.1", UI_API_PORT), Handler)
     httpd.daemon_threads = True

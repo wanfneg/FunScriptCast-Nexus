@@ -61,3 +61,4 @@ def dispatch(req: Request) -> Response | None:
 def load_builtin_routes() -> None:
     """显式导入路由模块（保持注册顺序稳定、可测）。"""
     from .routes import meta  # noqa: F401
+    from .routes import state  # noqa: F401

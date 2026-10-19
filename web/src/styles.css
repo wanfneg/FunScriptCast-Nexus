@@ -127,3 +127,31 @@ code {
   background: #2a1a1a;
   color: #ffb4b4;
 }
+
+.panel-head { display: flex; align-items: center; justify-content: space-between; }
+.panel-head h2 { margin-bottom: 0; }
+
+.btn {
+  background: var(--bg-soft);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.log-list { list-style: none; margin: 0; padding: 0; }
+.log-list li {
+  display: flex; gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(38, 49, 64, 0.5);
+  font-size: 13px;
+}
+.log-list li:last-child { border-bottom: 0; }
+.log-time { color: var(--muted); flex: 0 0 72px; font-variant-numeric: tabular-nums; }
+.log-msg { color: var(--text); word-break: break-all; }
+.log-warn .log-msg { color: #e6c07b; }
+.log-err .log-msg { color: #ff9a9a; }
+.log-ok .log-msg { color: #8fd18f; }

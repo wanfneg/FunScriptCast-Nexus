@@ -48,13 +48,20 @@ Nexus/
 
 ## 4. 迁移阶段
 
-### P1 只读接口（低风险，1–2 天）
-把列表/状态类接口搬到 `app/api/routes/`：
+### P1 只读接口（✅ 第一批已完成 2026-10-19）
 
-- `/api/state`、`/api/logs`、`/api/library/state`、`/api/device/state`
-- 前端 Dashboard/媒体库列表改成读新接口
+| 接口 | 状态 | 说明 |
+|---|---|---|
+| `GET /api/v2/state` | ✅ | 复用宿主的 `state_payload()`（服务注入） |
+| `GET /api/v2/logs` | ✅ | 最近 300 条 |
+| `GET /api/v2/library/state` | ✅ | 新增 `library_state_payload()`，旧 handler 改为调用它 |
+| `GET /api/device/state` | ⬜ | 下一批 |
 
-验收：新旧接口返回一致（可用脚本双跑对比字段），旧界面不受影响。
+做法：`app/api/services.py` 让宿主在启动时注入只读数据源，新路由只做路由，
+逻辑仍走旧实现——行为不变、可随时回退。
+
+前端：Dashboard 接了 system/state/logs；媒体库页接了 library/state（只读，写操作仍在旧界面）。
+自检：`tests/test_app_bridge.py` 14 项全过；`web` 构建通过（177 KB）。
 
 ### P2 写接口（中风险，3–5 天）
 - `/api/settings`（补丁式保存）、`/api/sync/start`、`/api/vision/*`

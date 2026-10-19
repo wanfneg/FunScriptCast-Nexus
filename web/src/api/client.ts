@@ -1,4 +1,4 @@
-/** 最小 API 客户端：统一错误处理，后续可换成自动生成的类型化客户端。 */
+/** 最小 API 客户端：统一错误处理。v2 接口一律 /api/v2/*。 */
 
 export class ApiError extends Error {
   status: number;
@@ -28,9 +28,34 @@ export type SystemInfo = {
   ok: boolean;
   app_root: string;
   version: string;
+  version_code: number;
+  channel: string;
   python: string;
   platform: string;
   web_dist: { path: string; built: boolean };
   legacy_ui: boolean;
   runtime: Record<string, unknown>;
+};
+
+export type LogEntry = { ts: number; level: string; msg: string };
+
+export type RuntimeState = {
+  ok: boolean;
+  version: string;
+  uptime: number;
+  host: { port: number; lan_ip: string; lan_api_port: number; lan_api_url: string };
+  dlna: {
+    running: boolean; starting: boolean; error: string;
+    port: number; url: string | null; roots: string[];
+  };
+  events: LogEntry[];
+};
+
+export type LibraryState = {
+  ok: boolean;
+  roots: string[];
+  scanning: boolean;
+  progress?: number;
+  last_scan?: string | null;
+  count: number;
 };
