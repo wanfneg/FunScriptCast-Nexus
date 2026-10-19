@@ -174,15 +174,15 @@ conf < 0.704（= 0.75×该片 conf p50）：平台内 0.38 / 0.59，平台外 3.
 
 ## 7. 复现（全新跑，不用旧缓存）
 
-    cd "E:/Development/AI Funscript/proto3"
+    cd "E:/Development/FunScriptCast-Nexus/tools/vision"
 
-    # 1) 转码 + 提取 latent（每片约 11 分钟，产物在 compare/fresh2/）
-    python extract_latent.py "E:/testvideo/funscript test/K1cztm.mp4" compare/fresh2/K1cztm
-    python extract_latent.py "E:/testvideo/funscript test/K1drsp.mp4" compare/fresh2/K1drsp
+    # 1) 转码 + 提取 latent（每片约 11 分钟，产物在 run/vision/）
+    python extract_latent.py "E:/testvideo/funscript test/K1cztm.mp4" ../run/vision/K1cztm
+    python extract_latent.py "E:/testvideo/funscript test/K1drsp.mp4" ../run/vision/K1drsp
 
     # 2) TransNetV2 切点 + 全片解码 + 收集 conf（约 2 分钟/片）
-    python dump_tracks_conf.py "E:/testvideo/funscript test/K1cztm.mp4" compare/fresh2/K1cztm
-    python dump_tracks_conf.py "E:/testvideo/funscript test/K1drsp.mp4" compare/fresh2/K1drsp
+    python dump_tracks_conf.py "E:/testvideo/funscript test/K1cztm.mp4" ../run/vision/K1cztm
+    python dump_tracks_conf.py "E:/testvideo/funscript test/K1drsp.mp4" ../run/vision/K1drsp
 
     # 3) 信号区分度 + 阈值
-    python analyze_confidence_gate.py compare/fresh2/K1cztm compare/fresh2/K1drsp
+    python analyze_confidence_gate.py ../run/vision/K1cztm ../run/vision/K1drsp

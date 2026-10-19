@@ -85,6 +85,8 @@ build/_mpv-proto/
 # AI 识别模块的运行缓存与权重（由 tools/fetch_vision.ps1 下载，不入库）
 /vendor/vision/cache/
 /vendor/vision/weights/
+# ONNX bundle（212MB，由 goblintrain export 生成，不入库）
+/vendor/vision/bundles/
 # 独立分发 zip（构建产物）
 /dist-modules/
 # 新前端（Vite）依赖与构建产物

@@ -114,16 +114,16 @@
 
 ## 5. 复现（全部全新跑）
 
-    cd "E:/Development/AI Funscript/proto3"
+    cd "E:/Development/FunScriptCast-Nexus/tools/vision"
 
-    python extract_latent.py "E:/testvideo/funscript test/K1cztm.mp4" compare/fresh2/K1cztm
-    python extract_latent.py "E:/testvideo/funscript test/K1drsp.mp4" compare/fresh2/K1drsp
-    python dump_tracks_conf.py "E:/testvideo/funscript test/K1cztm.mp4" compare/fresh2/K1cztm
-    python dump_tracks_conf.py "E:/testvideo/funscript test/K1drsp.mp4" compare/fresh2/K1drsp
-    python analyze_confidence_gate.py compare/fresh2/K1cztm compare/fresh2/K1drsp
+    python extract_latent.py "E:/testvideo/funscript test/K1cztm.mp4" ../run/vision/K1cztm
+    python extract_latent.py "E:/testvideo/funscript test/K1drsp.mp4" ../run/vision/K1drsp
+    python dump_tracks_conf.py "E:/testvideo/funscript test/K1cztm.mp4" ../run/vision/K1cztm
+    python dump_tracks_conf.py "E:/testvideo/funscript test/K1drsp.mp4" ../run/vision/K1drsp
+    python analyze_confidence_gate.py ../run/vision/K1cztm ../run/vision/K1drsp
 
-产物：compare/fresh2/ 下的 _tracks.npz（含 conf）、_stream.funscript、_cuts.npy、
-gate_report.json。
+产物：run/vision/ 下的 _tracks.npz（含 conf）、_stream.funscript、_cuts.npy、
+gate_report.json。历史冻结结果见 docs/dev-archive/ai-funscript/results/。
 
 
 ---

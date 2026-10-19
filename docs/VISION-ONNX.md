@@ -45,7 +45,7 @@
 # 导出（开发机，需要 torch）
 cd _third_party/GoblinTrainingGrounds
 venv/Scripts/python.exe goblintrain.py export drafts --run v0.6.0 --no-parity \
-    --bundle E:/Development/tmp/onnx-bundle --label nexus-onnx-test
+    --bundle E:/Development/FunScriptCast-Nexus/vendor/vision/bundles/v0.6.0 --label nexus-onnx-test
 ```
 
 ## 6. 整片验收（2026-10-19，K1cztm 39040 行）
@@ -146,3 +146,27 @@ ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
   在 CUDA 后端会退回 CPU 并报 “not implemented for CPU”。
 - 编码器只能走 GPU（DirectML / CUDA）；head/env 走 CPU（int8 在 DML 元素上会崩）。
 - CUDA 运行库（cublasLt 约 0.5GB + cuDNN 约 0.9GB）**不放进主安装包**，作为 NVIDIA 用户的可选组件。
+
+### 实测环境的精确版本（2026-10-19，便于复现）
+
+| 组件 | 版本 / 来源 |
+|---|---|
+| onnxruntime-gpu | 1.24.4（CUDA venv `E:\Development\tmp\ortgpu`，Python 3.11.9，无 torch） |
+| cudart64_12 | 6.14.11.12090 |
+| cublas64_12 / cublasLt64_12 | 6.14.11.1292 |
+| cuDNN | 9.10.2.21（cudnn64_9 + cnn / ops / graph / heuristic / engines_* 共 9 个 DLL） |
+
+这 10 个 DLL 当时取自 `_third_party\goblinscript`（官方 v0.6.0 发行包，合计 1.39 GB）。
+**工作区删除后不必保留副本**：仓库 `.venv`（Python 3.10.0 + torch 2.11.0+cu128）自带的
+cuDNN 9.19 / cuBLAS 12 能被 `onnxruntime-gpu 1.24.4` 正常加载（实测 CUDA EP：
+4.83 windows/s = 2.58× 实时；30 s 端到端冒烟 `state=done`、26 个动作）。
+
+开发机复跑 CUDA 只需把 `.venv\Lib\site-packages\torch\lib` 加到 `PATH`：
+
+```powershell
+$env:PATH = "E:\Development\FunScriptCast-Nexus\.venv\Lib\site-packages\torch\lib;" + $env:PATH
+$env:FSC_VISION_EP = "cuda"
+E:\Development\tmp\ortgpu\Scripts\python.exe tools\vision\smoke_onnx_stream.py <video>
+```
+
+产品侧不受影响：默认 DirectML（ORT 自带），CUDA 运行库仍作为可选组件。
