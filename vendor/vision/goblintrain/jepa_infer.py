@@ -37,10 +37,10 @@ from pathlib import Path
 import numpy as np
 
 from . import common
-from . import h0_store
+# h0_store 惰性导入（会拉 torch；只有离线 draft 需要）
 from . import scoring
-from .forward import predict_shots
-from .jepa_train import JepaClip, load_model
+# forward 惰性导入（会拉 torch）
+# jepa_train 惰性导入（会拉 torch）
 
 FPS = 15.0         # the loaded cache's row rate; main() rebinds per clip
 DT = 1.0 / FPS
@@ -1387,6 +1387,10 @@ def build_parser():
 
 
 def run(args):
+    # 离线 draft/评测专用（都会拉 torch）；纯样式解码不需要
+    from . import h0_store
+    from .forward import predict_shots
+    from .jepa_train import JepaClip, load_model
     """Draft and score under a parsed ``build_parser()`` namespace."""
     if args.dataset is None or args.out is None:
         raise SystemExit("--dataset and --out are required")

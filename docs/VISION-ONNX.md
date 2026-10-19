@@ -116,3 +116,33 @@ ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
    （`DmlGraphFusionHelper` 0xC0000005 族）。官方也是先 `find_cuts` 再编码，已按此顺序实现。
 2. **尾段是近似**：官方 Rust 把定长窗口向后滑过真实历史；我们的定长 ONNX 图改用
    “重复末帧补满整组”，只影响最后约 2 秒的上下文。
+
+## 9. CUDA 实测（2026-10-19）
+
+环境：RTX 4070 Laptop 8GB / 驱动 617.42 / `onnxruntime-gpu==1.24.4` / CUDA 12 运行库取自带目录。
+**整个测试进程没有安装 torch**（CUDA venv 只含 numpy + onnxruntime-gpu）。
+
+### 编码器吞吐（vjepa_pca.onnx，32 帧窗口）
+
+| 后端 | windows/s | 30fps 帧速 | 相对实时 | 单窗耗时 |
+|---|---|---|---|---|
+| DirectML | 3.76 | 60.2 fps | 2.01x | 0.266 s |
+| **CUDA** | **4.85** | **77.6 fps** | **2.59x** | **0.206 s** |
+| CPU | — | — | — | 不支持（packed QKV 无 CPU kernel） |
+
+### 端到端流式冒烟（120 秒片段）
+
+| 后端 | 完成 | 动作数 | 端到端耗时 | vmarg 一致性 |
+|---|---|---|---|---|
+| DirectML | done | 141 | 79 s | 0.999843 |
+| **CUDA** | done | 147 | **61 s** | 0.999848 |
+
+两个后端出点数相差 6 个（约 4%），属于 EP 数值差异（官方文档也记录了 CUDA 与 DML 的
+“backend numeric difference”），不是逻辑差异。
+
+### 版本约束（重要）
+
+- **必须钉住 `onnxruntime(-gpu)==1.24.4`**：1.31.0 上 packed-QKV 的 MultiHeadAttention
+  在 CUDA 后端会退回 CPU 并报 “not implemented for CPU”。
+- 编码器只能走 GPU（DirectML / CUDA）；head/env 走 CPU（int8 在 DML 元素上会崩）。
+- CUDA 运行库（cublasLt 约 0.5GB + cuDNN 约 0.9GB）**不放进主安装包**，作为 NVIDIA 用户的可选组件。
