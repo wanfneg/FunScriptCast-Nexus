@@ -83,17 +83,16 @@ $env:FSC_VISION_EP = "dml"
 .\.venv\Scripts\python.exe tools\vision\smoke_onnx_stream.py "E:\testvideo\funscript test\K1cztm.mp4" --duration-s 120
 ```
 
-CUDA（ORT 必须 1.24.4；需要 CUDA 12 + cuDNN 9 运行库）：
+CUDA（ORT 必须 1.24.4；需要系统 CUDA 12 + cuDNN 9，**不要用 torch 自带的库顶替**——
+视觉链路的验收口径是无 torch 环境）：
 
 ```powershell
-# 方式一：直接用仓库 .venv 里 torch 自带的 CUDA/cuDNN 运行库（实测可用）
-$env:PATH = "E:\Development\FunScriptCast-Nexus\.venv\Lib\site-packages\torch\lib;" + $env:PATH
+$env:PATH = "<cuda-runtime-dir>;" + $env:PATH
 $env:FSC_VISION_EP = "cuda"
 E:\Development\tmp\ortgpu\Scripts\python.exe tools\vision\smoke_onnx_stream.py "E:\testvideo\funscript test\K1cztm.mp4" --duration-s 120
-
-# 方式二：系统安装 CUDA 12 + cuDNN 9，或使用其他 CUDA 运行库目录
-$env:PATH = "<cuda-runtime-dir>;" + $env:PATH
 ```
+
+工作区删除后，本机不再随 goblinscript 提供 CUDA 运行库；只想验证功能用 DirectML 即可（ORT 自带）。
 
 ## 注意
 

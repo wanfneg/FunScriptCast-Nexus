@@ -157,16 +157,9 @@ ONNX **编码 + 解码** 全链路 vs 现有 torch 管线：
 | cuDNN | 9.10.2.21（cudnn64_9 + cnn / ops / graph / heuristic / engines_* 共 9 个 DLL） |
 
 这 10 个 DLL 当时取自 `_third_party\goblinscript`（官方 v0.6.0 发行包，合计 1.39 GB）。
-**工作区删除后不必保留副本**：仓库 `.venv`（Python 3.10.0 + torch 2.11.0+cu128）自带的
-cuDNN 9.19 / cuBLAS 12 能被 `onnxruntime-gpu 1.24.4` 正常加载（实测 CUDA EP：
-4.83 windows/s = 2.58× 实时；30 s 端到端冒烟 `state=done`、26 个动作）。
+**工作区删除后不再保留副本**：CUDA 复跑改用系统 CUDA 12 + cuDNN 9，或重新下载 goblinscript。
+**不要用 torch 自带的 CUDA/cuDNN 库顶替**——视觉链路的验收口径是「无 torch 环境」
+（CUDA venv 只含 numpy + onnxruntime-gpu）；torch 只属于离线导出工具
+（`dump_tracks_*` / `extract_latent`），产品运行时不得依赖它。
 
-开发机复跑 CUDA 只需把 `.venv\Lib\site-packages\torch\lib` 加到 `PATH`：
-
-```powershell
-$env:PATH = "E:\Development\FunScriptCast-Nexus\.venv\Lib\site-packages\torch\lib;" + $env:PATH
-$env:FSC_VISION_EP = "cuda"
-E:\Development\tmp\ortgpu\Scripts\python.exe tools\vision\smoke_onnx_stream.py <video>
-```
-
-产品侧不受影响：默认 DirectML（ORT 自带），CUDA 运行库仍作为可选组件。
+产品侧不受影响：默认 DirectML（ORT 自带，无需任何额外运行库），CUDA 运行库仍作为可选组件。
