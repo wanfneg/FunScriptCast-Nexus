@@ -195,3 +195,9 @@ bundle 解析顺序：`FSC_VISION_BUNDLE` → `config.model.onnx_bundle`（默�
   21 个动作，进程内 `torch` 从未被导入（`torch_loaded: False`）。
 
 切回 torch 对照只需 `$env:FSC_VISION_BACKEND = "torch"`。
+
+**环境现状（2026-10-19）**：仓库 `.venv` 已移出 `torch / torchvision / torchaudio /
+timm / transnetv2-pytorch / silero-vad`（备份在
+`E:\Development\tmp\torch-backup-2.11.0\site-packages`，移回即可恢复）。torch-free
+环境下 30 s 服务冒烟仍通过（DML、`state=done`、21 个动作）。`dist-app\vendor\vision`
+与已安装的 `vision-runtime` 仍是旧副本，打包前需同步/替换。

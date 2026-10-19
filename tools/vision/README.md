@@ -32,6 +32,9 @@ ONNX 后端 / 流式引擎 / 离线解码的复算与分析工具。
 
 ### torch 管线（离线导出）
 
+> 仓库 `.venv` 已不再安装 torch（默认 onnx 后端）；这些脚本需要单独的 torch 环境，
+> 或从 `E:\Development\tmp\torch-backup-2.11.0` 恢复后再跑。
+
 | 脚本 | 用途 |
 |---|---|
 | `extract_latent.py <video> <out前缀>` | 只跑编码器，填满 `<stem>.lat.bin` |

@@ -1,12 +1,14 @@
 # 推理侧依赖
 #
-# 后端由 FSC_VISION_BACKEND 选择（默认 onnx）：
-#   onnx 后端（默认，不需要 torch）：
-#     Python 3.10 → onnxruntime-directml==1.23.0（1.24.4 起不再提供 cp310）
-#     Python 3.11+ → onnxruntime-directml==1.24.4
-#     NVIDIA CUDA → onnxruntime-gpu==1.24.4（配 CUDA 12 + cuDNN 9）
-#   torch 后端（仅对照/回退）：宿主 .venv 已含 torch/torchvision。
-#   打包时按平台只装对应的 onnxruntime，并去掉 torch。
+# onnx 后端（默认，torch-free）只需要 numpy + onnxruntime：
+#   Python 3.10 → onnxruntime-directml==1.23.0（1.24.4 起不再提供 cp310）
+#   Python 3.11+ → onnxruntime-directml==1.24.4
+#   NVIDIA CUDA → onnxruntime-gpu==1.24.4（配 CUDA 12 + cuDNN 9）
+#
+# 下面这些是 torch 后端 / 离线导出工具（dump_tracks_*、extract_latent）用的：
+# 仓库 .venv 已移除 torch/timm/transnetv2-pytorch/silero-vad，需要时用
+# FSC_VISION_BACKEND=torch 并另装 torch 环境（或恢复 tmp 备份）。
+# 打包时只装 onnx 需要的包，不带 torch/timm/transnetv2-pytorch。
 einops==0.8.2
 timm==1.0.27
 transnetv2-pytorch==1.0.5
