@@ -1,4 +1,4 @@
-; FunScriptCast-Nexus —— Windows 安装包（Inno Setup 6）
+﻿; FunScriptCast-Nexus —— Windows 安装包（Inno Setup 6）
 ;
 ;   ISCC.exe /DMyAppVersion=1.0.12 build\installer\setup.iss
 ;   （版本号由 build\build_installer.ps1 从 version.json 注入）

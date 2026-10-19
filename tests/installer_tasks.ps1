@@ -1,4 +1,4 @@
-# F30 行为验证：附加任务"取消勾选"必须真的回删已装项
+﻿# F30 行为验证：附加任务"取消勾选"必须真的回删已装项
 #
 #   用法：pwsh -File tests\installer_tasks.ps1        （纯 PowerShell，与 .venv 无关）
 #

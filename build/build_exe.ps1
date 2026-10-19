@@ -1,4 +1,4 @@
-# 构建 FunScriptCast-Nexus 单文件 EXE，并组装 artifacts/app/（EXE + ui-legacy + vendor）
+﻿# 构建 FunScriptCast-Nexus 单文件 EXE，并组装 artifacts/app/（EXE + ui-legacy + vendor）
 #
 #   powershell -ExecutionPolicy Bypass -File build\build_exe.ps1
 #   powershell -ExecutionPolicy Bypass -File build\build_exe.ps1 -NoBump   # 不递增版本
