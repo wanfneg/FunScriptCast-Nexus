@@ -85,3 +85,4 @@ build/.cache/mpv-proto/
 /web/node_modules/
 /web/dist/
 native/vision/build/
+rust/target/

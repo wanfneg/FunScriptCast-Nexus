@@ -1,0 +1,6 @@
+[package]
+name = "nexus-device"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

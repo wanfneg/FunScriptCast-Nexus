@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nexus-core",
+    "crates/nexus-host",
+    "crates/nexus-vision",
+    "crates/nexus-device",
+    "crates/nexus-subtitle",
+    "crates/nexus-dlna",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"

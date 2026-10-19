@@ -1,0 +1,6 @@
+[package]
+name = "nexus-vision"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,6 @@
+[package]
+name = "nexus-subtitle"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
