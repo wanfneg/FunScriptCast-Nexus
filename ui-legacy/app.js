@@ -2157,12 +2157,26 @@
       AIV.note = r.note || "";
       aivRender();
       /* 预热够了：撤遮罩 + 自动继续播放（用户不必盯着） */
-      if (AIV.state === "running" && AIV.coverage > 3000) {
+      if ((AIV.state === "running" || AIV.state === "done") && AIV.coverage > 3000) {
         aivShowWarm(false);
         var v = vlVid();
-        if (v && v.paused && !AIV._autoplayed) {
-          AIV._autoplayed = true;
-          v.play().catch(function () {});
+        if (v && v.paused) {
+          /* 不在第一次失败后锁死：只要还暂停就每 1.5s 重试一次。
+             WebView2 可能拒绝无手势的 play()，静音重试成功后恢复原静音状态。 */
+          var nowTry = Date.now();
+          if (!AIV._playTryAt || nowTry - AIV._playTryAt > 1500) {
+            AIV._playTryAt = nowTry;
+            var pTry = v.play();
+            if (pTry && pTry.catch) pTry.catch(function () {
+              var wasMuted = v.muted;
+              v.muted = true;
+              var pMute = v.play();
+              if (pMute && pMute.then) {
+                pMute.then(function () { v.muted = wasMuted; })
+                     .catch(function () { v.muted = wasMuted; });
+              }
+            });
+          }
         }
       } else if (AIV.state === "warming" || AIV.state === "idle") {
         aivShowWarm(true);
@@ -2207,11 +2221,15 @@
         return;
       }
       toast("AI 识别", "正在预热（转码 + 加载模型，约 30-60 秒）", "info");
+      /* AI 动作要靠前端 20ms tick 才能下发；脚本模式由 syncStart 打开 SYNC.on，
+         AI 模式必须在 open 成功后显式开，否则设备一帧都收不到。 */
+      if (!SYNC.on) { SYNC.on = true; SYNC.ai = true; }
     });
   }
 
   function aivStop(silent) {
     AIV.on = false; AIV.liveActions = null; AIV.note = ""; aivShowWarm(false);
+    if (SYNC.ai) { SYNC.on = false; SYNC.ai = false; }
     aivRender(); drawHeatCurve();
     api("/api/vision/close", "POST", {}).then(function () {
       if (!silent) toast("AI 识别", "已停止", "info");
