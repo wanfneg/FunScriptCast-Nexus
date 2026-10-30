@@ -63,6 +63,12 @@ pub fn friendly_vision_error(err: &str) -> String {
         format!(
             "显卡不支持 AI 识别所需的 DirectML 加速：请把显卡驱动更新到最新；老核显、虚拟机、远程桌面环境通常无法使用（技术详情：{brief}）"
         )
+    } else if lower.contains("does not export") {
+        // "does not export OrtGetApiBase"：加载到了 DLL 但导出表不对——
+        // 本机验证包内 DLL 是好的，这个形态基本就是杀毒软件隔离/替换了文件
+        format!(
+            "AI 识别运行库文件异常：很可能被杀毒软件误删或隔离，或安装不完整——请把安装目录加入杀毒软件白名单后重新安装（技术详情：{brief}）"
+        )
     } else if lower.contains("onnxruntime") || lower.contains("load library") {
         format!("AI 识别运行库加载失败，程序安装可能不完整，请重新安装（技术详情：{brief}）")
     } else if lower.contains("bundle") || lower.contains("缺少编码器图") {

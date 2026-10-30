@@ -58,7 +58,19 @@ pub fn init_env() {
 pub fn build(settings: &Settings) -> Arc<VisionService> {
     // 环境变量写入已上移到 init_env()（main 最先执行）：这里只读不写
     match resolve_ort_dylib() {
-        Some(p) => tracing::info!("ONNX 运行库：{}", p.display()),
+        Some(p) => {
+            // 运行库完整性自检：被杀毒软件隔离/替换的 DLL 常见残相是文件异常缩小
+            // （正常约 21MB）。留日志 + 让 selfcheck 能给出确定结论
+            match std::fs::metadata(&p) {
+                Ok(m) if m.len() < 5_000_000 => tracing::warn!(
+                    "[vision] onnxruntime.dll 仅 {} 字节，疑似被杀毒软件损坏/替换——请把安装目录加入白名单后重装",
+                    m.len()
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("[vision] onnxruntime.dll 不可读：{e}"),
+            }
+            tracing::info!("ONNX 运行库：{}", p.display());
+        }
         None => tracing::warn!(
             "找不到 onnxruntime.dll：视觉的 ONNX 推理不可用（安装包应随带 runtime/ort/）"
         ),
