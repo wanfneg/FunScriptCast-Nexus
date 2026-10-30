@@ -11,7 +11,7 @@
       "max_phrase_sec": 5.0
     },
     "audiocpp": {
-      "backend": "cpu",
+      "backend": "cuda",
       "port": 8081,
       "language": "Japanese",
       "min_speech_ms": 250,

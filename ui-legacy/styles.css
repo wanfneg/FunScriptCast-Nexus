@@ -573,9 +573,7 @@ select.input{ appearance:none; cursor:pointer; padding-right:30px;
 .seg button:hover{ color:var(--ink-2); }
 .seg button[aria-selected="true"]{ color:var(--ink); }
 #syncLogSeg{ width:186px; margin-left:auto; }
-#glossSeg{ width:172px; }
-#motionSeg{ width:100%; }
-#motionSeg button{ flex:1; }
+/* （#glossSeg/#motionSeg 三条死规则已删：指向的 DOM 不存在，2026-10 审查清理） */
 
 /* ---------------------------------------------------------------- 行 */
 .row{
@@ -1048,8 +1046,8 @@ html[data-theme="light"] .vl-pcard.selected .vl-pname{ color:#4A5F8A; }
 
 /* 预设速度滑轨（手机端 presetSpeed 1..500，默认 100）：贴在预设网格上方一条 */
 .vl-prespeed{ display:flex; align-items:center; gap:8px; height:24px; margin:0 0 6px; }
-.vl-prespeed .lbl{ font:500 11px/1 var(--f-ui); color:var(--text-2); white-space:nowrap; }
-.vl-prespeed .val{ font:600 11px/1 var(--f-num,var(--f-ui)); color:var(--text); min-width:30px; text-align:right; }
+.vl-prespeed .lbl{ font:500 11px/1 var(--f-ui); color:var(--ink-2); white-space:nowrap; }
+.vl-prespeed .val{ font:600 11px/1 var(--f-num,var(--f-ui)); color:var(--ink); min-width:30px; text-align:right; }
 
 /* 连接中图标必须一直转：data-motion=off 会全局禁动画，这里显式豁免（用户反馈"圈不转"）*/
 @keyframes vl-spin{ to{ transform:rotate(360deg); } }
@@ -1106,3 +1104,51 @@ html[data-motion="off"] .dev-spinner, html[data-motion="reduced"] .dev-spinner{
 .lc-opt:hover{ background:rgba(255,255,255,.07); color:#fff; }
 .lc-opt.on{ background:var(--accent-soft, rgba(76,201,240,.14)); color:var(--accent,#4cc9f0); font-weight:600; }
 .lc-panel-hint{ color:rgba(200,207,221,.55); font-size:11px; padding:6px 6px 2px; max-width:190px; line-height:1.5; }
+
+/* 播放区固定 16:9（由 app.js fitVideoAspect 计算）；全屏时铺满，忽略内联尺寸 */
+html:fullscreen .vl-vwrap,
+body.vl-video-fs .vl-vwrap {
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  flex: none !important;
+  margin: 0 !important;
+  inset: 0;
+}
+
+/* DLNA 服务日志：固定卡片，随页面剩余高度伸缩，内部滚动 */
+#page-dlna.active {
+  /* 压过 redesign.css 的 `.page.active:not(#page-library){display:block}` */
+  display: flex !important;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+#page-dlna .dlna-log-card {
+  flex: 1 1 auto;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+}
+#page-dlna .dlna-log-card .logbox {
+  max-height: none;
+  height: auto;
+  flex: 1;
+  min-height: 0;
+  margin-top: 8px;
+  overflow: auto;
+}
+#page-dlna .dlna-log-card .logbox .inner {
+  height: 100%;
+  min-height: 0;
+}
+
+/* 媒体库卡片：按选定比例固定缩略图高度，行数随窗口自动增减，不再固定两行拉伸 */
+.vl-browse-body { grid-auto-rows: auto; align-items: start; }
+.vl-folder { aspect-ratio: var(--lib-aspect, 16 / 9); }
+.lib-thumb {
+  flex: 0 0 auto;
+  aspect-ratio: var(--lib-aspect, 16 / 9);
+  min-height: 0;
+}

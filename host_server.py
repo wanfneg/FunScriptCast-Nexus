@@ -1320,6 +1320,25 @@ def sub_state() -> dict:
     }
 
 
+def _pid_is_subtitle_server(pid: int) -> bool:
+    """该 PID 的命令行是否像字幕服务子进程（server_app/uvicorn）。
+
+    两套安装共存时 8756 上的"外来"服务可能是**另一套安装的宿主进程**
+    （Rust 版宿主自答 8756，pid 即宿主本身）——杀它等于杀掉对方整个程序。
+    查询失败按"不是字幕服务"处理（宁可少杀）。"""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"],
+            capture_output=True, text=True, timeout=10,
+        )
+        line = (out.stdout or "").lower()
+        return ("server_app" in line or "uvicorn" in line
+                or "vendor\\subtitle" in line or "vendor/subtitle" in line)
+    except Exception:
+        return False
+
+
 def sub_reclaim() -> dict:
     """结束 8756 上不属于本程序的服务，然后重新拉起自己那份。
 
@@ -1332,6 +1351,16 @@ def sub_reclaim() -> dict:
     if not f:
         return {"ok": True, "nothing": True}
     pid = int(f["pid"])
+    # 两套安装共存保护：确认是字幕服务子进程才允许结束。Rust 版宿主会把
+    # 自己的 pid 写进 /health——直接 _kill_tree 会把对方宿主整棵树杀掉
+    # （窗口/DLNA/设备会话全灭）。
+    if not _pid_is_subtitle_server(pid):
+        RT.add_log(
+            f"8756 上的外来进程（PID {pid}）不是字幕服务子进程，拒绝结束（可能是另一套 FunScriptCast 在跑）",
+            "warn",
+        )
+        return {"ok": False,
+                "error": f"8756 上的进程（PID {pid}）不是字幕服务，可能是另一套 FunScriptCast 在跑；为避免误杀未处理"}
     try:
         # 必须走 _kill_tree（带 /T）：残留服务下面还挂着 audiocpp 孙进程，
         # 裸 taskkill /F 杀完 python 后 audiocpp 带着 ~3 GB 内存继续常驻，
@@ -2350,8 +2379,14 @@ def vision_health() -> dict | None:
     return _vision_http("/health", timeout=1.5)
 
 
-def vision_state() -> dict:
-    """给 UI 的聚合状态（服务未起时也要能渲染）。"""
+def vision_state(state_timeout: float = 4.0) -> dict:
+    """给 UI 的聚合状态（服务未起时也要能渲染）。
+
+    state_timeout：/state 探测超时。默认 4.0s（行为与旧版一致）——预热期
+    引擎正忙时 /state 可能超过 1.5s，预热判定需要这个余量；但 UI 每秒聚合
+    轮询（/api/state、/api/vision/state）与 tick 周期自愈应传短值，
+    否则单次探测放大会拖慢整条热路径。
+    """
     with RT.lock:
         proc = RT.vis_proc
         starting = RT.vis_starting
@@ -2361,9 +2396,13 @@ def vision_state() -> dict:
     owned = proc is not None and proc.poll() is None
     # 复用外部服务时 vis_proc 为空：必须探测 /health，否则 UI 永远看到 idle，
     # 预热完成也不会自动继续播放（本会话实测踩中）。
+    # 预热期（engine_state=warming）引擎正忙，/health 与 /state 都可能超过 1.5s：
+    # 旧写法一超时就返回 running=False、engine_state="idle"，前端 aivPoll 于是把
+    # 遮罩又打开、并跳过"预热够 → 撤遮罩"的分支，表现为"预热完久久不继续"。
+    # 超时由调用方按场景选择：预热判定保持 4s，UI 轮询/自愈传 1.5s / 1.0s。
     h = vision_health() if (owned or ready) else None
     running = bool(h) or owned
-    st = _vision_http("/state", timeout=1.5) if h else None
+    st = _vision_http("/state", timeout=state_timeout) if h else None
     return {
         "ok": True,
         "installed": VISION_DIR.is_dir() and (VISION_DIR / "run_server.py").is_file(),
@@ -2821,7 +2860,10 @@ def vision_close() -> dict:
 
 
 def vision_actions(from_ms: float, to_ms: float) -> dict:
-    r = _vision_http(f"/actions?from_ms={from_ms}&to_ms={to_ms}", timeout=3.0)
+    # 必须用定点格式：1e18 会被格式化成 `1e+18`，URL 查询里的 `+` 解码成空格，
+    # 视觉服务解析 to_ms 失败并直接断开连接（AI live 因此永远 feed 空表）。
+    r = _vision_http(
+        f"/actions?from_ms={from_ms:.0f}&to_ms={to_ms:.0f}", timeout=3.0)
     return r or {"ok": False, "actions": [], "coverage_ms": 0}
 
 
@@ -2887,7 +2929,8 @@ def state_payload() -> dict:
             "logs": dlna_logs,
         },
         "subtitle": sub_state(),
-        "vision": vision_state(),
+        # UI 每秒聚合轮询：/state 用 1.5s 短超时，别让一次慢探测拖住整包状态
+        "vision": vision_state(state_timeout=1.5),
         "translate": sub_translate_stats(),
         "sync": SYNC.public(),
         "update": _update_status(),
@@ -3102,6 +3145,18 @@ class Handler(BaseHTTPRequestHandler):
                     if (not vp or not Path(vp).is_file() or not fs.is_file()):
                         self._json({"ok": False, "error": "no script"})
                         return
+                    # 与 /api/library/stream 同口径：能播的视频才允许读它的脚本
+                    # （resolve 折叠 .. 后判祖先关系；POST 手选任意脚本不在此限）
+                    vp_real = Path(vp).resolve()
+                    roots_real = [Path(r).resolve() for r in
+                                  (load_settings().get("library_roots") or []) if r]
+                    roots_real += [Path(load_settings().get(k) or "").resolve()
+                                   for k in ("video_folder", "script_folder")
+                                   if load_settings().get(k)]
+                    if roots_real and not any(
+                            vp_real == rr or rr in vp_real.parents for rr in roots_real):
+                        self._json({"ok": False, "error": "路径不在媒体库目录内"}, 403)
+                        return
                     data = json.loads(fs.read_text(encoding="utf-8"))
                     acts = []
                     for a in (data.get("actions") or []):
@@ -3168,11 +3223,13 @@ class Handler(BaseHTTPRequestHandler):
                             "scanning": lib.scanning, "progress": lib.scan_progress,
                             "last_scan": lib.last_scan})
             elif path == "/api/vision/state":
-                payload = vision_state()
+                # UI 每 2s 轮询：/state 用 1.5s 短超时（预热余量交给 4s 的场景）
+                payload = vision_state(state_timeout=1.5)
                 payload["runtime"] = vision_runtime_state()
                 self._json(payload)
             elif path == "/api/vision/actions":
-                q = parse_qs(urlparse(self.path).query)
+                from urllib.parse import parse_qs as _pqs9, urlparse as _up9
+                q = _pqs9(_up9(self.path).query)
                 a = float((q.get("from_ms") or ["0"])[0] or 0)
                 b = float((q.get("to_ms") or ["1e18"])[0] or 1e18)
                 self._json(vision_actions(a, b))
@@ -3297,6 +3354,31 @@ class Handler(BaseHTTPRequestHandler):
                     if act.get("ok"):
                         d["sync"].feed_live(act.get("actions") or [],
                                             float(act.get("coverage_ms") or 0))
+                elif not d["arbiter"].quick.is_orgasm and not d["sync"].active:
+                    # 自愈：AI 识别正在跑、设备在线，但会期还没切到 live —— 例如
+                    # /api/vision/open 时引擎尚未就绪（live 不会置位），或识别服务
+                    # 被复用/重启后会话状态丢了。此时脚本也加载不出（AI 模式没有
+                    # 磁盘脚本），tick 会一直空转，设备一帧都收不到。
+                    # 只在"确认识别在跑"时才升级，避免误伤脚本模式。
+                    # 节流：自愈是补救路径，至少间隔 5s 探一次（探测走 1.0s 短超时），
+                    # 不让最坏 2.5s 的 /health + /state 拖住 20ms 一拍的 tick。
+                    _now = time.monotonic()
+                    if _now - _LIVE_HEAL_AT[0] >= 5.0:
+                        _LIVE_HEAL_AT[0] = _now
+                        try:
+                            _vs = vision_state(state_timeout=1.0)
+                            _job = (_vs or {}).get("job") or {}
+                            _estate = (_vs or {}).get("engine_state") or "idle"
+                            if ((_vs or {}).get("running") and _job.get("video")
+                                    and _estate in ("warming", "running", "done")):
+                                _lr = d["arbiter"].start_live(str(_job["video"]))
+                                if _lr.get("ok") and d["sync"].live:
+                                    act = vision_actions(0, 1e18)
+                                    if act.get("ok"):
+                                        d["sync"].feed_live(act.get("actions") or [],
+                                                            float(act.get("coverage_ms") or 0))
+                        except Exception:  # noqa: BLE001
+                            pass
                 # rate = 播放倍速：段速要乘它（手机端 computeMove 的 playbackRate）
                 d["sync"].tick(t_now, float(body.get("rate") or 1))
                 # 「跳过无动作」：判定出静止段时把快进目标带回界面（seek 语义，Q2 裁定）
@@ -3616,6 +3698,26 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(res)
                 else:
                     self._json({"ok": True, "settings": res})
+            elif path == "/api/library/script":
+                # 手动选择 .funscript（前端 vlPickScript）：此前 do_POST 无此分支，
+                # 该按钮 100% 失败（404）。按任意脚本路径解析动作并返回（两种历史
+                # 格式都收，与 GET 分支同口径）。
+                sp = (body.get("script") or "").strip()
+                try:
+                    if not sp or not Path(sp).is_file():
+                        self._json({"ok": False, "error": "no script"})
+                        return
+                    data = json.loads(Path(sp).read_text(encoding="utf-8"))
+                    acts = []
+                    for a in (data.get("actions") or []):
+                        if isinstance(a, dict):
+                            acts.append([int(a.get("at") or 0), int(a.get("pos") or 0)])
+                        elif isinstance(a, (list, tuple)) and len(a) >= 2:
+                            acts.append([int(a[0]), int(a[1])])
+                    acts.sort(key=lambda a: a[0])
+                    self._json({"ok": True, "actions": acts, "script": sp})
+                except Exception as e:
+                    self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
             elif path == "/api/quit":
                 self._json({"ok": True})
                 request_quit()
@@ -4045,12 +4147,7 @@ def asr_models() -> dict:
     选什么存什么，引擎侧零改动。
     """
     out = []
-    # R124：「Win11 实时字幕」作为正式识别选项（用户拍板接入转录板块）——
-    # 零显存、本机播放专用；选它存 asr.audiocpp.model = "lccapture"，
-    # 字幕服务据此不加载 audiocpp、翻译链路照常（见 server_app._LcBackend）。
-    if Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "LiveCaptions.exe":
-        if (Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "LiveCaptions.exe").is_file():
-            out.append({"name": "Win11 实时字幕（本机播放 · 不占显存）", "value": "lccapture"})
+    # Win11 实时字幕（lccapture）已从产品移除：不再暴露识别模型选项。
     if MODELS_DIR.exists():
         for d in sorted(MODELS_DIR.iterdir()):
             if not d.is_dir() or d.name.startswith("."):
@@ -4284,20 +4381,26 @@ class SyncService:
         return {"ok": True, "adb": adb.adb_path, "devices": out}
 
     def connect(self, serial: str) -> dict:
+        if not serial:
+            return {"ok": False, "error": "未选择设备"}
+        # verify 是 adb 子进程往返（单次最长 60s，两个 kind 串行）：放锁外——
+        # 持 self.lock 做慢子进程调用时 /api/sync/run、再次 connect 全部排队
+        # （历史"持锁做慢操作=假性没响应"同型）。verify 是幂等读操作，锁外安全。
+        verified = {}
+        for kind in SYNC_KINDS:
+            self._apply_settings(kind)
+            ctrl = self._controller(kind)
+            try:
+                ctrl.get_adb().verify_device(serial)
+                verified[kind] = ""
+            except Exception as e:
+                verified[kind] = str(e)
         with self.lock:
-            if not serial:
-                return {"ok": False, "error": "未选择设备"}
             res = {"ok": False, "serial": serial}
             for kind in SYNC_KINDS:
-                self._apply_settings(kind)
                 ctrl = self._controller(kind)
-                try:
-                    ctrl.get_adb().verify_device(serial)
-                    ctrl.serial = serial
-                    self.slots[kind].serial = serial
-                    self.slots[kind].device = serial
-                    self.slots[kind].error = ""
-                except Exception as e:
+                err = verified.get(kind) or ""
+                if err:
                     # R125 修复（全项目审查中危）：verify 失败必须清空本槽与控制器上
                     # 残留的旧 serial——旧代码只记 error，槽里仍是上一台设备，
                     # res["ok"]（只判槽位非空）照样 true 并谎报"已连接新设备"，
@@ -4306,8 +4409,13 @@ class SyncService:
                     ctrl.serial = ""
                     self.slots[kind].serial = ""
                     self.slots[kind].device = ""
-                    self.slots[kind].error = str(e)
-                    res["error"] = str(e)
+                    self.slots[kind].error = err
+                    res["error"] = err
+                else:
+                    ctrl.serial = serial
+                    self.slots[kind].serial = serial
+                    self.slots[kind].device = serial
+                    self.slots[kind].error = ""
             # ok = 本次所有通道 verify 都成功（slot.serial == 本次请求的 serial），
             # 而不是"槽位非空"——后者会把上一台设备的残留当成连接成功。
             res["ok"] = all(
@@ -4897,6 +5005,12 @@ def _apply_device_settings() -> None:
         log.warning("应用设备设置失败：%s", e)
 
 
+# AI 实时会话的"自愈探测"节流戳（见 /api/sync/tick）：识别在跑但会期未进 live 时，
+# 至少间隔 5 秒才探测一次识别服务——自愈是补救路径，不需要每秒盯；单次探测本身
+# 也要短超时，别把 tick 热路径（20ms 一拍）卡在最坏 5s+ 的 /health + /state 上。
+_LIVE_HEAL_AT = [0.0]
+
+
 def _get_device() -> dict:
     """懒加载设备通道（bleak 缺失时也返回对象，只是 connect/scan 会报错）。"""
     with _DEV["lock"]:
@@ -4926,14 +5040,21 @@ def _get_device() -> dict:
 # libmpv 本身保留——媒体库的时长/缩略图探测仍走它（vendor/player/library.py）。
 
 
+_LIB_LOCK = threading.Lock()
+
+
 def _get_library():
+    """媒体库懒加载。加锁（对齐 _get_lc 的 R125 修复）：并发首调会构造两个
+    Library 互相覆盖——扫描状态分裂 + library_index.json 跨实例并发写。"""
     global LIB
     if LIB is None:
-        sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
-        from library import Library   # noqa: PLC0415
+        with _LIB_LOCK:
+            if LIB is None:
+                sys.path.insert(0, str(APP_DIR / "vendor" / "player"))
+                from library import Library   # noqa: PLC0415
 
-        LIB = Library(DATA_DIR / "library_index.json",
-                      DATA_DIR / "library_thumbs")
+                LIB = Library(DATA_DIR / "library_index.json",
+                              DATA_DIR / "library_thumbs")
     return LIB
 
 

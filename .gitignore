@@ -86,3 +86,9 @@ build/.cache/mpv-proto/
 /web/dist/
 native/vision/build/
 rust/target/
+
+# llama Vulkan 翻译运行时（约 1.1 GB）：由 tools/fetch_llama_vulkan.ps1 下载复现，不入库
+vendor/llama-vulkan/
+
+# ZCode 会话工作文件（工作流草稿等）
+.zcode/

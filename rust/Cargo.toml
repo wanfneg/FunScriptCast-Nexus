@@ -5,6 +5,8 @@ members = [
     "crates/nexus-host",
     "crates/nexus-vision",
     "crates/nexus-device",
+    "crates/nexus-library",
+    "crates/nexus-subtitle",
     "crates/nexus-subtitle",
     "crates/nexus-dlna",
 ]

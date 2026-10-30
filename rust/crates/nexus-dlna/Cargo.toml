@@ -2,5 +2,16 @@
 name = "nexus-dlna"
 version.workspace = true
 edition.workspace = true
+description = "DLNA/UPnP 媒体服务器：SSDP 发现 + ContentDirectory 浏览 + 媒体流"
 
 [dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+urlencoding = "2"
+tokio-util = { version = "0.7", features = ["io"] }
+socket2 = "0.6"
+# .strm 指针文件的代理转发（读文件里的 URL 透传给客户端，对齐 Python _proxy_strm）
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }

@@ -2,5 +2,23 @@
 name = "nexus-device"
 version.workspace = true
 edition.workspace = true
+description = "设备层：BLE 通道、脚本同步、快捷动作、预设播放、单一写者仲裁"
 
 [dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tracing = "0.1"
+fastrand = "2"
+
+# 可选：真实 BLE（--features ble）
+btleplug = { version = "0.13", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+futures-util = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "test-util"] }
+[features]
+# 真实 BLE 传输（btleplug）。默认关闭：CI 与离线开发不用装蓝牙栈。
+ble = ["dep:btleplug", "dep:uuid", "dep:futures-util"]

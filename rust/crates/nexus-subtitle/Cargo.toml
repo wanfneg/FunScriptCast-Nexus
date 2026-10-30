@@ -2,5 +2,17 @@
 name = "nexus-subtitle"
 version.workspace = true
 edition.workspace = true
+description = "字幕服务：audiocpp ASR 调度 + llama.cpp 翻译 + HTTP 接口"
 
 [dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "time", "sync", "fs", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+tokio-stream = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }

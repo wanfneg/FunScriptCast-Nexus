@@ -2,5 +2,23 @@
 name = "nexus-vision"
 version.workspace = true
 edition.workspace = true
+description = "视觉服务：推理编排 + 静止门 + HTTP 接口"
 
 [dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "time", "sync", "fs", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+async-trait = "0.1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+# ORT：load-dynamic 表示不下载预编译运行时，运行时按 ORT_DYLIB_PATH 找 onnxruntime.dll。
+# Windows 额外开 directml —— 编码器（packed-QKV 注意力）没有 CPU kernel，必须走 GPU。
+[target.'cfg(windows)'.dependencies]
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "directml"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic"] }

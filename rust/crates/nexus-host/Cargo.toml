@@ -2,9 +2,42 @@
 name = "nexus-host"
 version.workspace = true
 edition.workspace = true
+description = "宿主：HTTP 路由、设置、日志、服务进程管理、托盘"
 
 [dependencies]
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "process", "sync", "fs", "signal", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tower-http = { version = "0.6", features = ["fs", "trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+tokio-util = { version = "0.7", features = ["io"] }
+open = "5"
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "blocking"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.26"
+wry = "0.57"
+rfd = "0.15"
+raw-window-handle = "0.6"
+tao = "0.37"
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_System_Registry", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+muda = "0.21"
+nexus-device = { path = "../nexus-device" }
+nexus-dlna = { path = "../nexus-dlna" }
+nexus-library = { path = "../nexus-library" }
+nexus-subtitle = { path = "../nexus-subtitle" }
+nexus-vision = { path = "../nexus-vision" }
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+[features]
+# 真实 BLE：透传给设备层
+ble = ["nexus-device/ble"]

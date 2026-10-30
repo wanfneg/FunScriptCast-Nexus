@@ -3,21 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="light">
 <title>FunScriptCast-Nexus</title>
+<link rel="icon" type="image/png" href="icon.png">
 <script>
-/* 首屏主题：在样式表生效前同步套用 localStorage 里的保存值，杜绝
-   "先深色（或先浅色）再跳到保存主题"的开屏跳变；没有保存值就保持
-   <html> 上的默认浅色。app.js 的 setTheme/setMotion 每次都会写这里。 */
+/* 首屏主题：固定浅色（redesign 既定设计），在样式表生效前同步设好，
+   杜绝任何开屏跳变；动效强度按 localStorage 上次的选择套用。
+   app.js 的 setMotion 每次都会写 nxs.motion。 */
 try {
-  var _t = localStorage.getItem("nxs.theme");
-  if (_t === "dark" || _t === "light") document.documentElement.setAttribute("data-theme", _t);
+  document.documentElement.setAttribute("data-theme", "light");
   var _m = localStorage.getItem("nxs.motion");
   if (_m === "full" || _m === "off") document.documentElement.setAttribute("data-motion", _m);
 } catch (e) {}
 </script>
 <link rel="stylesheet" href="fonts.css">
-<link rel="stylesheet" href="styles.css?v=20261018b">
+<link rel="stylesheet" href="styles.css?v=20261023a">
+<link rel="stylesheet" href="redesign.css?v=20261023a">
 </head>
 <body>
 
@@ -156,12 +157,12 @@ try {
   <!-- ======================== 标题栏 ======================== -->
   <header class="titlebar pywebview-drag-region">
     <div class="brand">
-      <span class="brand-mark"><i></i></span>
+      <img class="brand-logo" src="icon.png" alt="FunScriptCast-Nexus">
       <span class="brand-text">
         <span class="brand-name">FunScriptCast</span>
         <span class="brand-tail">NEXUS</span>
       </span>
-      <span class="brand-sub" id="brandSub">集成版</span>
+      <span class="brand-sub" id="brandSub">本机控制台</span>
     </div>
 
     <button class="dev-connect" id="devBtn" title="扫描并连接设备">
@@ -237,20 +238,20 @@ try {
             <h1>仪表盘</h1>
             <p>服务实时状态与快捷操作</p>
           </div>
-          <div class="actions">
-            <button class="btn ghost" id="btnRefresh"><svg class="ic"><use href="#i-refresh-cw"/></svg><span>刷新</span></button>
-            <button class="btn primary" id="btnStartAll"><svg class="ic"><use href="#i-play"/></svg><span>一键启动</span></button>
-          </div>
+          <div class="actions"></div>
         </div>
 
-        <div class="panel card hero">
-          <div class="eyebrow hero-eyebrow">Live Telemetry</div>
-          <div class="hero-grid">
+        <div class="dash-top">
+          <div class="panel card dash-services">
+            <div class="dash-head">
+              <h2>服务状态</h2>
+              <span class="hint">本机后台服务</span>
+            </div>
             <div class="rail">
               <div class="rail-node" id="railDlna">
                 <span class="rail-dot"></span>
                 <div class="rail-body">
-                  <div class="t">DLNA 服务</div>
+                  <div class="t">DLNA 服务器</div>
                   <div class="d" id="railDlnaD">未启动</div>
                   <div class="d dim" id="railDlnaU"></div>
                 </div>
@@ -263,7 +264,7 @@ try {
                   <div class="d dim" id="railSubM"></div>
                 </div>
               </div>
-              <div class="rail-node" id="railGpu">
+              <div class="rail-node" id="railGpu" aria-hidden="true">
                 <span class="rail-dot"></span>
                 <div class="rail-body">
                   <div class="t">GPU 显存</div>
@@ -272,63 +273,80 @@ try {
                 </div>
               </div>
             </div>
+          </div>
 
-            <!-- 系统负载三环：CPU / GPU 利用率 / 内存。替代旧的 SIGNAL 波形动画
-                 （常驻 60fps canvas 重绘）；圆环只在数值变化时更新，占用近零。 -->
+          <div class="panel card dash-res">
+            <div class="dash-head">
+              <h2>系统资源</h2>
+              <span class="hint">实时占用</span>
+            </div>
+            <!-- 四环只在数值变化时更新 SVG，无持续动画。显存只在这里展示一处。 -->
             <div class="gauge-row">
               <div class="gauge">
                 <div class="ring" id="cpuRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
-                <div><div class="t">CPU</div><div class="d mono" id="cpuTxt">—</div></div>
-              </div>
-              <div class="gauge">
-                <div class="ring" id="gpuUtilRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
-                <div><div class="t">GPU</div><div class="d mono" id="gpuUtilTxt">—</div></div>
+                <div class="gauge-body"><div class="t">CPU</div><div class="d mono" id="cpuTxt">—</div></div>
               </div>
               <div class="gauge">
                 <div class="ring" id="ramRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
-                <div><div class="t">内存</div><div class="d mono" id="ramTxt">—</div></div>
+                <div class="gauge-body"><div class="t">内存</div><div class="d mono" id="ramTxt">—</div></div>
+              </div>
+              <div class="gauge">
+                <div class="ring" id="gpuUtilRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
+                <div class="gauge-body"><div class="t">GPU 利用率</div><div class="d mono" id="gpuUtilTxt">—</div></div>
               </div>
               <div class="gauge">
                 <div class="ring" id="gpuRing"><svg viewBox="0 0 56 56"><circle class="bg" cx="28" cy="28" r="24" fill="none" stroke-width="4"/><circle class="fg" cx="28" cy="28" r="24" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg><span class="pct">—</span></div>
-                <div><div class="t">显存</div><div class="d mono" id="gpuText">—</div></div>
+                <div class="gauge-body"><div class="t">显存占用</div><div class="d mono" id="gpuText">—</div></div>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="grid g3 stack">
-          <div class="panel card metric">
-            <div class="metric-lab">媒体根目录</div>
-            <div class="metric-val"><span class="num" id="mRoots">0</span><span class="unit">个</span></div>
+        <div class="panel card dash-facts">
+          <div class="fact">
+            <span class="fact-lab">媒体根目录</span>
+            <span class="fact-val"><span class="num" id="mRoots">0</span><span class="unit">个</span></span>
           </div>
-          <div class="panel card metric">
-            <div class="metric-lab">运行时长</div>
-            <div class="metric-val"><span class="num" id="mUptime">0</span><span class="unit">分</span></div>
+          <div class="fact">
+            <span class="fact-lab">运行时长</span>
+            <span class="fact-val"><span class="num" id="mUptime">0</span><span class="unit">分钟</span></span>
           </div>
         </div>
 
-        <div class="grid g2 stack">
+        <div class="grid g2 dash-bottom">
           <div class="panel card">
             <div class="panel-head">
-              <div>
-                <div class="eyebrow">Quick Actions</div>
-                <h2>快捷操作</h2>
-              </div>
+              <h2>快捷操作</h2>
+              <span class="hint">服务启停</span>
             </div>
-            <div class="grid g2 gap-2">
-              <button class="btn ghost" id="qaDlnaStart"><svg class="ic"><use href="#i-play"/></svg><span>启动 DLNA</span></button>
-              <button class="btn ghost" id="qaDlnaStop"><svg class="ic"><use href="#i-square"/></svg><span>停止 DLNA</span></button>
-              <button class="btn ghost" id="qaSubStart"><svg class="ic"><use href="#i-play"/></svg><span>启动字幕服务</span></button>
-              <button class="btn ghost" id="qaSubStop"><svg class="ic"><use href="#i-square"/></svg><span>停止字幕服务</span></button>
+            <div class="qa-list">
+              <div class="qa-row">
+                <div class="qa-info">
+                  <div class="qa-name">DLNA 服务器</div>
+                  <div class="qa-sub">向头显提供媒体目录</div>
+                </div>
+                <div class="qa-btns">
+                  <button class="btn ghost" id="qaDlnaStart"><svg class="ic"><use href="#i-play"/></svg><span>启动</span></button>
+                  <button class="btn ghost" id="qaDlnaStop"><svg class="ic"><use href="#i-square"/></svg><span>停止</span></button>
+                </div>
+              </div>
+              <div class="qa-row">
+                <div class="qa-info">
+                  <div class="qa-name">AI 字幕服务</div>
+                  <div class="qa-sub">实时语音识别与翻译</div>
+                </div>
+                <div class="qa-btns">
+                  <button class="btn ghost" id="qaSubStart"><svg class="ic"><use href="#i-play"/></svg><span>启动</span></button>
+                  <button class="btn ghost" id="qaSubStop"><svg class="ic"><use href="#i-square"/></svg><span>停止</span></button>
+                </div>
+              </div>
             </div>
           </div>
 
           <div class="panel card">
             <div class="panel-head">
-              <div>
-                <div class="eyebrow">Event Stream</div>
-                <h2>最近事件</h2>
-              </div>
+              <h2>最近事件</h2>
+              <span class="hint">最新 6 条</span>
             </div>
             <div class="timeline" id="timeline"><div class="empty">暂无事件</div></div>
           </div>
@@ -387,13 +405,12 @@ try {
           <div id="rootList"><div class="empty">还没有媒体根目录</div></div>
         </div>
 
-        <div class="panel card stack">
+        <div class="panel card stack dlna-log-card">
           <div class="panel-head">
             <div>
               <div class="eyebrow">Service Log</div>
               <h2>服务日志</h2>
             </div>
-            <button class="btn ghost" id="dlnaLogToggle"><svg class="ic"><use href="#i-chevron-down"/></svg><span>展开日志</span></button>
           </div>
           <div class="logbox" id="dlnaLogBox"><div class="inner" id="dlnaLogInner"></div></div>
         </div>
@@ -419,19 +436,6 @@ try {
             <div id="vlPlayView" style="display:none">
               <div class="vl-vwrap" id="vlVWrap">
                 <video id="vlVideo" playsinline preload="metadata"></video>
-                <!-- PC 直听字幕层（R122）：Live Captions 词级原文 + Sakura 句译 -->
-                <div class="lc-sub" id="lcSub" hidden>
-                  <div class="lc-lines" id="lcLines"></div>
-                  <div class="lc-submsg" id="lcSubMsg"></div>
-                </div>
-                <!-- AI 字幕面板（对齐手机端 AiPanelContent：关闭/日语/英语，选语言即启动） -->
-                <div class="lc-panel" id="lcPanel" hidden>
-                  <div class="lc-panel-t">AI 字幕</div>
-                  <button class="lc-opt" id="lcOff" data-lc-lang="off">关闭</button>
-                  <button class="lc-opt" id="lcJa" data-lc-lang="ja">日语</button>
-                  <button class="lc-opt" id="lcEn" data-lc-lang="en">英语</button>
-                  <div class="lc-panel-hint" id="lcHint">实时转写并翻译为中文；识别由 Windows 实时字幕完成（不占显存）</div>
-                </div>
                 <div class="vl-voff" id="vlVOff" hidden>
                   <div class="vl-voff-t">内置播放器打不开这个文件</div>
                   <div class="vl-voff-d" id="vlVOffD">内置播放器打不开这个文件：可能是编码不受支持（HEVC/10bit），或 DLNA 服务没在跑</div>
@@ -447,9 +451,15 @@ try {
                   <div class="vl-vtitle" id="vlVTitle">—</div>
                   <div class="vl-vpills">
                     <button class="vl-pill" id="vlCcPill" title="字幕">字幕</button>
-                    <button class="vl-pill" id="vlAiSub2" title="AI 字幕（日语→中文）">AI字幕</button>
+                    <button class="vl-pill" id="vlPickScript" title="手动选择 .funscript 脚本">选择脚本</button>
                     <button class="vl-pill" id="vlAiScript2" title="AI 实时识别（边播边生成脚本）">AI识别</button>
-                    <button class="vl-cbtn" id="vlMore" title="更多"><svg class="ic"><use href="#i-more-horizontal"/></svg></button>
+                    <button class="vl-cbtn vl-more-btn" id="vlMore" title="更多" aria-label="更多"><span class="vl-more-dots">···</span></button>
+                  </div>
+                  <div class="vl-more-menu" id="vlMoreMenu" hidden>
+                    <button data-more="mute" id="vlMoreMute">静音</button>
+                    <button data-more="speed125">倍速 1.25x</button>
+                    <button data-more="speed100">倍速 1.0x</button>
+                    <button data-more="pip">画中画</button>
                   </div>
                 </div>
 
@@ -458,7 +468,7 @@ try {
                   <div class="vl-aw-card">
                     <div class="vl-aw-title">AI 实时识别预热中</div>
                     <div class="vl-aw-bar"><i id="vlAiWarmBar"></i></div>
-                    <div class="vl-aw-sub" id="vlAiWarmSub">正在启动识别服务…</div>
+                    <div class="vl-aw-sub" id="vlAiWarmSub">正在启动 AI 识别…</div>
                     <div class="vl-aw-hint" id="vlAiWarmHint"></div>
                     <button class="vl-aw-cancel" id="vlAiWarmCancel">取消（直接播放）</button>
                   </div>
@@ -533,59 +543,58 @@ try {
       <section class="page" id="page-subtitle">
         <div class="page-head">
           <div class="ph-text">
-            <div class="eyebrow">AI Pipeline</div>
-            <h1>AI 实时字幕</h1>
-            <p>PC 端识别 + 翻译，头显只负责推流与显示</p>
+            <h1>AI 字幕</h1>
+            <p>语音识别与翻译在本机完成，头显只负责显示。</p>
           </div>
           <div class="actions">
             <button class="btn primary" id="subStart"><svg class="ic"><use href="#i-play"/></svg><span>启动服务</span></button>
-            <button class="btn ghost" id="subStop"><svg class="ic"><use href="#i-square"/></svg><span>停止</span></button>
+            <button class="btn ghost" id="subStop"><svg class="ic"><use href="#i-square"/></svg><span>停止服务</span></button>
           </div>
         </div>
 
-        <div class="panel card edge" id="subCard">
+        <div class="panel card" id="subCard">
           <div class="row flush">
             <div class="grow">
-              <div class="name">字幕服务进程</div>
-              <div class="sub" id="subSub">独立子进程 · 未启动</div>
+              <div class="name">服务状态</div>
+              <div class="sub" id="subSub">未启动</div>
             </div>
             <span class="badge" id="subBadge">已停止</span>
           </div>
           <div class="progress indet" id="subLoadBar" style="display:none"><i></i></div>
           <div class="grid g4 top-3">
-            <div class="kv"><div class="eyebrow">ASR Engine</div><div class="mono kv-v" id="subAsr">—</div></div>
-            <div class="kv"><div class="eyebrow">ASR Model</div><div class="mono kv-v" id="subModel">—</div></div>
-            <div class="kv"><div class="eyebrow">Device</div><div class="mono kv-v" id="subDevice">—</div></div>
-            <div class="kv"><div class="eyebrow">Translate</div><div class="mono kv-v" id="subMt">—</div></div>
+            <div class="kv"><div class="eyebrow">识别后端</div><div class="mono kv-v" id="subAsr">—</div></div>
+            <div class="kv"><div class="eyebrow">识别模型</div><div class="mono kv-v" id="subModel">—</div></div>
+            <div class="kv"><div class="eyebrow">计算设备</div><div class="mono kv-v" id="subDevice">—</div></div>
+            <div class="kv"><div class="eyebrow">翻译</div><div class="mono kv-v" id="subMt">—</div></div>
           </div>
           <div class="sub top-1" id="subIdle">—</div>
           <div class="notice warn top-3" id="subForeignNotice" style="display:none">
             <svg class="ic"><use href="#i-triangle-alert"/></svg>
             <div class="grow">
               <div id="subForeignMsg">字幕服务被上次残留的旧进程占用。</div>
-              <div class="hint" style="margin-top:5px">
-                它仍按启动时的旧配置运行，界面上改过的设置不会生效。点下方「结束并重启」即可恢复。
-              </div>
+              <div class="hint" style="margin-top:5px">旧进程仍按启动时的配置运行，这里修改的设置不会生效。</div>
             </div>
             <button class="btn ghost" id="subReclaim"><svg class="ic"><use href="#i-refresh-ccw"/></svg><span>结束并重启</span></button>
           </div>
         </div>
 
-        <div class="panel card stack">
-          <div class="panel-head">
-            <div>
-              <div class="eyebrow">Engine</div>
-              <h2>识别与翻译</h2>
+        <div class="grid g2 top-4">
+          <div class="panel card">
+            <div class="panel-head">
+              <h2>语音识别</h2>
             </div>
-          </div>
-          <div class="grid g2 gap-2">
             <label class="field">
               <span>识别模型</span>
-              <!-- 选项由 app.js 按 /api/subtitle/asr-models 动态填：只列 models\ 下实际存在的模型（R72） -->
               <select class="input" id="asrModel"></select>
             </label>
+            <div class="sub">只列出 models 目录中实际存在的模型；没有模型时在页面底部下载。</div>
           </div>
-          <label class="field">
+
+          <div class="panel card">
+            <div class="panel-head">
+              <h2>翻译</h2>
+            </div>
+            <label class="field">
               <span>翻译后端</span>
               <select class="input" id="mtBackend">
                 <option value="local">本地 · llama.cpp</option>
@@ -593,34 +602,28 @@ try {
                 <option value="ollama">本地 · Ollama</option>
                 <option value="none">关闭翻译</option>
               </select>
-          </label>
+            </label>
 
-            <!-- 本地（llama.cpp）：只显示这一组 -->
             <div class="mt-group" data-mt-group="local">
               <label class="field">
                 <span>日语翻译模型</span>
-                <select class="input" id="mtLocalModel">
-                  <option value="">加载中…</option>
-                </select>
+                <select class="input" id="mtLocalModel"><option value="">加载中…</option></select>
               </label>
               <label class="field">
                 <span>英语翻译模型</span>
-                <select class="input" id="mtLocalModelEn">
-                  <option value="">加载中…</option>
-                </select>
+                <select class="input" id="mtLocalModelEn"><option value="">加载中…</option></select>
               </label>
-              <div class="field" id="vramEstimate" style="font-size:12px;color:#9aa4b2;line-height:1.6"></div>
+              <div class="sub" id="vramEstimate"></div>
             </div>
 
-            <!-- 云端（OpenAI 兼容）：只显示这一组 -->
             <div class="mt-group" data-mt-group="openai">
               <label class="field">
-                <span>base_url</span>
-                <input class="input mono" id="mtCloudBase">
+                <span>接口地址</span>
+                <input class="input mono" id="mtCloudBase" placeholder="https://api.openai.com/v1">
               </label>
               <label class="field">
                 <span>模型</span>
-                <input class="input mono" id="mtCloudModel">
+                <input class="input mono" id="mtCloudModel" placeholder="gpt-4o-mini">
               </label>
               <label class="field">
                 <span>API Key</span>
@@ -628,27 +631,33 @@ try {
               </label>
             </div>
 
-            <!-- 本地（Ollama）：只显示这一组 -->
             <div class="mt-group" data-mt-group="ollama">
               <label class="field">
                 <span>Ollama 模型</span>
-                <input class="input mono" id="mtModel">
+                <input class="input mono" id="mtModel" placeholder="qwen2.5:7b">
               </label>
               <label class="field">
                 <span>Ollama 地址</span>
-                <input class="input mono" id="mtBase">
+                <input class="input mono" id="mtBase" placeholder="http://127.0.0.1:11434">
               </label>
             </div>
 
-            <div class="mt-group" data-mt-group="none">
-            </div>
+            <div class="mt-group" data-mt-group="none"></div>
 
-            <div class="inline">
-              <button class="btn primary" id="saveMt"><svg class="ic"><use href="#i-save"/></svg><span>保存翻译设置</span></button>
+            <div class="inline top-3">
+              <button class="btn primary" id="saveMt"><svg class="ic"><use href="#i-save"/></svg><span>保存设置</span></button>
               <button class="btn" id="testMt">测试一句</button>
             </div>
             <div class="notice top-3" id="mtTestResult" style="display:none"></div>
-            <div class="stack" id="modelDl"></div>
+          </div>
+        </div>
+
+        <div class="panel card top-4">
+          <div class="panel-head">
+            <h2>模型下载</h2>
+          </div>
+          <div class="sub" style="margin-bottom:12px">识别和翻译模型体积较大，首次使用前在这里下载。</div>
+          <div class="stack" id="modelDl"></div>
         </div>
       </section>
 
@@ -656,9 +665,8 @@ try {
       <section class="page" id="page-sync">
         <div class="page-head">
           <div class="ph-text">
-            <div class="eyebrow">Device Link</div>
             <h1>设备同步</h1>
-            <p>把脚本与视频推送到 Quest</p>
+            <p>把脚本和视频推送到 Quest。</p>
           </div>
           <div class="actions">
             <button class="btn ghost" id="syncDevices"><svg class="ic"><use href="#i-refresh-cw"/></svg><span>扫描设备</span></button>
@@ -667,7 +675,7 @@ try {
           </div>
         </div>
 
-        <div class="panel card edge">
+        <div class="panel card">
           <div class="row flush">
             <div class="grow">
               <div class="name">设备连接</div>
@@ -679,23 +687,22 @@ try {
             <span>选择设备</span>
             <select class="input mono" id="syncDeviceSel"></select>
           </label>
-          <div class="grid g2 gap-3 top-1">
+          <div class="sync-options top-3">
             <div class="row flush">
-              <div class="grow"><div class="name">全量同步（忽略增量判断）</div></div>
+              <div class="grow"><div class="name">全量同步</div><div class="sub">忽略增量判断，重新推送全部文件</div></div>
               <label class="switch"><input type="checkbox" id="syncForce"><span class="track"></span><span class="knob"></span></label>
             </div>
             <div class="row flush">
-              <div class="grow"><div class="name">删除设备上多余文件</div></div>
+              <div class="grow"><div class="name">删除设备多余文件</div><div class="sub">只删除目标目录中本地已不存在的文件</div></div>
               <label class="switch"><input type="checkbox" id="syncDelete"><span class="track"></span><span class="knob"></span></label>
             </div>
           </div>
         </div>
 
-        <div class="grid g2 stack">
+        <div class="grid g2 top-4">
           <div class="panel card" id="syncCardScript">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Scripts</div>
                 <h2>脚本同步 <span class="badge" id="syncScriptBadge">待命</span></h2>
               </div>
               <button class="btn primary" id="syncRunScript"><svg class="ic"><use href="#i-upload"/></svg><span>开始同步</span></button>
@@ -703,13 +710,13 @@ try {
             <label class="field">
               <span>本地脚本目录</span>
               <div class="inline">
-                <input class="input mono" id="syncScriptLocal">
+                <input class="input mono" id="syncScriptLocal" placeholder="例如 E:\scripts">
                 <button class="icon-btn" data-pick="syncScriptLocal" title="浏览"><svg class="ic"><use href="#i-folder-open"/></svg></button>
               </div>
             </label>
             <label class="field">
               <span>设备目标目录</span>
-              <input class="input mono" id="syncScriptDevice">
+              <input class="input mono" id="syncScriptDevice" placeholder="/sdcard/Download/">
             </label>
             <div class="sub" id="syncScriptResult">尚未同步</div>
           </div>
@@ -717,7 +724,6 @@ try {
           <div class="panel card" id="syncCardVideo">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Videos</div>
                 <h2>视频同步 <span class="badge" id="syncVideoBadge">待命</span></h2>
               </div>
               <button class="btn primary" id="syncRunVideo"><svg class="ic"><use href="#i-upload"/></svg><span>开始同步</span></button>
@@ -725,22 +731,21 @@ try {
             <label class="field">
               <span>本地视频目录</span>
               <div class="inline">
-                <input class="input mono" id="syncVideoLocal">
+                <input class="input mono" id="syncVideoLocal" placeholder="例如 E:\videos">
                 <button class="icon-btn" data-pick="syncVideoLocal" title="浏览"><svg class="ic"><use href="#i-folder-open"/></svg></button>
               </div>
             </label>
             <label class="field">
               <span>设备目标目录</span>
-              <input class="input mono" id="syncVideoDevice">
+              <input class="input mono" id="syncVideoDevice" placeholder="/sdcard/Movies/">
             </label>
             <div class="sub" id="syncVideoResult">尚未同步</div>
           </div>
         </div>
 
-        <div class="panel card stack">
+        <div class="panel card top-4">
           <div class="panel-head">
             <div>
-              <div class="eyebrow">Transfer Log</div>
               <h2>同步日志</h2>
             </div>
             <div class="seg" id="syncLogSeg">
@@ -757,245 +762,183 @@ try {
       <section class="page" id="page-settings">
         <div class="page-head">
           <div class="ph-text">
-            <div class="eyebrow">Preferences</div>
             <h1>设置</h1>
-            <p>启动行为与外观</p>
+            <p>启动行为、设备与系统选项。</p>
           </div>
         </div>
 
         <div class="setcols">
           <div class="setcol">
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Startup</div>
-                <h2>启动</h2>
+            <section class="setsec">
+              <div class="set-head"><div><h2>通用启动</h2></div></div>
+              <div class="row flush">
+                <div class="grow"><div class="name">启动时自动开启 DLNA</div></div>
+                <label class="switch"><input type="checkbox" id="setDlnaAuto"><span class="track"></span><span class="knob"></span></label>
               </div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">启动应用时自动开启 DLNA</div></div>
-              <label class="switch"><input type="checkbox" id="setDlnaAuto"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">启动时自动开启字幕服务</div></div>
-              <label class="switch"><input type="checkbox" id="setSubAuto"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow">
-                <div class="name">AI 识别 Python 解释器</div>
-                <div class="sub">留空自动探测。需要 torch/timm/opencv（见识别模块 requirements.txt）</div>
+              <div class="row flush">
+                <div class="grow"><div class="name">启动时自动开启字幕服务</div></div>
+                <label class="switch"><input type="checkbox" id="setSubAuto"><span class="track"></span><span class="knob"></span></label>
               </div>
-            </div>
-            <div class="row flush">
-              <input class="inp grow" id="setVisionPy" placeholder="留空=自动探测（例如 C:\Python310\python.exe）">
-              <button class="btn ghost" id="setVisionPyPick">浏览</button>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">点击关闭时最小化到托盘</div><div class="sub">关闭后从托盘图标恢复</div></div>
-              <label class="switch"><input type="checkbox" id="setCloseTray"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">启动时直接隐藏到托盘</div><div class="sub">只跑服务，不弹出主窗口</div></div>
-              <label class="switch"><input type="checkbox" id="setStartMin"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">开机自动启动</div><div class="sub">随 Windows 登录启动，建议配合隐藏到托盘</div></div>
-              <label class="switch"><input type="checkbox" id="setAutoStart"><span class="track"></span><span class="knob"></span></label>
-            </div>
-          </section>
+              <div class="row flush">
+                <div class="grow"><div class="name">关闭窗口时最小化到托盘</div><div class="sub">从托盘图标恢复</div></div>
+                <label class="switch"><input type="checkbox" id="setCloseTray"><span class="track"></span><span class="knob"></span></label>
+              </div>
+              <div class="row flush">
+                <div class="grow"><div class="name">启动时隐藏主窗口</div><div class="sub">只在托盘运行服务</div></div>
+                <label class="switch"><input type="checkbox" id="setStartMin"><span class="track"></span><span class="knob"></span></label>
+              </div>
+              <div class="row flush">
+                <div class="grow"><div class="name">开机自动启动</div><div class="sub">随 Windows 登录启动，建议配合隐藏主窗口</div></div>
+                <label class="switch"><input type="checkbox" id="setAutoStart"><span class="track"></span><span class="knob"></span></label>
+              </div>
+            </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Device</div>
-                <h2>设备与同步</h2>
+            <section class="setsec">
+              <div class="set-head">
+                <div><h2>设备</h2></div>
+                <div class="spacer"><button class="btn ghost" id="setDevConnect">扫描并连接</button></div>
               </div>
-              <div class="spacer"><button class="btn ghost" id="setDevConnect">扫描并连接</button></div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name" id="setDevName">未连接设备</div>
-                <div class="sub" id="setDevInfo">硬件版本：— · 固件版本：— · 设备最大速度：—</div></div>
-              <button class="btn ghost" id="setDevRefresh">刷新</button>
-            </div>
-          </section>
+              <div class="row flush">
+                <div class="grow"><div class="name" id="setDevName">未连接设备</div>
+                  <div class="sub" id="setDevInfo">硬件版本：— · 固件版本：— · 设备最大速度：—</div></div>
+                <button class="btn ghost" id="setDevRefresh">刷新</button>
+              </div>
+              <div class="row flush">
+                <div class="grow"><div class="name">跳过无动作部分</div><div class="sub">脚本连续静止达到阈值时快进到下一动作</div></div>
+                <label class="switch"><input type="checkbox" id="setSkipIdle"><span class="track"></span><span class="knob"></span></label>
+              </div>
+              <label class="field"><span>无动作判定时长（秒）</span>
+                <input class="input num" id="setIdleThreshold" type="number" min="5" max="3600" step="5" value="60"></label>
+              <div class="row flush">
+                <div class="grow"><div class="name">反转方向</div><div class="sub">上下行程互换</div></div>
+                <label class="switch"><input type="checkbox" id="setReversed"><span class="track"></span><span class="knob"></span></label>
+              </div>
+              <div class="row flush">
+                <div class="grow"><div class="name">伪装设备（VorzePiston 模式）</div><div class="sub">同款 A10 硬件切换 GATT 档案</div></div>
+                <label class="switch"><input type="checkbox" id="setA10"><span class="track"></span><span class="knob"></span></label>
+              </div>
+              <div class="row flush">
+                <div class="grow"><div class="name">电机狂暴模式</div><div class="sub">扭矩约提升 30%；会增加受伤和设备老化风险</div></div>
+                <label class="switch"><input type="checkbox" id="setOcMode"><span class="track"></span><span class="knob"></span></label>
+              </div>
+              <div class="adv-hint" id="advHint" hidden>连接设备后可用</div>
+            </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Idle &amp; Skip</div>
-                <h2>缓动与跳过</h2>
+            <section class="setsec">
+              <div class="set-head"><div><h2>手动控制</h2></div></div>
+              <label class="field"><span>目标位置 <b id="setManualVal">50%</b></span>
+                <div class="vl-slider" id="setManualPos" data-single data-min="0" data-max="100" data-val="50">
+                  <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
+                </div>
+              </label>
+              <div class="inline top-3">
+                <button class="btn primary" id="setManualMove">移动</button>
+                <span class="sub">拖到位置后点「移动」，设备立即过去。</span>
               </div>
-            </div>
-            <label class="field"><span>待机缓动 · 空闲判定秒数</span>
-              <input class="input num" id="setSlowIdle" type="number" min="1" max="600" step="1" value="5"></label>
-            <div class="sub">设备连续无动作达到该秒数后开始轻柔往返</div>
-            <div class="row flush top-3">
-              <div class="grow"><div class="name">跳过无动作部分</div></div>
-              <label class="switch"><input type="checkbox" id="setSkipIdle"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <label class="field"><span>无动作判定时长（秒）</span>
-              <input class="input num" id="setIdleThreshold" type="number" min="5" max="3600" step="5" value="60"></label>
-            <div class="sub">脚本的连续无动作段达到此时长跳过该段</div>
-          </section>
+              <div class="row flush top-4">
+                <div class="grow"><div class="name" id="setDelayVal">延迟 0 ms</div><div class="sub">负值提前，正值滞后</div></div>
+                <div class="row gap-2">
+                  <button class="btn ghost" data-delay="-100">-100</button>
+                  <button class="btn ghost" data-delay="-10">-10</button>
+                  <button class="btn ghost" data-delay="10">+10</button>
+                  <button class="btn ghost" data-delay="100">+100</button>
+                </div>
+              </div>
+            </section>
 
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Manual</div>
-                <h2>手动控制位置</h2>
-              </div>
-              <div class="spacer"><button class="btn primary" id="setManualMove">移动</button></div>
-            </div>
-            <label class="field">
-              <span>目标位置 <b id="setManualVal">50%</b></span>
-              <div class="vl-slider" id="setManualPos" data-single data-min="0" data-max="100" data-val="50">
-                <div class="track"></div><div class="fill"></div><div class="thumb" data-side="hi"></div>
-              </div></label>
-            <div class="sub">拖到位置后点「移动」，设备立即过去</div>
-          </section>
-
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Delay</div>
-                <h2>延迟调整</h2>
-              </div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name" id="setDelayVal">0 ms</div><div class="sub">负值提前，正值滞后</div></div>
-              <div class="row gap-2">
-                <button class="btn ghost" data-delay="-100">-100</button>
-                <button class="btn ghost" data-delay="-10">-10</button>
-                <button class="btn ghost" data-delay="10">+10</button>
-                <button class="btn ghost" data-delay="100">+100</button>
-              </div>
-            </div>
-          </section>
+            <section class="setsec">
+              <div class="set-head"><div><h2>缓动</h2></div></div>
+              <label class="field"><span>待机缓动 · 空闲判定秒数</span>
+                <input class="input num" id="setSlowIdle" type="number" min="1" max="600" step="1" value="5"></label>
+              <div class="sub">设备连续无动作达到该秒数后开始轻柔往返。</div>
+            </section>
           </div>
 
           <div class="setcol">
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Library</div>
-                <h2>媒体库目录</h2>
+            <section class="setsec">
+              <div class="set-head">
+                <div><h2>媒体库</h2></div>
+                <div class="spacer"><button class="btn ghost" id="libRootAdd">添加目录</button></div>
               </div>
-              <div class="spacer"><button class="btn ghost" id="libRootAdd">添加目录</button></div>
-            </div>
-            <div class="sub">本地磁盘目录会生成缩略图海报墙；网络盘只列文件名（不逐文件探测）</div>
-            <div id="libRootList"></div>
-          </section>
-
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Advanced</div>
-                <h2>设备高级设置</h2>
-              </div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">伪装设备（VorzePiston 模式）</div>
-                <div class="sub">同款 A10 硬件换一整套 GATT 档案（UUID + 模式）</div></div>
-              <label class="switch"><input type="checkbox" id="setA10"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">反转方向</div></div>
-              <label class="switch"><input type="checkbox" id="setReversed"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">电机狂暴模式</div>
-                <div class="sub">扭矩约提升 30%；行程/限速设置不当会明显增加受伤风险，也可能加快设备老化</div></div>
-              <label class="switch"><input type="checkbox" id="setOcMode"><span class="track"></span><span class="knob"></span></label>
-            </div>
-            <div class="adv-hint" id="advHint" hidden>连接设备后可用</div>
-          </section>
-
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Script &amp; Sync</div>
-                <h2>脚本与同步</h2>
-              </div>
-              <div class="spacer"><button class="btn ghost" id="setGotoSync">打开设备同步</button></div>
-            </div>
-            <label class="field">
-              <span>脚本文件夹</span>
-              <div class="row flush gap-2">
-                <input class="input" id="setScriptFolder" placeholder="例如 E:\scripts">
-                <button class="btn ghost" id="setScriptFolderPick">选择</button>
-              </div>
-            </label>
-            <div class="sub">设备同步的「本地脚本目录」与这里的脚本文件夹是同一个设置</div>
-            <div class="row flush">
-              <div class="grow"><div class="name" id="setSyncState">脚本同步待命</div><div class="sub" id="setSyncSub">未连接设备</div></div>
-            </div>
-          </section>
-
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">AI Subtitle</div>
-                <h2>AI 字幕</h2>
-              </div>
-            </div>
-            <label class="field">
-              <span>空闲回收显存</span>
-              <select class="input" id="subIdleRelease">
-                <option value="0.5">30 秒</option>
-                <option value="1">1 分钟</option>
-                <option value="2">2 分钟</option>
-                <option value="5">5 分钟</option>
-                <option value="15">15 分钟</option>
-                <option value="0">永不</option>
-              </select>
-            </label>
-            <div class="sub">字幕服务空闲这段时间后自动退出并释放显存，下次使用自动再启动；头显暂停播放也算空闲，超时后继续播放会重新等待模型加载</div>
-          </section>
-
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">Update</div>
-                <h2>更新</h2>
-              </div>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name">当前版本</div><div class="sub" id="updCurrent">—</div></div>
-              <button class="btn ghost" id="chkUpdate">检查更新</button>
-            </div>
-            <div class="row flush">
-              <div class="grow"><div class="name" id="updTitle">尚未检查</div><div class="sub" id="updDesc">应用启动时会自动检查一次</div></div>
-              <button class="btn primary" id="updAction" hidden>下载更新</button>
-            </div>
-          </section>
-
-          <section class="setsec">
-            <div class="set-head">
-              <div>
-                <div class="eyebrow">About</div>
-                <h2>关于</h2>
-              </div>
-            </div>
-            <div class="about-grid">
+              <div class="sub" style="margin-bottom:10px">本地磁盘会生成缩略图海报墙；网络盘只列文件名，不逐文件探测。</div>
               <div class="row flush">
-                <svg class="ic muted"><use href="#i-network"/></svg>
-                <div class="grow"><div class="name">本机地址</div><div class="sub" id="aboutIp">—</div></div>
-                <button class="icon-btn" id="copyIp" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
+                <div class="grow"><div class="name">卡片比例</div><div class="sub">媒体库海报卡片的长宽比</div></div>
+                <select class="input" id="setLibAspect" style="width:96px">
+                  <option value="16:9">16:9</option>
+                  <option value="4:3">4:3</option>
+                </select>
+              </div>
+              <div id="libRootList"></div>
+            </section>
+
+            <section class="setsec">
+              <div class="set-head">
+                <div><h2>脚本与同步</h2></div>
+                <div class="spacer"><button class="btn ghost" id="setGotoSync">打开设备同步</button></div>
+              </div>
+              <label class="field">
+                <span>脚本文件夹</span>
+                <div class="inline">
+                  <input class="input mono" id="setScriptFolder" placeholder="例如 E:\scripts">
+                  <button class="btn ghost" id="setScriptFolderPick">选择</button>
+                </div>
+              </label>
+              <div class="sub">设备同步的「本地脚本目录」与此处为同一个设置。</div>
+              <div class="row flush">
+                <div class="grow"><div class="name" id="setSyncState">脚本同步待命</div><div class="sub" id="setSyncSub">未连接设备</div></div>
+              </div>
+            </section>
+
+            <section class="setsec">
+              <div class="set-head"><div><h2>字幕与显存</h2></div></div>
+              <label class="field">
+                <span>空闲回收显存</span>
+                <select class="input" id="subIdleRelease">
+                  <option value="0.5">30 秒</option>
+                  <option value="1">1 分钟</option>
+                  <option value="2">2 分钟</option>
+                  <option value="5">5 分钟</option>
+                  <option value="15">15 分钟</option>
+                  <option value="0">永不</option>
+                </select>
+              </label>
+              <div class="sub">字幕服务空闲后退出并释放显存；头显暂停播放也算空闲。</div>
+            </section>
+
+            <section class="setsec">
+              <div class="set-head"><div><h2>更新</h2></div></div>
+              <div class="row flush">
+                <div class="grow"><div class="name">当前版本</div><div class="sub" id="updCurrent">—</div></div>
+                <button class="btn ghost" id="chkUpdate">检查更新</button>
               </div>
               <div class="row flush">
-                <svg class="ic muted"><use href="#i-server"/></svg>
-                <div class="grow"><div class="name">宿主端口</div><div class="sub mono" id="aboutPort">—</div></div>
+                <div class="grow"><div class="name" id="updTitle">尚未检查</div><div class="sub" id="updDesc">应用启动时会自动检查一次</div></div>
+                <button class="btn primary" id="updAction" hidden>下载更新</button>
               </div>
-              <div class="row flush">
-                <svg class="ic muted"><use href="#i-monitor"/></svg>
-                <div class="grow"><div class="name">头显接口</div><div class="sub mono" id="aboutLanApi">—</div></div>
-                <button class="icon-btn" id="copyLanApi" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
+            </section>
+
+            <section class="setsec">
+              <div class="set-head"><div><h2>关于</h2></div></div>
+              <div class="about-grid">
+                <div class="row flush">
+                  <svg class="ic muted"><use href="#i-network"/></svg>
+                  <div class="grow"><div class="name">本机地址</div><div class="sub" id="aboutIp">—</div></div>
+                  <button class="icon-btn" id="copyIp" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
+                </div>
+                <div class="row flush">
+                  <svg class="ic muted"><use href="#i-server"/></svg>
+                  <div class="grow"><div class="name">宿主端口</div><div class="sub mono" id="aboutPort">—</div></div>
+                </div>
+                <div class="row flush">
+                  <svg class="ic muted"><use href="#i-monitor"/></svg>
+                  <div class="grow"><div class="name">头显接口</div><div class="sub mono" id="aboutLanApi">—</div></div>
+                  <button class="icon-btn" id="copyLanApi" title="复制"><svg class="ic"><use href="#i-copy"/></svg></button>
+                </div>
               </div>
-            </div>
-            <div class="top-4">
-              <button class="btn danger" id="quitApp"><svg class="ic"><use href="#i-power"/></svg><span>退出应用</span></button>
-            </div>
-          </section>
+              <div class="top-4">
+                <button class="btn danger" id="quitApp"><svg class="ic"><use href="#i-power"/></svg><span>退出应用</span></button>
+              </div>
+            </section>
           </div>
         </div>
       </section>
@@ -1023,6 +966,6 @@ try {
     </div>
   </div>
 </div>
-<script src="app.js?v=20261019c"></script>
+<script src="app.js?v=20261023a"></script>
 </body>
 </html>

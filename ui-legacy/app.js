@@ -1,6 +1,6 @@
 /* ============================================================
    FunScriptCast-Nexus —— 前端逻辑
-   与 host_server.py 的 /api/* 通信；状态 1s 轮询（页面隐藏时暂停）
+   与 Rust 宿主的 /api/* 通信；状态 1s 轮询（页面隐藏时暂停）
    ============================================================ */
 (function () {
   "use strict";
@@ -59,10 +59,23 @@
 
   /* 保存单个设置项（6 个同步字段 + 4 个设置开关共用一份实现）。
      记下 Promise 是为了"点同步前先把路径落盘"——服务端 /api/sync/run 读的是已保存设置。 */
+  function applyLibAspect(v) {
+    document.documentElement.style.setProperty(
+      "--lib-aspect", v === "4:3" ? "4 / 3" : "16 / 9"
+    );
+    requestAnimationFrame(function () {
+      if (typeof layoutLibGrid === "function") layoutLibGrid();
+    });
+  }
   function saveSetting(id, key, value, onDone) {
     var body = {};
     body[key] = value;
-    var p = api("/api/settings", "POST", body).then(function (r) {
+    // 同键串行化：快速连点产生并发 POST 时，服务端 patch 读改写的到达顺序
+    // 不定，落盘值可能与 UI 相反（后写者覆盖先写者、且两次都显示已保存）
+    var prev = PENDING[id] || Promise.resolve();
+    var p = prev.catch(function () {}).then(function () {
+      return api("/api/settings", "POST", body);
+    }).then(function (r) {
       if (r && r.ok) clearDirty(document.getElementById(id));
       else if (r && r.error) {
         // 保存失败必须让用户看见并保持 dirty：dirty 没清，runSync 的落盘闸门
@@ -89,14 +102,21 @@
 
   /* ---------------------------------------------------------- API */
   function api(path, method, body) {
+    /* 15s 超时：宿主挂起时调用方不能永久 pending（如 syncTick 的 inflight 闸门
+       会永卡，设备从此一帧不动）。当前所有调用点都是普通 JSON 请求（无 SSE/长连接
+       —— /api/library/stream 是直接喂给 <video> 的 src，不走 fetch），统一 15s。 */
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 15000);
     return fetch(path, {
       method: method || "GET",
       headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal
     }).then(function (r) { return r.json(); }).catch(function (e) {
-      toast("请求失败", String(e), "err");
+      if (e && e.name === "AbortError") toast("请求超时", "15 秒内无响应：" + path, "err");
+      else toast("请求失败", String(e), "err");
       return { ok: false };
-    });
+    }).finally(function () { clearTimeout(timer); });
   }
 
   /* ---------------------------------------------------------- Toast */
@@ -205,26 +225,12 @@
   function placeAllSegs() { segs.forEach(function (c) { c.place($('button[aria-selected="true"]', c.seg)); }); }
 
   /* ---------------------------------------------------------- 主题 / 动效 */
-  function setTheme(t, persist) {
-    document.documentElement.setAttribute("data-theme", t);
-    /* localStorage 同步留一份：下次启动靠 <head> 的内联脚本在首屏前套用，
-       不等 /api/settings 回来（否则必跳变一次） */
-    try { localStorage.setItem("nxs.theme", t); } catch (e) {}
-    var label = t === "dark" ? "亮色" : "暗色";
-    var tip = t === "dark" ? "切换到亮色" : "切换到暗色";
-    // 图标跟着目标状态走：暗色下显示太阳（点了会变亮），反之显示月亮
-    var icon = t === "dark" ? "i-sun" : "i-moon";
-    ["themeLabel", "themeLabel2"].forEach(function (id) {
-      var el = document.getElementById(id); if (el) el.textContent = label;
-    });
-    ["themeToggle"].forEach(function (id) {
-      var el = document.getElementById(id);
-      if (!el) return;
-      el.title = tip;
-      var u = el.querySelector("use");
-      if (u) u.setAttribute("href", "#" + icon);
-    });
-    if (persist) api("/api/settings", "POST", { theme: t });
+  /* 主题固定浅色（redesign 后的既定设计：切换按钮已隐藏、内联脚本与 boot 均
+     强制 light）。保留 setTheme 只是兜底把 data-theme 归位到 light——
+     不再写 localStorage/服务端：旧代码写 nxs.theme 却无人读，注释声称
+     "下次启动由内联脚本恢复"也不属实（半拆除状态，本次清理）。 */
+  function setTheme() {
+    document.documentElement.setAttribute("data-theme", "light");
   }
   function setMotion(m, persist) {
     document.documentElement.setAttribute("data-motion", m);
@@ -301,7 +307,8 @@
       sub.status === "ready" ? ("PID " + sub.pid + " · :" + sub.port) :
       sub.status === "loading" ? "正在加载模型…" :
       sub.status === "error" ? (sub.error || "异常") : "未启动";
-    $("#railSubM").textContent = sub.health ? (sub.health.asr_model || "") : "";
+    var _subModel = sub.health ? String(sub.health.asr_model || "") : "";
+    $("#railSubM").textContent = _subModel ? _subModel.split(/[\\/]/).pop() : "";
 
     var railG = $("#railGpu");
     railG.className = "rail-node" + (g.used_mb ? (gpuPct >= 85 ? " busy" : " on") : "");
@@ -385,7 +392,8 @@
     if ($("#subAsr")) {
       var ab = String(h.asr_backend || "").toLowerCase();
       $("#subAsr").textContent = ab === "whisper" ? "Whisper（kotoba）"
-        : ab === "audiocpp" ? "Qwen3（audio.cpp）" : (h.asr_backend || "—");
+        : ab === "audiocpp" ? "Qwen3（audio.cpp）"
+        : (h.asr_backend || "—");
     }
 
     /* 8756 上挂着别人的服务（上次强杀宿主留下的残留）：必须显式告警。
@@ -407,7 +415,7 @@
     var verTxt = "v" + (st.version || "—") + (st.dev_copy ? " · 开发副本" : "") + " · WebView2";
     $("#verLine").textContent = verTxt;
     var brandSub = $("#brandSub");
-    if (brandSub) brandSub.textContent = st.dev_copy ? "开发副本" : "集成版";
+    if (brandSub) brandSub.textContent = st.dev_copy ? "开发副本" : "本机控制台";
     syncSettingsUI();
   }
 
@@ -558,19 +566,19 @@
     if (!busyEditing($("#setCloseTray"))) $("#setCloseTray").checked = !!s.close_to_tray;
     if (!busyEditing($("#setStartMin"))) $("#setStartMin").checked = !!s.start_minimized;
     if (!busyEditing($("#setAutoStart"))) $("#setAutoStart").checked = !!s.launch_on_boot;
-    var vpy = $("#setVisionPy");
-    if (vpy && !busyEditing(vpy) && document.activeElement !== vpy) {
-      vpy.value = String(s.vision_python || "");
-    }
     // 注意：这里**不能**碰 #mtModel —— 它的值只归 loadSubtitleConfig 填。
     // 旧代码每秒轮询都把输入框清空，用户点保存（mousedown 已失焦）时读到的
     // 就是空串，把配置里已保存的模型名覆盖成 ""。
     // 首次拉到设置后应用持久化的主题 / 动画强度
     if (!S.themeApplied) {
       S.themeApplied = true;
-      if (s.theme) setTheme(s.theme, false);
+      setTheme();                 // 固定浅色；旧设置里的 dark 不再生效
       if (s.motion) setMotion(s.motion, false);
     }
+    var asp = s.library_card_aspect || "16:9";
+    var aspEl = $("#setLibAspect");
+    if (aspEl && !busyEditing(aspEl)) aspEl.value = asp;
+    applyLibAspect(asp);
     renderLibRoots(s.library_roots || []);
   }
 
@@ -585,8 +593,9 @@
     if (!box) return;
     if (!roots.length) { box.innerHTML = '<div class="empty">还没有目录</div>'; return; }
     box.innerHTML = roots.map(function (p) {
-      return '<div class="row flush"><div class="grow"><div class="name mono">' + p + '</div></div>' +
-             '<button class="btn ghost" data-del-libroot="' + p + '">移除</button></div>';
+      // 路径来自用户/扫描结果，可能含 < > & " —— 与上方 renderRoots 同样 esc() 转义
+      return '<div class="row flush"><div class="grow"><div class="name mono">' + esc(p) + '</div></div>' +
+             '<button class="btn ghost" data-del-libroot="' + esc(p) + '">移除</button></div>';
     }).join("");
   }
 
@@ -670,6 +679,9 @@
   /* ---------- 模型下载：识别 / 翻译模型缺什么下什么（走 hf-mirror，宿主负责） ---------- */
   var MODEL_NAMES = {
     "vision-module": "AI 实时识别模块（边播边推理）",
+    "audiocpp-runtime": "识别运行时 · audio.cpp（CPU）",
+    "qwen3-asr": "识别模型 · Qwen3-ASR-0.6B",
+    "llama-runtime": "翻译运行时 · llama.cpp（CUDA）",
     "audiocpp-cuda": "识别运行时 · CUDA（需 NVIDIA 显卡）",
     "qwen3-asr-0.6b": "识别模型 · Qwen3-ASR-0.6B（显存约 1.3GB）",
     "qwen3-asr-1.7b": "识别模型 · Qwen3-ASR-1.7B（显存约 3.6GB，转录质量更高）",
@@ -694,7 +706,8 @@
       if (!box) return;
       box.innerHTML = "";
       var busy = false;
-      (r.items || []).forEach(function (m) {
+      // AI 实时识别模块属于“视频联动/AI 识别”，不是字幕依赖，不在字幕页展示
+      (r.items || []).filter(function (m) { return m.role !== "vision-module"; }).forEach(function (m) {
         var stTxt, btnTxt = "下载", canDl = false;
         if (m.state === "downloading") { stTxt = "下载中 " + (m.pct || 0) + "%"; busy = true; }
         else if (m.state === "error") { stTxt = "下载失败：" + (m.error || "未知错误"); btnTxt = "重试"; canDl = true; }
@@ -730,7 +743,7 @@
 
         // 下载完成 → 让相关控件同步（新模型立即可选 / GPU 后端自动启用可见）
         if (m.state === "done" && !S.modelDoneSeen) S.modelDoneSeen = {};
-        if (m.state === "done" && m.role === "translate" && !S.modelDoneSeen[m.id]) {
+        if (m.state === "done" && (m.role === "translate" || m.role === "translate-model") && !S.modelDoneSeen[m.id]) {
           S.modelDoneSeen[m.id] = true;
           S.localModels = null;
           loadSubtitleConfig({ onlyModels: true });   // F08：只刷新下拉，不覆盖用户输入
@@ -862,10 +875,7 @@
     /* 导航指示条初始位置 */
     setTimeout(function () { moveIndicator($('button[aria-current="true"]', nav)); }, 60);
 
-    /* 主题 */
-    $("#themeToggle").addEventListener("click", function () {
-      setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark", true);
-    });
+    /* 主题固定浅色：切换按钮已被样式隐藏（redesign 既定设计），不再绑定 */
 
     /* DLNA */
     $("#dlnaStart").addEventListener("click", startDlna);
@@ -883,6 +893,12 @@
          列表 → 添加 B 时把 A 一起 POST 回去（刚删的目录复活，而 toast 已经说过"已移除"）。 */
       rootsOpChain = rootsOpChain.then(function () {
       return api("/api/settings").then(function (cur) {
+        // GET 失败（超时/网络错）时 api() 回 {ok:false}，此时绝不能拿空列表
+        // 当基底全量回写——POST 一旦成功会把原有全部目录清空（数据丢失）
+        if (!cur || cur.ok === false) {
+          toast("读取当前目录列表失败", "已取消本次操作，请稍后重试", "err");
+          return;
+        }
         var roots = (((cur || {}).settings || {}).dlna_roots || []).slice();
         var added = 0, dup = 0;
         (list || []).forEach(function (p) {
@@ -946,6 +962,11 @@
          （用户实际踩到）。所以每一步都自带 catch，链本身始终是 resolved。 */
       libRootChain = libRootChain.then(function () {
         return api("/api/settings").then(function (cur) {
+          // GET 失败时拿空列表当基底回写 = 清空全部媒体库目录（数据丢失）
+          if (!cur || cur.ok === false) {
+            toast("读取当前目录列表失败", "已取消本次操作，请稍后重试", "err");
+            return;
+          }
           var roots = (((cur || {}).settings || {}).library_roots || []).slice();
           var added = 0;
           (list || []).forEach(function (p) {
@@ -978,6 +999,11 @@
       var p = b.getAttribute("data-del-libroot");
       libRootChain = libRootChain.then(function () {
         return api("/api/settings").then(function (cur) {
+          // 同 addLibRoots：GET 失败不能拿空列表回写（会清空全部目录）
+          if (!cur || cur.ok === false) {
+            toast("读取当前目录列表失败", "已取消本次移除，请稍后重试", "err");
+            return;
+          }
           var roots = (((cur || {}).settings || {}).library_roots || []).filter(function (x) { return x !== p; });
           return api("/api/settings", "POST", { library_roots: roots }).then(function (r) {
             if (!r || r.ok === false) { toast("移除失败", (r && r.error) || "", "err"); return; }
@@ -1012,6 +1038,12 @@
          R103 复核：走同一条 rootsOpChain 串行链，与 addRoots 互斥。 */
       rootsOpChain = rootsOpChain.then(function () {
       return api("/api/settings").then(function (cur) {
+        // GET 失败（超时/网络错）时 api() 回 {ok:false}，此时绝不能拿空列表
+        // 当基底全量回写——POST 一旦成功会把原有全部目录清空（数据丢失）
+        if (!cur || cur.ok === false) {
+          toast("读取当前目录列表失败", "已取消本次操作，请稍后重试", "err");
+          return;
+        }
         var roots = (((cur || {}).settings || {}).dlna_roots || []).slice();
         var i = roots.indexOf(p);
         if (i < 0) { toast("该目录已不在列表中", p || "", "warn"); poll(true); return; }
@@ -1034,12 +1066,6 @@
       if (!v || v === "—") return;
       copyText(v, this);
     });
-    $("#dlnaLogToggle").addEventListener("click", function () {
-      var box = $("#dlnaLogBox"), open = box.classList.toggle("open");
-      this.textContent = open ? "收起日志" : "展开日志";
-      if (open) box.querySelector(".inner").scrollTop = 1e6;
-    });
-
     /* 字幕服务 */
     $("#subStart").addEventListener("click", startSub);
     $("#subStop").addEventListener("click", function () {
@@ -1149,7 +1175,11 @@
       });
     });
     $("#syncDisconnect").addEventListener("click", function () {
-      api("/api/sync/disconnect", "POST", {}).then(function () { toast("已断开设备"); poll(true); });
+      api("/api/sync/disconnect", "POST", {}).then(function (r) {
+        if (r && r.ok) toast("已断开设备");
+        else toast("断开失败", (r && r.error) || "", "err");
+        poll(true);
+      });
     });
     $("#syncRunScript").addEventListener("click", function () { runSync("script"); });
     $("#syncRunVideo").addEventListener("click", function () { runSync("video"); });
@@ -1202,36 +1232,24 @@
 
     /* 自绘标题栏按钮：**绑定已在 bind() 开头**（关键绑定优先，见那里的说明）。
        这里只保留拖动区的 mousedown 拦截。 */
-    // 标题栏整体是拖动区（pywebview 会向上查找 .pywebview-drag-region），
-    // 所以按钮/主题切换/状态胶囊必须吃掉 mousedown，否则点它们会变成拖窗口。
-    $$(".titlebar button, .titlebar .pills").forEach(function (el) {
+    // 标题栏整体是拖动区：Rust 宿主不再有 pywebview 的隐式拖拽，
+    // 必须在空白处 mousedown 时显式调用 drag_window（按钮/胶囊自己吃掉事件）。
+    $$(".titlebar button, .titlebar .pills, .titlebar .dev-connect").forEach(function (el) {
       el.addEventListener("mousedown", function (e) { e.stopPropagation(); });
     });
+    var titlebar = document.querySelector(".titlebar");
+    if (titlebar) {
+      titlebar.addEventListener("mousedown", function (e) {
+        if (e.button !== 0) return;
+        if (e.target.closest("button, input, select, textarea, a, .pills, .dev-connect")) return;
+        var api2 = window.pywebview && window.pywebview.api;
+        if (api2 && api2.drag_window) {
+          try { api2.drag_window(); } catch (err) {}
+        }
+      });
+    }
 
     /* 设置：change 时先标 dirty（落盘成功才清），避免"点了又弹回去" */
-    if ($("#setVisionPy")) {
-      var vpyEl = $("#setVisionPy");
-      var commitVpy = function () {
-        saveSetting("setVisionPy", "vision_python", vpyEl.value.trim(), function (r) {
-          if (r && r.ok) toast("AI 识别", "解释器已保存，下次启动识别服务时生效", "ok");
-        });
-      };
-      vpyEl.addEventListener("change", commitVpy);
-      vpyEl.addEventListener("blur", function () {
-        if (document.getElementById("setVisionPy") === document.activeElement) return;
-        if (PENDING["setVisionPy"]) return;
-        commitVpy();
-      });
-      if ($("#setVisionPyPick")) {
-        $("#setVisionPyPick").addEventListener("click", function () {
-          var api2 = window.pywebview && window.pywebview.api;
-          if (!api2 || !api2.pick_file) { toast("AI 识别", "当前环境不支持文件选择，请手动填写路径", "warn"); return; }
-          api2.pick_file("open", "", [["Python 解释器", "python.exe"], ["所有文件", "*.*"]]).then(function (r) {
-            if (r && r.ok && r.path) { vpyEl.value = r.path; commitVpy(); }
-          });
-        });
-      }
-    }
     $("#setDlnaAuto").addEventListener("change", function () {
       markDirty(this);
       saveSetting("setDlnaAuto", "dlna_auto_start", this.checked);
@@ -1285,6 +1303,10 @@
         S.updProgDismissed = true;
       }
     });
+    if ($("#setLibAspect")) $("#setLibAspect").addEventListener("change", function () {
+      applyLibAspect(this.value);
+      saveSetting("setLibAspect", "library_card_aspect", this.value);
+    });
     $("#setStartMin").addEventListener("change", function () {
       markDirty(this);
       saveSetting("setStartMin", "start_minimized", this.checked);
@@ -1312,8 +1334,6 @@
     });
 
     /* 快捷操作 */
-    $("#btnRefresh").addEventListener("click", function () { poll(true); toast("已刷新"); });
-    $("#btnStartAll").addEventListener("click", function () { startDlna(); startSub(); });
     $("#qaDlnaStart").addEventListener("click", startDlna);
     $("#qaDlnaStop").addEventListener("click", function () {
       api("/api/dlna/stop", "POST", {}).then(function () { toast("DLNA 已停止"); poll(true); });
@@ -1601,7 +1621,7 @@
   function vlPlaying() { var v = vlVid(); return !!(v && vlMed.path && !v.paused && !v.ended); }
 
   /* DLNA key 规则（vendor/dlna/vr_dlna.py path_to_key）：单根=相对路径，多根=label/相对路径，
-     label = 根目录 basename（host_server 里 MediaRoot(label=Path(p).name or "Videos")） */
+     label = 根目录 basename（宿主 MediaRoot 的 label 规则） */
   /* vlDlnaUrl 已删除：播放不再经过 DLNA */
   function vlStreamUrl(absPath, cb) {
     /* 电脑端播放只走宿主本地流（宿主直接读盘、Range/206）；
@@ -1650,194 +1670,13 @@
     api("/api/library/progress", "POST",
         { path: vlMed.path, pos: v.currentTime || 0, dur: v.duration });
   }
-  /* ---- PC 直听字幕（R123·对齐手机端 AiPanelContent）----
-     交互：播放页「AI字幕」按钮 → 面板（关闭 / 日语 / 英语）——**选语言即启动**；
-     语言偏好持久化（localStorage，对齐手机端 prefs.aiSubtitleLang）；开启时按钮高亮。
-     重启进播放时若上次开着则自动恢复（对齐手机端"打开视频后自动开启"的默认体验）。 */
-  var lcActive = false;
-  var lcLang = localStorage.getItem("lcLang") || "";
-  var lcTimer = null, lcKey = "", lcLastAt = 0, lcPausedByUs = false, lcWarmStart = 0;
-  function lcRender() {
-    var btn = $("#vlAiSub"); if (btn) btn.classList.toggle("on", lcActive);
-    [["lcOff", "off"], ["lcJa", "ja"], ["lcEn", "en"]].forEach(function (pair) {
-      var el = $("#" + pair[0]); if (!el) return;
-      el.classList.toggle("on", pair[1] === "off" ? !lcActive : (lcActive && lcLang === pair[1]));
-    });
-  }
-  var lcWarming = false;   // 预热中：视频暂停，双就绪（LC + 翻译）后恢复（对齐手机端 R104）
-  function lcHint(msg) {
-    var h = $("#lcHint"); if (h) h.textContent = msg || "实时转写并翻译为中文；识别由 Windows 实时字幕完成（不占显存）";
-  }
-  function lcHintSub(msg) {
-    /* 预热/失败提示显示在**字幕层**（画面上永远可见）——旧版写在面板里，
-       选语言后面板立即收起，等待期用户对着暂停画面什么都看不到。 */
-    var el = $("#lcSubMsg");
-    if (el) el.textContent = msg || "";
-  }
-  function lcStart(lang) {
-    lcLang = (lang === "en") ? "en" : "ja";
-    lcActive = true;
-    localStorage.setItem("lcLang", lcLang);
-    localStorage.setItem("lcOn", "1");            // 开启意图持久化（关闭时清除）
-    api("/api/lc/start", "POST", { lang: lcLang }).catch(function () {});
-    var sub = $("#lcSub"); if (sub) sub.hidden = false;
-    // 暂停视频等预热（对齐手机端 R104：识别+翻译都就绪才恢复播放）。
-    // 记录"暂停是我们按下的"——lcStop 时要放行（手机端 pausedByUs 语义）。
-    lcWarming = true;
-    lcWarmStart = Date.now();
-    var v = vlVid();
-    lcPausedByUs = false;
-    if (v && !v.paused) { try { v.pause(); lcPausedByUs = true; } catch (e) {} }
-    lcHintSub("AI 字幕启动中…（首次预热约 10–40 秒，就绪后自动继续播放）");
-    if (lcTimer) clearInterval(lcTimer);
-    lcTimer = setInterval(lcPoll, 300);
-    lcStartResumeWorker();
-    lcRender();
-  }
-  /* 恢复播放看护（R127 实测修复）：浏览器对**不可见/被遮挡页面**的定时器做
-     intensive 节流（低至 1 次/分钟）——lcPoll 的"就绪后自动恢复播放"会延迟到
-     失去意义，用户被永久困在暂停画面（IAB 复现：11 秒观察窗内 lcPoll 零次执行）。
-     Web Worker 的定时器**不受页面可见性节流**，用它每 500ms 探一次就绪状态，
-     就绪即恢复播放。页面不可见时本来就看不了画面，恢复动作必须可靠。 */
-  var lcResumeWorker = null;
-  function lcStartResumeWorker() {
-    try {
-      if (lcResumeWorker) lcResumeWorker.terminate();
-      var src = "setInterval(function(){ postMessage(0); }, 500);";
-      lcResumeWorker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
-      lcResumeWorker.onmessage = function () {
-        if (!lcWarming) { lcResumeWorker.terminate(); lcResumeWorker = null; return; }
-        api("/api/lc/state").then(function (r) {
-          if (!lcWarming) return;
-          var lc = (r && r.lc) || {};
-          var failed = (lc.error && String(lc.error).length > 0) || lc.running === false;
-          var ready = !!lc.lc_ok && !!lc.mt_ok;
-          if (!ready && !failed) return;
-          lcWarming = false;
-          lcPausedByUs = false;
-          if (failed) {
-            lcHintSub("AI 字幕启动失败：" + (lc.error || "超时") + "。已按无字幕继续播放。");
-            toast("AI 字幕启动失败", lc.error || "", "err");
-          } else {
-            lcHint(); lcHintSub("");
-          }
-          var v = vlVid();
-          if (v) {
-            var pr = v.play();
-            if (pr && pr.catch) pr.catch(function () {
-              lcHintSub("就绪了——点击画面继续播放");
-            });
-          }
-          if (lcResumeWorker) { lcResumeWorker.terminate(); lcResumeWorker = null; }
-        }).catch(function () {});
-      };
-    } catch (e) { /* Worker 不可用（极端环境）：退回 lcPoll 的恢复路径 */ }
-  }
-  function lcStop() {
-    lcActive = false;
-    lcWarming = false;
-    lcHint();
-    lcHintSub("");
-    localStorage.removeItem("lcOn");   // 关闭意图持久化——否则下次进播放又自动重启
-    if (lcTimer) { clearInterval(lcTimer); lcTimer = null; }
-    if (lcResumeWorker) { lcResumeWorker.terminate(); lcResumeWorker = null; }
-    var sub = $("#lcSub"); if (sub) sub.hidden = true;
-    var box = $("#lcLines"); if (box) box.innerHTML = "";
-    lcLastAt = 0;
-    // R125 适配修复：预热等待中用户点「关闭」= 止损，必须放行自己按下的暂停
-    // （对齐手机端 stopInternal 的 pausedByUs 语义），否则视频停在暂停无提示。
-    if (lcPausedByUs) {
-      lcPausedByUs = false;
-      var v = vlVid();
-      if (v) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
-    }
-    api("/api/lc/stop", "POST", {}).catch(function () {});
-    lcRender();
-  }
-  function lcPoll() {
-    api("/api/lc/state").then(function (r) {
-      var lc = (r && r.lc) || {};
-      if (lcWarming) {
-        // 失败态消费（对齐手机端"失败也放行+原因上屏"，90s 总超时同款）：
-        // 后端 error/running 已透传，旧实现丢弃 → LC 起不来时用户被永久困在暂停画面。
-        var failed = (lc.error && String(lc.error).length > 0) || lc.running === false;
-        var waited = Date.now() - lcWarmStart;
-        if (failed || waited > 90000) {
-          lcWarming = false;
-          lcPausedByUs = false;
-          lcHintSub(failed
-            ? ("AI 字幕启动失败：" + (lc.error || "超时（90 秒）") + "。已按无字幕继续播放。")
-            : "");
-          var vF = vlVid();
-          if (vF) { var pF = vF.play(); if (pF && pF.catch) pF.catch(function () {}); }
-          if (failed) { toast("AI 字幕启动失败", lc.error || "超时", "err"); lcStop(); }
-          return;
-        }
-        var ready = !!lc.lc_ok && !!lc.mt_ok;
-        if (ready) {
-          lcWarming = false;
-          lcPausedByUs = false;
-          lcHint();
-          lcHintSub("");
-          var v0 = vlVid();
-          if (v0) {
-            var p0 = v0.play();
-            if (p0 && p0.catch) p0.catch(function () {
-              lcHintSub("就绪了——点击画面继续播放");
-            });
-          }
-        } else {
-          var sec = Math.round(waited / 1000);
-          lcHintSub(!lc.lc_ok
-            ? "正在启动 Windows 实时字幕…（已等 " + sec + " 秒，画面已暂停）"
-            : "识别已就绪，正在预热翻译…（已等 " + sec + " 秒）");
-          return;   // 预热期不刷字幕（也没字幕可刷）
-        }
-      }
-      var lastLn = (lc.lines || []).slice(-1)[0] || {};
-      var key = (lc.lines || []).length + "|" + (lastLn.ts || "") + "|" + (lastLn.zh || "");
-      if (key === lcKey) {
-        // 无新句：超过 8 秒把上一句撤掉（"过去的就过去了"，不留残留）
-        if (lcLastAt && Date.now() - lcLastAt > 8000) {
-          var box0 = $("#lcLines");
-          if (box0 && box0.innerHTML) { box0.innerHTML = ""; lcLastAt = 0; }
-        }
-        return;
-      }
-      lcKey = key;
-      var last = (lc.lines || []).slice(-1)[0] || {};
-      var box = $("#lcLines");
-      if (box) {
-        // 一句一显示：只渲染最新定稿句的**译文**（无双语、无历史堆叠——对齐手机端）；
-        // 译文还没翻回来时先不显示（空白），回来即替换。
-        box.innerHTML = last.zh
-          ? '<div class="lc-line">' + esc(last.zh) + "</div>"
-          : "";
-        lcLastAt = Date.now();
-      }
-    }).catch(function () {});
-  }
-  /* 面板交互（事件委托；旧元素被重渲染也有效） */
+  /* 播放器按钮：AI 识别开关（Win11 实时字幕已整体移除） */
   document.addEventListener("click", function (ev) {
     var t = ev.target;
     if (!t || !t.closest) return;
     if (t.closest("#vlAiScript") || t.closest("#vlAiScript2")) {
       if (AIV.on) aivStop(); else aivStart();
-      return;
     }
-    if (t.closest("#vlAiSub") || t.closest("#vlAiSub2")) {
-      var p = $("#lcPanel"); if (p) { p.hidden = !p.hidden; lcRender(); }
-      return;
-    }
-    var opt = t.closest(".lc-opt");
-    if (opt) {
-      var lang = opt.getAttribute("data-lc-lang");
-      if (lang === "off") lcStop(); else lcStart(lang);
-      var p2 = $("#lcPanel"); if (p2) p2.hidden = true;
-      return;
-    }
-    var panel = $("#lcPanel");
-    if (panel && !panel.hidden && !t.closest("#lcPanel")) panel.hidden = true;
   });
   /* ---------- 播放器热力曲线（移植手机端 ScriptHeatmap.kt） ----------
      算法逐条对齐：
@@ -1863,8 +1702,13 @@
     if (!actions || actions.length < 2 || !(durationSec > 0) || width < 4) return null;
     var durMs = durationSec * 1000;
     var acc = new Float64Array(width), cnt = new Int32Array(width);
+    // `/api/library/script` 返回的是 [at,pos] 数组；AI live 是 {at,pos} 对象。
+    // 两种都收（旧实现只认对象，导致脚本热力曲线/mini 条一直空白）。
+    var pt = function (a) {
+      return Array.isArray(a) ? { at: a[0], pos: a[1] } : a;
+    };
     for (var b = 1; b < actions.length; b++) {
-      var prev = actions[b-1], cur = actions[b];
+      var prev = pt(actions[b-1]), cur = pt(actions[b]);
       if (prev.at >= durMs) break;
       var dt = (cur.at - prev.at) / 1000;
       if (dt <= 0) continue;
@@ -2045,76 +1889,10 @@
     }
   }
 
-  /* 缺少识别依赖时的引导：说明 + 一键安装（后台建 venv 装 torch） */
-  function aivShowRuntimeMissing(msg) {
-    var box = $("#vlAiWarm");
-    if (!box) { toast("AI 识别", msg, "err"); return; }
-    box.hidden = false;
-    var bar = $("#vlAiWarmBar");
-    if (bar) bar.style.width = "0%";
-    var t = box.querySelector(".vl-aw-title");
-    if (t) t.textContent = "AI 识别还缺运行环境";
-    var sub = $("#vlAiWarmSub");
-    if (sub) {
-      sub.textContent = "会先扫描本机已有的 torch 并复用（通常只需补几十 MB 轻量依赖）；" +
-                        "本机完全没有 torch 时才下载（约 2.5GB）。" +
-                        "运行时建在程序目录下的 vision-runtime\，不影响系统 Python。";
-    }
-    var hint = $("#vlAiWarmHint");
-    if (hint) hint.textContent = "装一次即可，之后打开视频可直接识别。";
-    var btn = $("#vlAiWarmCancel");
-    if (btn) {
-      btn.textContent = "安装运行时";
-      btn.classList.add("primary");
-      btn.onclick = function () {
-        btn.disabled = true;
-        btn.textContent = "正在安装…";
-        api("/api/vision/runtime/install", "POST", {}).then(function (r) {
-          if (!r || !r.ok) {
-            btn.disabled = false;
-            btn.textContent = "安装运行时";
-            toast("安装失败", (r && r.error) || "未知错误", "err");
-            return;
-          }
-          toast("AI 识别", "已开始准备运行时（会优先复用本机 torch）", "info");
-          aivPollRuntime();
-        });
-      };
-    }
-  }
-
-  /* 轮询运行时安装进度，装完自动重新开始识别 */
-  function aivPollRuntime() {
-    api("/api/vision/state").then(function (r) {
-      if (!r || !r.ok) { setTimeout(aivPollRuntime, 3000); return; }
-      var rt = r.runtime || {};
-      var bar = $("#vlAiWarmBar");
-      var sub = $("#vlAiWarmSub");
-      var btn = $("#vlAiWarmCancel");
-      if (bar) bar.style.width = Math.max(2, Math.min(100, rt.pct || 0)) + "%";
-      if (sub) {
-        sub.textContent = rt.state === "error"
-          ? ("安装失败：" + (rt.error || "未知错误"))
-          : "正在准备识别运行时（" + (rt.pct || 0) + "%）…优先复用本机 torch，缺依赖时才下载";
-      }
-      if (rt.state === "done") {
-        toast("AI 识别", "运行时安装完成，正在重新预热", "ok");
-        if (btn) { btn.disabled = false; btn.textContent = "取消（直接播放）"; btn.classList.remove("primary"); }
-        aivShowWarm(false);
-        aivStart();
-        return;
-      }
-      if (rt.state === "error") {
-        if (btn) { btn.disabled = false; btn.textContent = "重试安装"; }
-        return;   // 停下等用户点重试
-      }
-      setTimeout(aivPollRuntime, 2000);
-    }).catch(function () { setTimeout(aivPollRuntime, 3000); });
-  }
-
   function aivRender() {
     var box = $("#vlAiVision"), txt = $("#vlAvText"), meta = $("#vlAvMeta"),
-        dot = $("#vlAvDot"), btn = $("#vlAiScript");
+        dot = $("#vlAvDot"), btn = $("#vlAiScript2");
+    // 实际按钮 id 是 vlAiScript2（旧 vlAiScript 已从页面移除）：激活态点亮
     if (btn) btn.classList.toggle("on", AIV.on);
     if (!box) return;
     box.hidden = !AIV.on;
@@ -2156,8 +1934,13 @@
       AIV.err = r.error || "";
       AIV.note = r.note || "";
       aivRender();
-      /* 预热够了：撤遮罩 + 自动继续播放（用户不必盯着） */
-      if ((AIV.state === "running" || AIV.state === "done") && AIV.coverage > 3000) {
+      /* 预热够了：撤遮罩 + 自动继续播放（用户不必盯着）。
+         必须覆盖到暂停位置/当前播放位置：播放一旦跑在识别覆盖前面，同步引擎
+         会因"时间超出动作表"一帧都不发（现场症状就是设备完全不动）。 */
+      var vNow = vlVid();
+      var headMs = vNow ? (vNow.currentTime || 0) * 1000 : (AIV.startAt || 0) * 1000;
+      var needMs = Math.max(3000, headMs + 1500);
+      if ((AIV.state === "running" || AIV.state === "done") && AIV.coverage >= needMs) {
         aivShowWarm(false);
         var v = vlVid();
         if (v && v.paused) {
@@ -2178,8 +1961,27 @@
             });
           }
         }
-      } else if (AIV.state === "warming" || AIV.state === "idle") {
+      } else if (AIV.state === "running" && vNow && !vNow.paused && headMs > AIV.coverage - 1500) {
+        /* 播放追上识别覆盖前沿：暂停缓冲，等识别追上来再继续。
+           识别速度目前慢于实时，不拦播放的话设备会停在"动作表之外"，看起来完全没动作。 */
+        try { vNow.pause(); } catch (e) {}
         aivShowWarm(true);
+        var wsub0 = $("#vlAiWarmSub");
+        if (wsub0) {
+          wsub0.textContent = "识别进度缓冲中…（已识别 " + Math.floor(AIV.coverage / 1000) +
+            "s，播放到 " + Math.floor(headMs / 1000) + "s）";
+        }
+      } else if (AIV.state === "warming" || AIV.state === "idle") {
+        /* 预热期宿主探测偶发超时会回报 idle：此时视频正在播就**不要**重新翻开遮罩，
+           否则用户看到的是"遮罩闪回、一直转圈"（AI 预热完不继续的现场观感之一）。 */
+        var vw = vlVid();
+        if (!(AIV.state === "idle" && vw && !vw.paused)) aivShowWarm(true);
+        else {
+          /* 守卫盲区兜底：idle 且视频在播时不翻遮罩，但也不能全静默——
+             在 AI 状态行挂一句纯文字提示（下一拍状态变化时 aivRender 会覆盖回来） */
+          var vt = $("#vlAvText");
+          if (vt) vt.textContent = "AI 未就绪";
+        }
         var wb = $("#vlAiWarmBar");
         if (wb) wb.style.width = Math.max(2, Math.min(100, AIV.pct || 0)) + "%";
       } else if ((AIV.state === "error" || (r.error && !r.running)) && !AIV._failShown) {
@@ -2188,18 +1990,13 @@
         aivShowWarm(false);
         var ve = vlVid();
         if (ve && ve.paused) ve.play().catch(function () {});
-        var msg = AIV.err || "识别服务启动失败";
+        /* err 为空时用 note 顶上（错误态 note 带"原生流式出错：…"的真实原因），
+           两头都空才落到兜底文案 */
+        var msg = AIV.err || AIV.note || "识别服务启动失败";
         AIV._failShown = true;
-        /* 缺依赖是最常见的失败（安装版没有 torch）。这时把"安装运行时"做成
-           遮罩里的按钮——用户不用去设置页猜，也不会被一句技术错误挡住。 */
-        if (/缺少 AI 识别依赖|No module named/.test(msg)) {
-          aivShowWarm(false);
-          aivShowRuntimeMissing(msg);
-        } else {
-          aivShowWarm(false);
-          aivRender();
-          toast("AI 识别失败", msg, "err");
-        }
+        aivShowWarm(false);
+        aivRender();
+        toast("AI 识别失败", msg, "err");
         AIV.on = false;
       }
     });
@@ -2208,13 +2005,12 @@
   function aivStart() {
     if (!vlMed.path) { toast("AI 识别", "先打开一个视频", "warn"); return; }
     AIV.on = true; AIV._autoplayed = false; AIV._failShown = false;
-    /* **不暂停视频**：识别是流式的，边播边算；而 WebView2 会拒绝无手势的
-       play()，一旦这里暂停，预热完就可能永远起不来（"没有继续"的根因）。
-       AI 按钮本身就是用户手势，若当前是暂停状态就立即恢复播放。 */
+    /* 预热期间暂停视频：识别是流式的，播放位置一旦跑在识别覆盖前面，
+       同步引擎会判定"当前时间超出动作表"而一帧都不发（设备不动的根因）。
+       记下暂停位置，等识别覆盖到这里再自动继续播放。 */
     var v0 = vlVid();
-    if (v0 && v0.paused) {
-      try { var p0 = v0.play(); if (p0 && p0.catch) p0.catch(function () {}); } catch (e) {}
-    }
+    AIV.startAt = v0 ? (v0.currentTime || 0) : 0;
+    if (v0 && !v0.paused) { try { v0.pause(); } catch (e) {} }
     aivShowWarm(true);
     aivRender();
     api("/api/vision/open", "POST", { video: vlMed.path }).then(function (r) {
@@ -2224,9 +2020,9 @@
         return;
       }
       toast("AI 识别", "正在预热（转码 + 加载模型，约 30-60 秒）", "info");
-      /* AI 动作要靠前端 20ms tick 才能下发；脚本模式由 syncStart 打开 SYNC.on，
-         AI 模式必须在 open 成功后显式开，否则设备一帧都收不到。 */
-      if (!SYNC.on) { SYNC.on = true; SYNC.ai = true; }
+      /* AI 动作要靠前端 20ms tick 才能下发。这里**无条件**接管 SYNC：
+         无脚本视频的 syncStart 失败响应会把 SYNC.on 置 false，连 AI tick 一起关掉。 */
+      SYNC.on = true; SYNC.ai = true;
     });
   }
 
@@ -2234,14 +2030,20 @@
     AIV.on = false; AIV.liveActions = null; AIV.note = ""; aivShowWarm(false);
     if (SYNC.ai) { SYNC.on = false; SYNC.ai = false; }
     aivRender(); drawHeatCurve();
-    api("/api/vision/close", "POST", {}).then(function () {
+    /* 返回 Promise：换片要先等旧引擎关掉，再 open 新视频，
+       否则 close 后到会把刚打开的新引擎关掉。 */
+    return api("/api/vision/close", "POST", {}).then(function () {
       if (!silent) toast("AI 识别", "已停止", "info");
-    });
+    }).catch(function () {});
   }
   setInterval(aivPoll, 1000);
 
   function openVideo(path, name, list, idx) {
     reportProgress(true);                                // 切换前先保存上一个的进度
+    /* 换片必须先停 AI：旧的流式引擎还绑定着上一部视频，宿主 live 会继续
+       按上一部的动作表下发（现场症状就是切集后设备还在演上一部）。 */
+    var wasAi = AIV.on;
+    var aiClosed = wasAi ? aivStop(true) : Promise.resolve();
     vlMed.path = path || "";
     vlMed.name = name || String(path || "").split(/[\\/]/).pop();
     vlMed.failed = false;
@@ -2259,14 +2061,10 @@
       v.load();
       var pr = v.play();
       if (pr && pr.catch) pr.catch(function () { /* 自动播放被拦或解码失败，等 error 事件 */ });
+      /* 旧引擎完全关闭后再为新视频重新预热 */
+      if (wasAi) aiClosed.then(function () { aivStart(); });
     });
     vlTouch();
-    /* R125 适配修复：自动恢复看 **lcOn（开启意图）**——旧判据用 lcLang（语言偏好），
-       用户点「关闭」后 lcLang 仍在，每次进播放都违背意愿地重启+强制预热暂停
-       （方向与手机端真源相反：手机端换片主动停止、无自动开启）。 */
-    var lcOn = false;
-    try { lcOn = localStorage.getItem("lcOn") === "1"; } catch (e) {}
-    if (lcOn) lcStart(lcLang || "ja");
     vlSyncVlUi();
   }
   function vlSyncVlUi() {
@@ -2321,25 +2119,50 @@
     v.addEventListener("play", function () { syncStart(vlMed.path); });
     v.addEventListener("timeupdate", function () { syncTick(v.currentTime); reportProgress(false); });
     v.addEventListener("ended", function () { syncStop(); });
-    /* ⚠ 这四个按钮在重做播放器 UI（顶部功能区 + 底栏）时已从 index.html 移除，
-       但绑定代码还留着 —— 它们一旦为 null 就在**模块顶层**抛
-       "Cannot read properties of null (reading 'addEventListener')"，
-       整个 IIFE 直接中断，bind() 永不执行 ⇒ 关闭窗口、添加目录等全部失效
-       （2026-10-18 用户实测：两个症状同时出现）。用可选调用兜住。 */
-    var elPlay = $("#vlPlay"), elPrev = $("#vlPrev"),
-        elNext = $("#vlNext"), elMute = $("#vlMute");
-    if (elPlay) elPlay.addEventListener("click", function () { if (v.paused) v.play(); else v.pause(); vlTouch(); });
-    if (elPrev) elPrev.addEventListener("click", function () { vlStep(-1); });
-    if (elNext) elNext.addEventListener("click", function () { vlStep(1); });
-    if (elMute) elMute.addEventListener("click", function () { v.muted = !v.muted; vlSyncVlUi(); });
-    /* 全屏作用在**文档根**：隐藏任何子容器都安全（见 styles.css 里那段注释）。
-       副作用是 html 全屏后整页都在，所以靠 CSS 把 .vl-vwrap 提成铺满屏的浮层。 */
+    /* ⚠ 历史教训（2026-10-18 用户实测）：引用已移除的 DOM 元素再 addEventListener
+       会在模块顶层抛 null 异常，整个 IIFE 中断、bind() 永不执行。
+       旧控件（vlPlay/vlPrev/vlNext/vlMute）已从 index.html 移除且无替代，
+       绑定代码本次直接删除——保留"任何新绑定前先判空"的纪律即可。 */
+    /* 视频全屏 ≠ 应用窗口最大化：
+       - 视频全屏：隐藏应用所有外壳，让 <video> 铺满屏幕，并调用宿主原生全屏盖住任务栏；
+       - 右上角最大化：只切换窗口最大化，仍保留标题栏/侧栏。
+       WebView2 的 requestFullscreen 只改 DOM、不改变原生窗口，所以用 body class
+       控制布局，再由宿主把窗口切成全屏。 */
+    function videoFullscreenOn() {
+      return document.body.classList.contains("vl-video-fs");
+    }
+    function setVideoFullscreen(on) {
+      on = !!on;
+      document.body.classList.toggle("vl-video-fs", on);
+      /* 非全屏布局（fitVideoAspect）给 #vlVWrap 写过内联 width/height，
+         内联样式优先级高于 CSS 的 inset:0——不清掉的话全屏时视频区
+         锁死在进入前那一块（上半屏有画面、下半空白）。退出全屏后
+         fitVideoAspect 会重算回写，所以这里只清不加。 */
+      if (on) {
+        var ow = $("#vlVWrap");
+        if (ow) {
+          ow.style.width = ""; ow.style.height = "";
+          ow.style.flex = ""; ow.style.margin = "";
+        }
+      }
+      var fullBtn = $("#vlFull");
+      var u = fullBtn && fullBtn.querySelector("use");
+      if (u) u.setAttribute("href", on ? "#i-minimize-2" : "#i-maximize");
+      if (fullBtn) fullBtn.title = on ? "退出全屏" : "全屏";
+      var api = window.pywebview && window.pywebview.api;
+      if (api && api.win_fullscreen) {
+        try { api.win_fullscreen(on); } catch (e) {}
+      }
+      if (window.requestAnimationFrame) requestAnimationFrame(function () { layoutVl(); });
+    }
     $("#vlFull").addEventListener("click", function () {
-      var root = document.documentElement;
-      try {
-        var pr = document.fullscreenElement ? document.exitFullscreen() : (root.requestFullscreen ? root.requestFullscreen() : null);
-        if (pr && pr.catch) pr.catch(function () { toast("全屏切换失败", "浏览器拒绝了这次全屏请求", "warn"); });
-      } catch (e) { toast("全屏切换失败", String(e.message || e), "warn"); }
+      setVideoFullscreen(!videoFullscreenOn());
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && videoFullscreenOn()) {
+        e.preventDefault();
+        setVideoFullscreen(false);
+      }
     });
     $("#vlPip").addEventListener("click", function () {
       try {
@@ -2358,16 +2181,10 @@
     });
     /* ---- 顶部功能区（手机端 PlayerTopBar 同构） ---- */
     var backFn = function () {
-      try {
-        if (document.fullscreenElement) {
-          var ex = document.exitFullscreen();
-          if (ex && ex.catch) ex.catch(function () {});
-        }
-      } catch (e) {}
+      if (videoFullscreenOn()) setVideoFullscreen(false);
       try { v.pause(); } catch (e) {}
       v.removeAttribute("src"); v.load();
       vlMed.path = ""; vlMed.failed = false;
-      if (lcActive) lcStop();
       if (AIV.on) aivStop();
       vlCurPath = "";
       $("#vlPlayView").style.display = "none";
@@ -2383,10 +2200,8 @@
     if ($("#vlCcPill")) $("#vlCcPill").addEventListener("click", function () {
       toast("字幕", "外部字幕请用「AI 字幕」；本页暂不支持内嵌字幕轨", "info");
     });
-    if ($("#vlAiSub2")) $("#vlAiSub2").addEventListener("click", function () {
-      var p2 = $("#lcPanel"); if (p2) { p2.hidden = !p2.hidden; lcRender(); }
-      this.classList.toggle("on", lcActive);
-    });
+    /* AI 识别 / 字幕 pill 只由上面的 document 委托统一处理：
+       这里再绑一次会让同一次点击执行两遍（先 open 再 close、面板开关两次等于没开）。 */
     if ($("#vlAiWarmCancel")) $("#vlAiWarmCancel").addEventListener("click", function () {
       /* 取消 = 放弃 AI 识别（关掉引擎，释放显存）并立刻恢复播放。
          只隐藏遮罩不关引擎的话，后台仍在转码/推理，用户会看到显存被占、
@@ -2395,33 +2210,69 @@
       var vv = vlVid(); if (vv && vv.paused) vv.play().catch(function () {});
       toast("AI 识别", "已取消预热，继续播放（无 AI 动作）", "info");
     });
-    if ($("#vlAiScript2")) $("#vlAiScript2").addEventListener("click", function () {
-      if (AIV.on) aivStop(); else aivStart();
-    });
-    if ($("#vlMore")) $("#vlMore").addEventListener("click", function () {
-      var items = ["静音/取消静音", "倍速 1.25x", "倍速 1.0x", "画中画"];
-      var lines = items.map(function (s, i) { return (i + 1) + ". " + s; });
-      var pick = window.prompt("更多操作（输入序号）： " + lines.join("  "), "1");
-      var n = parseInt(pick, 10);
-      if (n === 1) { v.muted = !v.muted; vlSyncVlUi(); }
-      else if (n === 2) { v.playbackRate = 1.25; toast("倍速", "1.25x", "info"); }
-      else if (n === 3) { v.playbackRate = 1.0; toast("倍速", "1.0x", "info"); }
-      else if (n === 4) { try { v.requestPictureInPicture && v.requestPictureInPicture(); } catch (e) {} }
+    if ($("#vlMore")) {
+      var moreMenu = $("#vlMoreMenu");
+      $("#vlMore").addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (!moreMenu) return;
+        moreMenu.hidden = !moreMenu.hidden;
+        if (!moreMenu.hidden) {
+          var mute = $("#vlMoreMute");
+          if (mute) mute.textContent = v.muted ? "取消静音" : "静音";
+        }
+      });
+      if (moreMenu) {
+        moreMenu.addEventListener("click", function (e) {
+          var btn = e.target.closest("[data-more]");
+          if (!btn) return;
+          var act = btn.getAttribute("data-more");
+          if (act === "mute") { v.muted = !v.muted; vlSyncVlUi(); }
+          else if (act === "speed125") { v.playbackRate = 1.25; toast("倍速", "1.25x", "info"); }
+          else if (act === "speed100") { v.playbackRate = 1.0; toast("倍速", "1.0x", "info"); }
+          else if (act === "pip") { try { v.requestPictureInPicture && v.requestPictureInPicture(); } catch (err) {} }
+          moreMenu.hidden = true;
+        });
+        document.addEventListener("click", function (e) {
+          if (!moreMenu.hidden && !e.target.closest("#vlMoreMenu") && !e.target.closest("#vlMore")) {
+            moreMenu.hidden = true;
+          }
+        });
+      }
+    }
+    /* 手动选择 .funscript：原生文件框 → 后端按任意脚本路径加载（热力图 + 设备同步） */
+    if ($("#vlPickScript")) $("#vlPickScript").addEventListener("click", function () {
+      if (!(vlMed.path && !vlMed.failed)) {
+        toast("选择脚本", "请先打开一个视频，再选择配套脚本", "err");
+        return;
+      }
+      var load = function (path) {
+        api("/api/library/script", "POST", { video: vlMed.path, script: path }).then(function (r) {
+          if (!r || !r.ok) { toast("脚本加载失败", (r && r.error) || "未知错误", "err"); return; }
+          vlHeatScript = { ok: true, actions: r.actions || [] };
+          vlHeatKey = vlMed.path;
+          drawHeat(); drawHeatCurve();
+          toast("脚本已加载", (r.script || path), "ok");
+        });
+      };
+      var api2 = window.pywebview && window.pywebview.api;
+      if (api2 && api2.pick_file) {
+        api2.pick_file("open", "", ["funscript"]).then(function (r) {
+          if (r && r.ok && r.path) load(r.path);
+        });
+        return;
+      }
+      var inp = document.createElement("input");
+      inp.type = "file"; inp.accept = ".funscript";
+      inp.onchange = function () { if (inp.files && inp.files[0]) load(inp.files[0].path || inp.files[0].name); };
+      inp.click();
     });
     var _vb = $("#vlVBack"); if (_vb) _vb.addEventListener("click", function () {
       /* 回到媒体库（暂停并释放流） */
-      /* 先退全屏再动 DOM：虽然现在全屏元素是文档根、隐藏子容器已经安全，
-         但退出动作放前面更稳（这里就是"全屏后点返回直接卡死"的现场）。 */
-      try {
-        if (document.fullscreenElement) {
-          var ex = document.exitFullscreen();
-          if (ex && ex.catch) ex.catch(function () { /* 浏览器已自行退出，忽略 */ });
-        }
-      } catch (e) {}
+      /* 先退视频全屏再动 DOM。 */
+      if (videoFullscreenOn()) setVideoFullscreen(false);
       try { v.pause(); } catch (e) {}
       v.removeAttribute("src"); v.load();
       vlMed.path = ""; vlMed.failed = false;
-      if (lcActive) lcStop();                      // 退出播放：停 AI 字幕（R123）
       vlCurPath = "";   // 离开播放态，免得轮询再走"回根"分支
       $("#vlPlayView").style.display = "none";
       $("#vlBrowse").style.display = "";
@@ -2458,10 +2309,6 @@
     /* 鼠标不动 3s 收控制条；一动就出来 */
     var wrap = $("#vlVWrap");
     ["pointermove", "pointerdown", "wheel"].forEach(function (ev) { wrap.addEventListener(ev, vlTouch); });
-    document.addEventListener("fullscreenchange", function () {
-      var u = $("#vlFull") && $("#vlFull").querySelector("use");
-      if (u) u.setAttribute("href", document.fullscreenElement ? "#i-minimize" : "#i-maximize");
-    });
   }
 
   /* --- 大框框：播放模式（内置播放器） --- */
@@ -2691,12 +2538,14 @@
       th.addEventListener("pointerdown", function (e) {
         e.preventDefault();
         try { th.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件无有效 pointerId */ }
+        el.__dragging = true;   // 轮询回填判据：拖动中不能被服务器旧值回写（回弹抖动）
         var move = function (ev) {
           set(side, xToVal(ev.clientX, el.getBoundingClientRect()), true);
         };
         var up = function () {
           th.removeEventListener("pointermove", move);
           th.removeEventListener("pointerup", up);
+          el.__dragging = false;
           onChange(lo, hi, false);            // 松手才落盘
         };
         th.addEventListener("pointermove", move);
@@ -3050,8 +2899,14 @@
     var card = e.target.closest(".vl-pcard");
     if (!card) return;
     var id = card.getAttribute("data-preset");
-    /* 手机端：点卡片就是选中（不做"再点取消"），选中本身不开始播放 */
-    api("/api/preset", "POST", { action: "select", id: id }).then(function () { pollDev(); });
+    /* 手机端：点卡片就是选中（不做"再点取消"），选中本身不开始播放。
+       失败必须提示：未知预设服务端回 ok:false（HTTP 200），只判 then 会静默 */
+    api("/api/preset", "POST", { action: "select", id: id }).then(function (r) {
+      if (!r || r.ok === false) {
+        toast("预设选择失败", (r && r.error) || "未知预设", "err");
+      }
+      pollDev();
+    });
   });
 
   /* =====================================================================
@@ -3069,7 +2924,9 @@
     sp.hidden = true;
     if (DEV.available === false) { lb.textContent = "无 BLE 依赖"; btn.title = "宿主缺少 bleak，需重新打包"; return; }
     if (DEV.connecting) { btn.classList.add("busy"); sp.hidden = false; lb.textContent = "连接中"; return; }
-    if (DEV.connected) { btn.classList.add("on"); lb.textContent = "断开设备"; btn.title = (DEV.name || "设备") + " 已连接（点击断开）"; }
+    // on + connected 双类：redesign 的扁平连接态（.connected）要盖过旧红底（.on），
+    // 特异性相同靠后加载的 redesign 胜出，缺一不可
+    if (DEV.connected) { btn.classList.add("on", "connected"); lb.textContent = "断开设备"; btn.title = (DEV.name || "设备") + " 已连接（点击断开）"; }
     else { lb.textContent = "扫描并连接"; btn.title = "扫描并连接设备"; }
     var q = DEV.quick || {};
     $("#vqIdle").textContent = q.slow ? "停止缓动" : "待机缓动";
@@ -3089,8 +2946,10 @@
     $("#vlBoost").classList.toggle("filled-red", !!p.boost);
     var psEl = $("#vlPresetSpeed");                       // 预设速度回填（宿主为准）
     var psVal = Number(p.speed || 100);
-    if (psEl) { psEl.style.setProperty("--a", 0); psEl.style.setProperty("--b", (psVal - 1) / 499); psEl.setAttribute("data-val", psVal); }
-    if ($("#vlPresetSpeedVal")) $("#vlPresetSpeedVal").textContent = psVal;
+    // 拖动中不回填：2s 轮询用服务器旧值回写会把 thumb 弹回去（落盘值不受影响，
+    // 但拖动过程视觉打架——与 busyEditing 同一原则）
+    if (psEl && !psEl.__dragging) { psEl.style.setProperty("--a", 0); psEl.style.setProperty("--b", (psVal - 1) / 499); psEl.setAttribute("data-val", psVal); }
+    if ($("#vlPresetSpeedVal") && !(psEl && psEl.__dragging)) $("#vlPresetSpeedVal").textContent = psVal;
     /* 选中态/播放态/滚动定位都在这里：手机端 LaunchedEffect(currentId) 滚到当前行
        同款——RANDOM 跳到哪个、用户点了哪个，都以宿主 currentPresetId 为准重画 */
     renderPresetCards();
@@ -3237,12 +3096,24 @@
       if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
         window.pywebview.api.pick_folder(cur, false).then(function (r) {
           var p = (r && (r.path || r.folder)) || (typeof r === "string" ? r : "");
-          if (p) { $("#setScriptFolder").value = p; api("/api/settings", "POST", { script_folder: p }); }
+          if (p) {
+            $("#setScriptFolder").value = p;
+            api("/api/settings", "POST", { script_folder: p }).then(function (r) {
+              if (!r || r.ok === false) toast("保存失败", (r && r.error) || "", "err");
+            });
+          }
+          /* 对齐其余 pick 的口径：服务端报错要提示（用户主动取消不打扰） */
+          else if (r && r.error) toast("选择目录失败", r.error, "err");
         }).catch(function (e) { toast("选择目录失败", String(e), "err"); });
       }
     });
     $("#setScriptFolder") && $("#setScriptFolder").addEventListener("change", function () {
-      api("/api/settings", "POST", { script_folder: this.value }).then(function () { toast("已保存", "", "ok"); });
+      api("/api/settings", "POST", { script_folder: this.value }).then(function (r) {
+        // 设置文件损坏时服务端拒绝全部写盘（guard_read_error 回 400）：
+        // 无条件报"已保存"会让用户以为存上了
+        if (r && r.ok) toast("已保存", "", "ok");
+        else toast("保存失败", (r && r.error) || "", "err");
+      });
     });
   }
   bindSetDev();   /* 曾经只 load 不 bind：设置页全部监听器（高级开关/空闲秒数/手动移动/
@@ -3251,16 +3122,24 @@
 
   /* ---- 脚本同步：播放进度 → 设备 ---- */
   /* 「播放视频时同步驱动设备」开关已删（手机端没有此项，视频在播即同步） */
-  var SYNC = { on: false, last: 0, path: "", estopped: false, scriptless: "", starting: false, want: false };
+  var SYNC = { on: false, last: 0, inflight: false, path: "", estopped: false, scriptless: "", starting: false, want: false };
   var syncStartGen = 0;
   function syncStart(path) {
     SYNC.want = true;               // "这个视频该联动"——设备不在也先记下，连上后看护会补起
+    /* 双保险：api() 已有 15s 超时，但若上一视频恰留下一拍僵尸在途请求，inflight
+       闸门仍会压住新视频的开头几拍——换视频即视为旧拍作废，直接放闸。 */
+    SYNC.inflight = false;
+    /* AI 模式由 vision/open 启动 live 引擎，不需要脚本同步；
+       这里再发 /api/sync/start，无脚本视频的失败响应会把 SYNC.on 置 false。 */
+    if (AIV.on) { SYNC.on = true; SYNC.ai = true; return; }
     if (!DEV.connected || !path || SYNC.starting) return;
     SYNC.starting = true;
     var gen = ++syncStartGen;       // 代际丢弃：连开两个视频，慢的旧 start 响应不得回退状态
     api("/api/sync/start", "POST", { path: path }).then(function (r) {
       SYNC.starting = false;
       if (gen !== syncStartGen) return;
+      /* 在途响应晚到：这期间用户开了 AI，按 AI 模式处理，别覆盖 SYNC.on */
+      if (AIV.on) { SYNC.on = true; SYNC.ai = true; return; }
       /* deferred：爆发在跑，宿主让脚本让路（手机端 externalControl 同款）——
          不算"同步已开"，看护会在爆发结束后自动补起 */
       if (r && r.ok) { SYNC.on = !r.deferred; SYNC.path = r.script || path; }
@@ -3272,13 +3151,19 @@
     SYNC.want = false;              // 用户明确停联动：看护不得再自动拉起
     api("/api/sync/stop", "POST", {});
   }
+  /* 一拍 = 一次 /api/sync/tick。真正限制节拍的是**宿主回包**，不是定时器：
+     定时器每 20ms 调用，节流按"上一次**回包返回**的时刻"算，所以有效周期 =
+     20ms 与宿主往返（含 /api/vision/actions 的 3s 上限）之和。
+     旧写法在**发出**时就推进 SYNC.last，往返超过 20ms 时后续每一拍都被拦下，
+     等于串行；预热期引擎被占、宿主 /state 探测慢时，实际下发被拖到 ~1.5s 一拍
+     （25 倍丢拍）——AI 模式下设备"几乎不动"的现场症状之一。 */
   function syncTick(t, rate) {
     if (!SYNC.on) return;
     var v = vlVid();
     if (v && v.paused) return;    // 暂停中（含拖进度条）不追帧：设备不被 seek 目标拖着跑
-    var now = Date.now();
-    if (now - SYNC.last < 20) return;   // 20ms：严格对齐手机端主循环 LOOP_INTERVAL_MS=20
-    SYNC.last = now;
+    if (SYNC.inflight) return;    // 上一拍还没回来：不并发堆叠请求
+    if (Date.now() - SYNC.last < 20) return;   // 20ms：严格对齐手机端主循环 LOOP_INTERVAL_MS=20
+    SYNC.inflight = true;
     api("/api/sync/tick", "POST", { t: t, rate: rate || 1 }).then(function (r) {
       /* 「跳过无动作部分」（对齐手机端 maybeSkipIdle）：宿主判定脚本静止段超过阈值时
          让**视频快进**到下一动作点；离目标太远才跳，防 seek 环 */
@@ -3286,6 +3171,11 @@
         var vv = vlVid();
         if (vv && !vv.paused && !vv.seeking && Math.abs((vv.currentTime || 0) - r.seek_to) > 1.5) vlSeekTo(r.seek_to);
       }
+    }).catch(function () {
+      /* 失败也要放开闸门，否则一次网络抖动会让 tick 永久停摆 */
+    }).then(function () {
+      SYNC.inflight = false;
+      SYNC.last = Date.now();     // 节拍从**回包之后**重新计时（见上方说明）
     });
   }
   /* 高频 tick 驱动：timeupdate 只有 ~250ms 且抖动，做不了"段边界发帧"的检测
@@ -3366,7 +3256,48 @@
   });
 
   /* --- 布局自适应：⏸ 保持正圆、预设/浏览网格"正好 2 行"（草图口径） --- */
+  /* 视频播放区固定 16:9：在可用舞台内等比缩放并居中；窗口比例由宿主按它反推。 */
+  function fitVideoAspect() {
+    var pv = $("#vlPlayView"), wrap = $("#vlVWrap");
+    if (!pv || !wrap || pv.offsetParent === null) return;
+    if (document.fullscreenElement || document.body.classList.contains("vl-video-fs")) return;
+    var path = $(".vl-screen-path");
+    var availW = pv.clientWidth;
+    var availH = pv.clientHeight - (path ? path.offsetHeight + 8 : 0);
+    if (availW < 16 || availH < 9) return;
+    var h = Math.min(availH, availW * 9 / 16);
+    var w = h * 16 / 9;
+    wrap.style.width = Math.round(w) + "px";
+    wrap.style.height = Math.round(h) + "px";
+    wrap.style.flex = "0 0 auto";
+    wrap.style.margin = "auto";
+  }
+
+  /* 媒体库网格：卡片缩略图用 aspect-ratio 时不会自动贡献固有行高，
+     169 张卡会把 auto 行压成几像素并叠在一起。按列宽 + 选定比例算固定行高。 */
+  function layoutLibGrid() {
+    var bg = $("#vlBrowseBody");
+    if (!bg) return;
+    var cols = (getComputedStyle(bg).gridTemplateColumns || "")
+      .split(" ")
+      .filter(Boolean).length;
+    if (cols < 1) return;
+    var gap = 10;
+    var cw = (bg.clientWidth - gap * (cols - 1)) / cols;
+    var asp = (getComputedStyle(document.documentElement)
+      .getPropertyValue("--lib-aspect") || "16 / 9").trim();
+    var p = asp.split("/");
+    var ratio = p.length === 2 ? (parseFloat(p[0]) / parseFloat(p[1])) : (16 / 9);
+    if (!(ratio > 0)) ratio = 16 / 9;
+    var title = document.querySelector(".lib-card .lib-title");
+    var titleH = title ? title.offsetHeight : 0;
+    var rowH = Math.max(80, Math.round(cw / ratio + titleH + 2));
+    bg.style.gridAutoRows = rowH + "px";
+  }
+
   function layoutVl() {
+    fitVideoAspect();
+    layoutLibGrid();
     var row = $(".vl-btnrow"), b = $("#vlPause");
     if (row && b) {
       var s = Math.max(26, Math.min(row.clientHeight, row.clientWidth * 40 / 770));
@@ -3376,11 +3307,6 @@
     if (g) {
       var h = g.clientHeight;
       if (h > 0) g.style.gridAutoRows = Math.max(46, (h - 10) / 2) + "px";
-    }
-    var bg = $("#vlBrowseBody");
-    if (bg) {
-      var bh = bg.clientHeight;
-      if (bh > 0) bg.style.gridAutoRows = Math.max(118, (bh - 10) / 2) + "px";
     }
     drawHeat();
     /* 卡片宽度变了要按新尺寸重画波形（否则沿用旧 backing，看着像只画了一半）*/
@@ -3403,7 +3329,7 @@
      pywebview 不处理 ContainsFullScreenElementChanged，原生窗口一动不动
      （实测点击前后窗口都是 960x806 at 360,103）。所以宿主修好之前，
      这里就**如实报错**，不做"看起来在动其实没动"的假动作。
-     host_server.py 里的实现已重写并单独验证过，装 1.0.56 后自动生效。 */
+     Rust 宿主的 win_maximize 已重写并单独验证过，不受旧实现影响。 */
   $("#winMax").addEventListener("click", function () {
     var api = window.pywebview && window.pywebview.api;
     if (!api || !api.win_maximize) {
@@ -3434,7 +3360,15 @@
   window.addEventListener("hashchange", function () { vlApplyHash(); });
   vlApplyHash();
   function vlApplyHash() {
-    var h = decodeURIComponent(location.hash || "");
+    // 坏编码的 hash（孤立 % 等）会让 decodeURIComponent 抛 URIError——
+    // 这里在 IIFE 顶层被同步调用，抛错会中断整个初始化链（boot/bind 全部失效，
+    // 与 2026-10-18 的事故同型）
+    var h = "";
+    try {
+      h = decodeURIComponent(location.hash || "");
+    } catch (e) {
+      h = location.hash || "";
+    }
     if (h.indexOf("#library") !== 0) return;
     if (h.indexOf("#library/browse=") === 0) {
       showPage("library");
@@ -3442,8 +3376,10 @@
     } else if (h.indexOf("#library/play=") === 0) {
       showPage("library");
       var vp = h.slice("#library/play=".length);
-      /* 深链直接进内置播放器 */
-      openVideo(vp, String(vp).split(/[\\/]/).pop(), [], 0);
+      /* 深链直接进内置播放器；列表带当前这一部（元素结构与浏览列表一致）——
+         传空列表会让「上一个/下一个」沿用上一次会话的旧列表切到不相关视频 */
+      var nm = String(vp).split(/[\\/]/).pop();
+      openVideo(vp, nm, [{ path: vp, name: nm }], 0);
     } else if (h === "#library") {
       showPage("library");
     }
@@ -3490,10 +3426,10 @@
 
   function boot() {
     bind();
-    /* 主题/动效：默认浅色 + 用户上次的选择已由 <head> 内联脚本在首屏前套好，
-       这里只把图标/文案对齐当前值。绝不在 boot 里硬套 dark——那就是
+    /* 主题/动效：固定浅色（<head> 内联脚本已强制 data-theme=light），
+       这里只对齐动效。绝不在 boot 里硬套 dark——那就是
        "启动先深色再跳浅色"的元凶。 */
-    setTheme(document.documentElement.getAttribute("data-theme") || "light", false);
+    setTheme();
     setMotion(document.documentElement.getAttribute("data-motion") || "full", false);
     initPointerLight();
     poll(false);
