@@ -22,18 +22,37 @@ use crate::bundle::Bundle;
 static SHARED_ENV: std::sync::OnceLock<Environment> = std::sync::OnceLock::new();
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// ort panic 信息提取（payload 可能是 &str / String / 其他）。
+fn panic_message(p: &Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>().map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "未知 panic".to_string())
+}
+
 pub fn shared_env() -> Result<Environment, String> {
     if let Some(e) = SHARED_ENV.get() {
         return Ok(e.clone());
     }
-    let _guard = ENV_LOCK.lock().map_err(|_| "环境锁中毒".to_string())?;
+    // 锁只保护"初始化竞态"，真值在上面的 OnceLock：持锁的 ort 初始化若 panic
+    // 毒化了锁，恢复后重试是安全的——报"环境锁中毒"并永久锁死反而是错的
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(e) = SHARED_ENV.get() {
         return Ok(e.clone());
     }
-    let e = ort::environment::init()
-        .with_name("nexus-vision")
-        .build()
-        .map_err(|e| format!("ORT 环境初始化失败：{e}"))?;
+    // ort（2.0-rc）在显卡/DirectML 异常时不保证返回 Err，可能直接 panic：
+    // 必须抓成错误上抛，不能让线程带着锁死掉（锁中毒+状态卡 warming 的根源）
+    let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ort::environment::init()
+            .with_name("nexus-vision")
+            .build()
+            .map_err(|e| format!("ORT 环境初始化失败：{e}"))
+    }))
+    .unwrap_or_else(|p| {
+        Err(format!(
+            "ORT 环境初始化崩溃（常见于显卡不支持 DirectML 或驱动异常）：{}",
+            panic_message(&p)
+        ))
+    })?;
     let _ = SHARED_ENV.set(e.clone());
     Ok(e)
 }
@@ -426,14 +445,24 @@ impl Decoder {
 /// 打开编码器会话：**必须走 GPU**（packed-QKV 注意力在 CPU 上没有 kernel）。
 #[cfg(windows)]
 pub fn open_encoder(env: &Environment, path: &Path) -> Result<Session, String> {
-    use ort::ep::DirectML;
-    let b = Session::builder(env).map_err(|e| format!("ORT 会话构建失败：{e}"))?;
-    let b = b
-        .with_execution_providers([DirectML::default().build()])
-        .map_err(|e| format!("启用 DirectML 失败：{e}"))?;
-    let mut b = b;
-    b.commit_from_file(path)
-        .map_err(|e| format!("加载编码器 {} 失败：{e}", path.display()))
+    // DirectML EP 初始化是 ort 在劣质显卡/旧驱动上 panic 的高发点：
+    // 抓成错误上抛（friendly_vision_error 会把它映射成显卡提示）
+    let load = || -> Result<Session, String> {
+        use ort::ep::DirectML;
+        let b = Session::builder(env).map_err(|e| format!("ORT 会话构建失败：{e}"))?;
+        let b = b
+            .with_execution_providers([DirectML::default().build()])
+            .map_err(|e| format!("启用 DirectML 失败：{e}"))?;
+        let mut b = b;
+        b.commit_from_file(path)
+            .map_err(|e| format!("加载编码器 {} 失败：{e}", path.display()))
+    };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(load)).unwrap_or_else(|p| {
+        Err(format!(
+            "编码器初始化崩溃（常见于显卡不支持 DirectML 或驱动异常）：{}",
+            panic_message(&p)
+        ))
+    })
 }
 
 #[cfg(not(windows))]
@@ -608,9 +637,17 @@ impl EncodeStreamer {
 
 
 fn open_session(env: &Environment, path: &Path) -> Result<Session, String> {
-    Session::builder(env)
-        .and_then(|mut b| b.commit_from_file(path))
-        .map_err(|e| format!("加载模型 {} 失败：{e}", path.display()))
+    let load = || {
+        Session::builder(env)
+            .and_then(|mut b| b.commit_from_file(path))
+            .map_err(|e| format!("加载模型 {} 失败：{e}", path.display()))
+    };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(load)).unwrap_or_else(|p| {
+        Err(format!(
+            "模型加载崩溃（常见于显卡不支持 DirectML 或驱动异常）：{}",
+            panic_message(&p)
+        ))
+    })
 }
 
 /// 运行时可用的 ORT 动态库（优先环境变量，其次仓库 .venv 里那份）。
