@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::library::{
-    display_title, dlna_proto, find_subtitles, is_audio, is_strm, parent_object_id, subtitle_mime,
-    MediaLibrary, DLNA_FLAGS,
+    display_title, dlna_proto, find_subtitles, is_audio, is_funscript, is_strm, is_subtitle,
+    parent_object_id, subtitle_mime, MediaLibrary, DLNA_FLAGS,
 };
 
 /// **必须与 Python 版一致**：UDN 变更会让 DeoVR 等已缓存客户端重新发现并重建目录树。
@@ -201,7 +201,30 @@ impl DlnaApp {
             let p = dir.join(&m);
             parts.push(self.media_item(&p, &key, parent_id, &all));
         }
+        // 2026-10-31：脚本/字幕 sidecar 条目。DLNA 服务器此前只列 video/audio，
+        // 播放器（VRFunScriptCast 等）浏览时看不到 .funscript/.srt。
+        // 这些条目**不带 res**（不是可播媒体），标题必须用**原始文件名（含扩展名）**——
+        // 播放器按标题扩展名识别 sidecar 类型，display_title 会剥掉扩展名导致再次丢失。
+        for n in all.iter().filter(|n| is_funscript(n) || is_subtitle(n)) {
+            let key = join(n);
+            let p = dir.join(n);
+            parts.push(self.sidecar_item(&p, &key, parent_id));
+        }
         parts
+    }
+
+    /// 脚本/字幕 sidecar 条目：无 res 的 item，标题 = 原始文件名（含扩展名）。
+    fn sidecar_item(&self, path: &Path, key: &str, parent_id: &str) -> String {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let title = xml_escape(&name);
+        let id = xml_escape(&format!("V:{key}"));
+        let pid = xml_escape(parent_id);
+        format!(
+            "<item id=\"{id}\" parentID=\"{pid}\" restricted=\"1\"><dc:title>{title}</dc:title><upnp:class>object.item</upnp:class></item>"
+        )
     }
 
     /// Browse：返回 (DIDL, NumberReturned, TotalMatches)。
@@ -391,12 +414,14 @@ mod tests {
         let app = app_with(dir.clone());
 
         let (didl, returned, total) = app.browse("0", "BrowseDirectChildren", 0, 0);
-        assert_eq!(total, 2, "一个目录 + 一个视频");
-        assert_eq!(returned, 2);
+        // 2026-10-31：.funscript/.srt 以无 res 的 sidecar 条目列出（播放器按标题扩展名识别）
+        assert_eq!(total, 3, "一个目录 + 一个视频 + 一个字幕 sidecar");
+        assert_eq!(returned, 3);
         assert!(didl.starts_with(DIDL_HEAD));
         assert!(didl.ends_with("</DIDL-Lite>"));
         assert!(didl.contains("<dc:title>series</dc:title>"));
         assert!(didl.contains("<dc:title>movie</dc:title>"));
+        assert!(didl.contains("<dc:title>movie.zh.srt</dc:title>"), "字幕 sidecar 必须用原始文件名（含扩展名）");
         assert!(didl.contains("sec:CaptionInfoEx"), "外挂字幕必须挂出来");
         assert!(didl.contains("size=\"128\""), "视频要带 size");
         let _ = std::fs::remove_dir_all(&dir);

@@ -48,6 +48,11 @@ pub fn is_audio(name: &str) -> bool {
 pub fn is_subtitle(name: &str) -> bool {
     SUBTITLE_EXT.contains(&ext_lower(name).as_str())
 }
+
+/// 脚本文件（.funscript）。DLNA 浏览时以 sidecar 条目形式暴露给播放器。
+pub fn is_funscript(name: &str) -> bool {
+    ext_lower(name) == "funscript"
+}
 pub fn is_strm(name: &str) -> bool {
     ext_lower(name) == "strm"
 }
